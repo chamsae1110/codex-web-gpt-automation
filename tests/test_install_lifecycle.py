@@ -134,6 +134,108 @@ def test_interrupted_install_recovery_rolls_back_completed_steps_and_preserves_u
         assert json.loads(wal.read_text(encoding='utf-8'))['status'] == 'ROLLED_BACK_AFTER_CRASH'
 
 
+def test_interrupted_install_accepts_exactly_restored_complete_entry_idempotently() -> None:
+    with tempfile.TemporaryDirectory() as home:
+        codex_home = Path(home)
+        backup_root = codex_home / 'backups' / 'restored-before-resume'
+        destination = codex_home / 'bin' / 'restored.py'
+        backup = backup_root / 'bin' / 'restored.py'
+        destination.parent.mkdir(parents=True)
+        backup.parent.mkdir(parents=True)
+        destination.write_bytes(b'old-restored\n')
+        backup.write_bytes(b'old-restored\n')
+        digest = lambda value: hashlib.sha256(value).hexdigest()
+        wal = backup_root / 'install.wal.json'
+        wal.write_text(json.dumps({
+            'schema': 'codexpro.install-wal/v1',
+            'status': 'ACTIVE',
+            'backup': str(backup_root),
+            'files': [{
+                'path': 'bin/restored.py',
+                'action': 'overwritten',
+                'installed_sha256': digest(b'new-installed\n'),
+                'backup_sha256': digest(b'old-restored\n'),
+                'phase': 'COMPLETE',
+                'transitions': ['INTENT', 'MUTATED', 'VERIFIED', 'COMPLETE'],
+            }],
+        }), encoding='utf-8')
+
+        resumed = run_powershell(
+            '-File', str(ROOT / 'install.ps1'), '-CodexHome', home,
+            '-SkipDependencyInstall', '-DisableLocalMultiGpt',
+        )
+
+        assert resumed.returncode == 0, resumed.stderr
+        assert destination.read_bytes() == b'old-restored\n'
+        assert json.loads(wal.read_text(encoding='utf-8'))['status'] == 'ROLLED_BACK_AFTER_CRASH'
+
+
+def test_interrupted_install_still_fails_closed_on_external_modification() -> None:
+    with tempfile.TemporaryDirectory() as home:
+        codex_home = Path(home)
+        backup_root = codex_home / 'backups' / 'externally-modified'
+        destination = codex_home / 'bin' / 'modified.py'
+        backup = backup_root / 'bin' / 'modified.py'
+        destination.parent.mkdir(parents=True)
+        backup.parent.mkdir(parents=True)
+        destination.write_bytes(b'user-external-change\n')
+        backup.write_bytes(b'old-original\n')
+        digest = lambda value: hashlib.sha256(value).hexdigest()
+        wal = backup_root / 'install.wal.json'
+        wal.write_text(json.dumps({
+            'schema': 'codexpro.install-wal/v1',
+            'status': 'ACTIVE',
+            'backup': str(backup_root),
+            'files': [{
+                'path': 'bin/modified.py',
+                'action': 'overwritten',
+                'installed_sha256': digest(b'new-installed\n'),
+                'backup_sha256': digest(b'old-original\n'),
+                'phase': 'COMPLETE',
+                'transitions': ['INTENT', 'MUTATED', 'VERIFIED', 'COMPLETE'],
+            }],
+        }), encoding='utf-8')
+
+        resumed = run_powershell(
+            '-File', str(ROOT / 'install.ps1'), '-CodexHome', home,
+            '-SkipDependencyInstall', '-DisableLocalMultiGpt',
+        )
+
+        assert resumed.returncode != 0
+        assert 'INSTALL_CRASH_RECOVERY_CONFLICT' in resumed.stderr
+        assert destination.read_bytes() == b'user-external-change\n'
+        assert json.loads(wal.read_text(encoding='utf-8'))['status'] == 'ACTIVE'
+
+
+@pytest.mark.skipif(os.name != 'nt', reason='mocked python.cmd failure is Windows-only')
+def test_failed_install_records_durable_terminal_wal_after_normal_rollback() -> None:
+    with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as mock_bin:
+        mock = Path(mock_bin)
+        (mock / 'python.cmd').write_text('@echo off\nexit /b 17\n', encoding='utf-8')
+        env = os.environ.copy()
+        env['PATH'] = str(mock) + os.pathsep + env['PATH']
+
+        failed = run_powershell(
+            '-File', str(ROOT / 'install.ps1'), '-CodexHome', home,
+            '-SkipDependencyInstall', '-EnableLocalMultiGpt', env=env,
+        )
+
+        assert failed.returncode != 0
+        wals = sorted((Path(home) / 'backups').glob('codexpro-automation-*/install.wal.json'))
+        assert len(wals) == 1
+        value = json.loads(wals[0].read_text(encoding='utf-8'))
+        assert value['status'] == 'ROLLED_BACK_AFTER_ERROR'
+        assert value['rolled_back_at']
+        assert not (Path(home) / 'bin' / 'chatgpt_oracle_run.py').exists()
+
+        resumed = run_powershell(
+            '-File', str(ROOT / 'install.ps1'), '-CodexHome', home,
+            '-SkipDependencyInstall', '-DisableLocalMultiGpt',
+        )
+        assert resumed.returncode == 0, resumed.stderr
+        assert json.loads(wals[0].read_text(encoding='utf-8'))['status'] == 'ROLLED_BACK_AFTER_ERROR'
+
+
 def test_doctor_accepts_current_v3_install_receipt_schema() -> None:
     with tempfile.TemporaryDirectory() as home:
         root = Path(home)

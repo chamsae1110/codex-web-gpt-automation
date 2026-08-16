@@ -52,14 +52,17 @@ function Resume-PendingInstallTransactions([string]$Root){
   $backupBase=Join-Path $Root 'backups';if(!(Test-Path -LiteralPath $backupBase)){return}
   foreach($journalPath in @(Get-ChildItem -LiteralPath $backupBase -Filter 'install.wal.json' -File -Recurse -Force -ErrorAction SilentlyContinue|Sort-Object FullName)){
     $journal=Get-Content -LiteralPath $journalPath.FullName -Raw|ConvertFrom-Json
-    if($journal.schema -ne 'codexpro.install-wal/v1' -or $journal.status -eq 'COMPLETE' -or $journal.status -eq 'ROLLED_BACK_AFTER_CRASH'){continue}
+    if($journal.schema -ne 'codexpro.install-wal/v1' -or $journal.status -in @('COMPLETE','ROLLED_BACK_AFTER_CRASH','ROLLED_BACK_AFTER_ERROR')){continue}
     $conflicts=@();$entries=@($journal.files)
     for($index=$entries.Count-1;$index -ge 0;$index--){
       $entry=$entries[$index];$destination=Get-SafeChild $Root ([string]$entry.path)
-      if(!(Test-Path -LiteralPath $destination)){continue}
+      if(!(Test-Path -LiteralPath $destination)){
+        if($entry.action -eq 'created'){continue}
+        $conflicts+=@{path=$entry.path;action='missing_overwritten_after_interrupted_install'};continue
+      }
       $destinationHash=Get-Hash $destination
+      if($entry.action -eq 'overwritten' -and $destinationHash -eq [string]$entry.backup_sha256){continue}
       if($entry.phase -eq 'INTENT' -and $destinationHash -ne [string]$entry.installed_sha256){
-        if($entry.action -eq 'overwritten' -and $destinationHash -eq [string]$entry.backup_sha256){continue}
         $conflicts+=@{path=$entry.path;action='preserved_modified_after_interrupted_install'};continue
       }
       if($destinationHash -ne [string]$entry.installed_sha256){$conflicts+=@{path=$entry.path;action='preserved_modified_after_interrupted_install'};continue}
@@ -83,7 +86,7 @@ else{$InstallLocalMultiGpt=[bool]$Manifest.optional_components.local_multi_gpt.d
 $Patterns=@($Manifest.include);if($InstallLocalMultiGpt){$Patterns+=@($Manifest.optional_components.local_multi_gpt.include)}
 $Files=@(Get-ManifestFiles $RepoRoot $Patterns)
 if($WhatIfPreference){$Files|ForEach-Object{"Would stage and install $_"};if($InstallLocalMultiGpt){'Would install and register optional Local Multi-GPT MCP'}else{'Would not install optional Local Multi-GPT MCP (use -EnableLocalMultiGpt to opt in)'};if($ManageLegacyDependency){"Would explicitly install and contract-validate recovery-only agbrowse@$($Manifest.external.agbrowse.version)"}else{'Would leave frozen agbrowse/CodexPro legacy dependencies untouched'};exit 0}
-$records=@();$installed=@();$receipt=$null;$dependency=$null;$dependencyApplied=$false;$dependencySourceReceipt=$null;$localMultiGpt=[ordered]@{enabled=$InstallLocalMultiGpt;mode=$(if($InstallLocalMultiGpt){'pending'}else{'skipped'});reason=$(if($InstallLocalMultiGpt){$null}else{'not-selected'});receipt=$null}
+$records=@();$installed=@();$receipt=$null;$dependency=$null;$dependencyApplied=$false;$dependencySourceReceipt=$null;$journal=$null;$journalPath=$null;$localMultiGpt=[ordered]@{enabled=$InstallLocalMultiGpt;mode=$(if($InstallLocalMultiGpt){'pending'}else{'skipped'});reason=$(if($InstallLocalMultiGpt){$null}else{'not-selected'});receipt=$null}
 $dependencyPreflightToken=$null
 Resume-PendingInstallTransactions $HomeRoot
 if($ManageLegacyDependency){
@@ -126,6 +129,7 @@ try{
     } catch { $conflicts+=@{path=$record.path;action='rollback_error';detail=$_.Exception.Message} }
   }
   $dependencyRollbackReceipt=$null;if($dependency -and $dependency.mode -eq 'applied' -and (Test-Path -LiteralPath $dependency.receipt)){$dependencyRollbackReceipt=$dependency.receipt}elseif($dependencyApplied -and $dependencySourceReceipt -and (Test-Path -LiteralPath $dependencySourceReceipt)){$dependencyRollbackReceipt=$dependencySourceReceipt};if(!$conflicts.Count -and $dependencyRollbackReceipt){& (Join-Path $RepoRoot 'update.ps1') -RollbackReceipt $dependencyRollbackReceipt -CodexHome $HomeRoot;if($LASTEXITCODE){$conflicts+=@{path='dependency';action='dependency_rollback_incomplete'}}}
+  if(!$conflicts.Count -and $journal -and $journalPath -and (Test-Path -LiteralPath $journalPath)){$journal.status='ROLLED_BACK_AFTER_ERROR';$journal|Add-Member -NotePropertyName rolled_back_at -NotePropertyValue ([DateTime]::UtcNow.ToString('o')) -Force;Write-JsonDurable $journalPath $journal}
   if($conflicts.Count){[ordered]@{code='INSTALL_ROLLBACK_CONFLICT';conflicts=$conflicts}|ConvertTo-Json -Compress|Write-Error}
   elseif($receipt -and (Test-Path -LiteralPath $receipt)){Remove-Item -LiteralPath $receipt -Force}
   throw
