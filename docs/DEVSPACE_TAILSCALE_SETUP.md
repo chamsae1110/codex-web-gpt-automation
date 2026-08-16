@@ -95,6 +95,17 @@ call fails just after manual registration or reconnect, run the explicit
 probe. If it still fails, keep the server running and report the same connector
 URL; do not automate deletion, re-registration, or repeated refreshes.
 
+A local/public `401` proves that the DevSpace OAuth challenge is reachable; it
+does **not** prove that ChatGPT's registered `@codex` account binding can mint a
+token. Likewise, Codex Desktop's built-in `devspace_open_workspace` and
+`codex_open_workspace` are distinct connector surfaces. A successful call on
+one cannot clear `-32603` or `OAuth token request failed 503` on another. The
+Oracle diagnosis report classifies a terminal `TASK_OUTCOME: BLOCKED` carrying
+that OAuth 503 as `registered-app-oauth-token-request-503`, never as a complete
+mission. Repair of that external binding requires the one manual reconnect
+already described above, followed by one regular non-Pro probe; Pro remains
+blocked until that exact registered-app probe succeeds.
+
 ## Idempotent service/Funnel recovery
 
 After a DevSpace or Tailscale restart, restore only the already-approved public

@@ -3022,6 +3022,8 @@ def test_live_recovery_holds_one_exact_slug_connection_until_terminal(
     assert settled["status"] == "complete"
     assert settled["result"]["session_authority"] == "terminal"
     assert settled["result"]["terminal_harvested"] is True
+    assert settled["result"]["browser_observer"]["status"] == "exact-recovery-terminal-harvested"
+    assert settled["result"]["browser_observer"]["exact_session_state"] == "completed"
     assert Path(settled["output_path"]).read_text(encoding="utf-8") == "durable exact answer"
 
 
@@ -3108,6 +3110,54 @@ def test_stalled_exact_observation_retains_live_authority_and_project_lock(
     assert state["status"] == "running"
     assert state["session_authority"] == "live"
     assert state["terminal_harvested"] is False
+
+
+def test_terminal_recovery_reconciles_stale_running_browser_observer(tmp_path: Path) -> None:
+    runner = load_runner()
+    initial = execute_run(
+        runner,
+        manifest(tmp_path),
+        run_factory=version_runner,
+        popen_factory=popen_for(7, None, {}, []),
+    )
+    run_dir = Path(initial["run_dir"])
+    runner.STATE.update_state(
+        run_dir / "state.json",
+        status="running",
+        session_authority="live",
+        browser_observer={
+            "status": "running",
+            "timeout_seconds": 10_000,
+            "oracle_process_pid": 36252,
+            "timeout_is_terminal": False,
+        },
+    )
+
+    def completed_recovery(command, **kwargs):
+        candidate = Path(command[command.index("--write-output") + 1])
+        candidate.write_text("durable exact answer", encoding="utf-8")
+        kwargs["stdout"].write(b"State: completed\n")
+        kwargs["stdout"].flush()
+        return Process(0, [])
+
+    recovered = runner.recover_run(
+        run_dir,
+        action="harvest",
+        oracle_command=["oracle"],
+        popen_factory=completed_recovery,
+    )
+    observer = recovered["result"]["browser_observer"]
+
+    assert recovered["result"]["session_authority"] == "terminal"
+    assert recovered["result"]["terminal_harvested"] is True
+    assert observer == {
+        "status": "exact-recovery-terminal-harvested",
+        "timeout_seconds": 10_000,
+        "oracle_process_pid": 36252,
+        "timeout_is_terminal": False,
+        "recovery_action": "harvest",
+        "exact_session_state": "completed",
+    }
 
 
 def test_live_recovery_cli_defaults_to_eighty_minute_status_audit() -> None:

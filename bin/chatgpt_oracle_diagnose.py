@@ -114,6 +114,7 @@ def classify_run(
     stdout_text: str,
     has_output: bool,
     transcript_text: str = "",
+    output_text: str = "",
     user_confirmed_no_submission: bool = False,
     pre_submit_host_failure: dict[str, Any] | None = None,
 ) -> dict[str, str]:
@@ -156,14 +157,23 @@ def classify_run(
                 else "oracle-version-resolution-prelaunch-timeout"
             ),
         }
+    if lifecycle == "abandoned":
+        return {"bucket": ACTIVE, "signature": "explicitly-abandoned"}
+    if outcome in {"not_executed", "blocked"} and has_output:
+        evidence_text = "\n".join((stdout_text, transcript_text, output_text))
+        if "OAuth token request failed" in evidence_text and "503" in evidence_text:
+            signature = "registered-app-oauth-token-request-503"
+        else:
+            signature = (
+                "durable-output-reports-blocked"
+                if outcome == "blocked"
+                else "durable-output-reports-no-execution"
+            )
+        return {"bucket": TASK_NOT_EXECUTED, "signature": signature}
     if lifecycle == "complete":
         if source == "exact-terminal-evidence":
             return {"bucket": COMPLETE, "signature": "terminal-harvested-output"}
         return {"bucket": LEGACY_COMPLETE, "signature": "legacy-ledger-durable-output"}
-    if lifecycle == "abandoned":
-        return {"bucket": ACTIVE, "signature": "explicitly-abandoned"}
-    if outcome == "not_executed" and has_output:
-        return {"bucket": TASK_NOT_EXECUTED, "signature": "durable-output-reports-no-execution"}
     if user_confirmed_no_submission:
         return {
             "bucket": PRE_SUBMIT_UI,
@@ -221,17 +231,27 @@ def diagnose(state_root: Path | None = None) -> dict[str, Any]:
             stdout_text=_read_text(run_dir / "stdout.log"),
             has_output=_output_is_nonempty(output_path),
             transcript_text=_read_text(run_dir / "transcript.md"),
+            output_text=_read_text(output_path),
             user_confirmed_no_submission=(
                 STATE.proven_user_confirmed_no_submission(run_dir / "state.json") is not None
             ),
             pre_submit_host_failure=STATE.proven_pre_submit_host_failure(run_dir / "state.json"),
         )
+        observer = state.get("browser_observer") if isinstance(state.get("browser_observer"), dict) else {}
+        anomalies: list[str] = []
+        if (
+            state.get("terminal_harvested") is True
+            and str(state.get("session_authority") or "") == "terminal"
+            and str(observer.get("status") or "") in {"running", "live", "session_live"}
+        ):
+            anomalies.append("terminal-harvested-browser-observer-stale")
         runs.append({
             "run_dir": str(run_dir),
             "project_root": str(state.get("project_root") or ""),
             "status": str(state.get("status") or ""),
             "session_authority": str(state.get("session_authority") or ""),
             **verdict,
+            **({"anomalies": anomalies} if anomalies else {}),
         })
 
     counts = {bucket: 0 for bucket in BUCKETS}

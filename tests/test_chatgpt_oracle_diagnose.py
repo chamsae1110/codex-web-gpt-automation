@@ -214,6 +214,31 @@ def test_durable_terminal_run_is_complete_and_not_executed_is_separated(tmp_path
     assert [run["bucket"] for run in report["unresolved_runs"]] == ["terminal-task-not-executed"]
 
 
+def test_terminal_blocked_oauth_503_is_not_misreported_as_complete(tmp_path: Path) -> None:
+    module = load()
+    state_root = tmp_path / "oracle-state"
+    run_dir = write_run(
+        state_root,
+        "o" * 8,
+        status="attention_required",
+        output="@codex failed: OAuth token request failed 503\nTASK_OUTCOME: BLOCKED\n",
+        session_authority="terminal",
+        terminal_harvested=True,
+        task_outcome="blocked",
+    )
+    state_path = run_dir / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["browser_observer"] = {"status": "running", "oracle_process_pid": 36252}
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    report = module.diagnose(state_root)
+    verdict = report["unresolved_runs"][0]
+
+    assert verdict["bucket"] == "terminal-task-not-executed"
+    assert verdict["signature"] == "registered-app-oauth-token-request-503"
+    assert verdict["anomalies"] == ["terminal-harvested-browser-observer-stale"]
+
+
 def test_live_run_keeps_ownership_and_is_not_reported_as_failure(tmp_path: Path) -> None:
     module = load()
     state_root = tmp_path / "oracle-state"

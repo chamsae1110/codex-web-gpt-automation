@@ -996,6 +996,35 @@ def recovery_argv(command: Sequence[str], locator: str, action: str, output_path
     return argv
 
 
+def recovered_browser_observer(
+    state: dict[str, Any],
+    *,
+    action: str,
+    exact_session_state: str | None,
+    terminal_harvested: bool,
+) -> dict[str, Any]:
+    """Reconcile the host observer with stronger exact-session recovery evidence.
+
+    The original Oracle process can leave ``browser_observer.status=running``
+    after a later exact-slug recovery proves that the provider is terminal.
+    Preserve the original PID/timeout as diagnostic history, but never leave a
+    live observer label beside terminal-harvested authority.
+    """
+    prior = state.get("browser_observer")
+    observer = dict(prior) if isinstance(prior, dict) else {}
+    observer.update({
+        "status": (
+            "exact-recovery-terminal-harvested"
+            if terminal_harvested
+            else "exact-recovery-terminal-observed"
+        ),
+        "timeout_is_terminal": False,
+        "recovery_action": action,
+        "exact_session_state": exact_session_state,
+    })
+    return observer
+
+
 def _recover_run_locked(
     run_dir: Path,
     *,
@@ -1266,6 +1295,16 @@ def _recover_run_locked(
             exit_code=exit_code,
             session_authority=authority,
             conversation_url=observed_conversation_url,
+            browser_observer=(
+                recovered_browser_observer(
+                    state,
+                    action=action,
+                    exact_session_state=observed_session_state,
+                    terminal_harvested=False,
+                )
+                if authority == "terminal_observed"
+                else state.get("browser_observer")
+            ),
         )
         return {
             "ok": False,
@@ -1348,6 +1387,16 @@ def _recover_run_locked(
             else task_outcome
         ),
         conversation_url=observed_conversation_url,
+        browser_observer=(
+            recovered_browser_observer(
+                state,
+                action=action,
+                exact_session_state=observed_session_state,
+                terminal_harvested=harvested,
+            )
+            if observed_session_state in TERMINAL_SESSION_STATES
+            else state.get("browser_observer")
+        ),
     )
     if harvested:
         STATE.cleanup_owned_browser_temp(layout.browser_temp_path)
