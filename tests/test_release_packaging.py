@@ -175,6 +175,14 @@ def test_release_workflow_runs_focused_and_full_contract_checks() -> None:
     assert 'macos-14' in workflow
 
 
+def test_readme_release_badges_use_published_tags() -> None:
+    for name in ('README.md', 'README.en.md'):
+        text = (ROOT / name).read_text(encoding='utf-8')
+        assert '/releases/latest' in text
+        assert 'img.shields.io/github/v/tag/ventianima-lab/codex-web-gpt-automation' in text
+        assert 'img.shields.io/github/v/release/ventianima-lab/codex-web-gpt-automation' not in text
+
+
 def test_rebrand_keeps_legacy_plugin_id_but_updates_human_facing_names() -> None:
     plugin = json.loads(
         (ROOT / 'marketplace/plugins/codexpro-harness/.codex-plugin/plugin.json').read_text(encoding='utf-8')

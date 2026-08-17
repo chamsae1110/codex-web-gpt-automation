@@ -4,7 +4,7 @@
 
 <p align="center">
   <a href="https://github.com/ventianima-lab/codex-web-gpt-automation/actions/workflows/release-portability.yml"><img alt="CI" src="https://github.com/ventianima-lab/codex-web-gpt-automation/actions/workflows/release-portability.yml/badge.svg"></a>
-  <a href="https://github.com/ventianima-lab/codex-web-gpt-automation/releases"><img alt="Release" src="https://img.shields.io/github/v/release/ventianima-lab/codex-web-gpt-automation?display_name=tag&sort=semver"></a>
+  <a href="https://github.com/ventianima-lab/codex-web-gpt-automation/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/tag/ventianima-lab/codex-web-gpt-automation?sort=semver&label=release"></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/ventianima-lab/codex-web-gpt-automation"></a>
   <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS-334155">
   <img alt="Oracle" src="https://img.shields.io/badge/Oracle-0.17.1-8B5CF6">
@@ -23,6 +23,17 @@
 > This is a community project, not an official OpenAI product. The user must
 > complete ChatGPT sign-in, Developer Mode app registration, and DevSpace Owner
 > approval manually.
+
+## Start here
+
+| First install | Already installed | Troubleshooting | Contributing |
+|---|---|---|---|
+| [First-install guide](docs/FIRST_INSTALL.md) | Run `python doctor.py` | [Diagnostics and recovery](docs/README.md) | [Contribution guide](CONTRIBUTING.md) |
+
+Follow this order: install, register the exact DevSpace root, sign in to the
+dedicated Oracle browser, manually register the ChatGPT app as `codex`, then
+run an ordinary non-Pro connection probe. Before updating an existing install,
+read the [latest release notes](https://github.com/ventianima-lab/codex-web-gpt-automation/releases/latest).
 
 ## Why use it?
 

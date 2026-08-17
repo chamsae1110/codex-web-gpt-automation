@@ -1,5 +1,20 @@
 # 기술 변경 기록
 
+## 1.14.3 - GitHub 요청과 복구 경계 정비
+
+- 설치 오류 뒤 정상 rollback이 완료되면 WAL을 terminal 상태로 기록하고,
+  이미 backup 바이트로 복원된 항목은 재실행 때 멱등적으로 인정합니다. 실제
+  외부 수정이나 누락 파일은 계속 fail-closed로 차단합니다.
+- exact Oracle recovery가 provider terminal 결과를 수확했는데 로컬 observer만
+  `running`으로 남은 경우 동일 run의 terminal 증거로 정합화합니다. OAuth 503과
+  stale observer는 doctor가 별도 원인으로 분류합니다.
+- macOS Funnel LaunchAgent에 Homebrew 우선 PATH를 명시해 headless Tailscale
+  CLI를 안정적으로 선택하고 App Store GUI 번들 경로를 서비스 탐색에서 배제합니다.
+  이 수정은 PR #13의 핵심 제안을 현행 main에 맞춰 반영한 것입니다.
+- GitHub 메인 화면의 깨진 release badge를 tag 기반 badge로 교체하고, 첫 설치·
+  진단·기여 경로를 README 상단에서 바로 찾을 수 있게 재정렬했습니다. CI는
+  수동 `workflow_dispatch` 실행도 지원합니다.
+
 ## 1.14.2 - DevSpace 상주 복구
 
 - Windows DevSpace 부트스트랩을 로그인 시 한 번 실행하고 종료하는 방식에서

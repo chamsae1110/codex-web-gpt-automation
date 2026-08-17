@@ -4,7 +4,7 @@
 
 <p align="center">
   <a href="https://github.com/ventianima-lab/codex-web-gpt-automation/actions/workflows/release-portability.yml"><img alt="CI" src="https://github.com/ventianima-lab/codex-web-gpt-automation/actions/workflows/release-portability.yml/badge.svg"></a>
-  <a href="https://github.com/ventianima-lab/codex-web-gpt-automation/releases"><img alt="Release" src="https://img.shields.io/github/v/release/ventianima-lab/codex-web-gpt-automation?display_name=tag&sort=semver"></a>
+  <a href="https://github.com/ventianima-lab/codex-web-gpt-automation/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/tag/ventianima-lab/codex-web-gpt-automation?sort=semver&label=release"></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/ventianima-lab/codex-web-gpt-automation"></a>
   <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS-334155">
   <img alt="Oracle" src="https://img.shields.io/badge/Oracle-0.17.1-8B5CF6">
@@ -22,6 +22,17 @@
 > [!IMPORTANT]
 > 이 저장소는 커뮤니티 프로젝트이며 OpenAI의 공식 제품이 아닙니다. ChatGPT
 > 로그인, Developer Mode 앱 등록, DevSpace Owner 승인은 사용자가 직접 수행합니다.
+
+## 바로 시작하기
+
+| 처음 설치 | 이미 설치됨 | 문제 해결 | 기여하기 |
+|---|---|---|---|
+| [최초 설치 가이드](docs/FIRST_INSTALL.md) | `python doctor.py`로 현재 상태 확인 | [진단·복구 문서](docs/README.md) | [기여 가이드](CONTRIBUTING.md) |
+
+설치 → DevSpace exact root 등록 → Oracle 전용 브라우저 로그인 → ChatGPT 앱
+`codex` 수동 등록 → 일반 비-Pro 연결 검사 순서로 진행합니다. 기존 설치를
+업데이트할 때는 [최신 릴리스](https://github.com/ventianima-lab/codex-web-gpt-automation/releases/latest)의
+변경 기록을 먼저 확인하세요.
 
 ## 왜 이 도구를 쓰나요?
 
