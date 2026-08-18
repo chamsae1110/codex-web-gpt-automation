@@ -117,6 +117,7 @@ def classify_run(
     output_text: str = "",
     user_confirmed_no_submission: bool = False,
     pre_submit_host_failure: dict[str, Any] | None = None,
+    pre_submit_session_absence: dict[str, Any] | None = None,
 ) -> dict[str, str]:
     """Return the bucket and signature for one persisted run.
 
@@ -156,6 +157,16 @@ def classify_run(
                 if host_failure.get("failure_reason") == "compatibility-version-drift"
                 else "oracle-version-resolution-prelaunch-timeout"
             ),
+        }
+    if (
+        isinstance(pre_submit_session_absence, dict)
+        and pre_submit_session_absence.get("code") == "ORACLE_EXACT_SESSION_NOT_FOUND"
+        and pre_submit_session_absence.get("output_absent") is True
+        and pre_submit_session_absence.get("conversation_url_absent") is True
+    ):
+        return {
+            "bucket": PRE_SUBMIT_HOST,
+            "signature": "exact-session-absent-before-submit",
         }
     if lifecycle == "abandoned":
         return {"bucket": ACTIVE, "signature": "explicitly-abandoned"}
@@ -236,6 +247,9 @@ def diagnose(state_root: Path | None = None) -> dict[str, Any]:
                 STATE.proven_user_confirmed_no_submission(run_dir / "state.json") is not None
             ),
             pre_submit_host_failure=STATE.proven_pre_submit_host_failure(run_dir / "state.json"),
+            pre_submit_session_absence=STATE.proven_pre_submit_session_absence(
+                run_dir / "state.json"
+            ),
         )
         observer = state.get("browser_observer") if isinstance(state.get("browser_observer"), dict) else {}
         anomalies: list[str] = []

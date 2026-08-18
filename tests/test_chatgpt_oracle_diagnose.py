@@ -186,6 +186,30 @@ def test_settled_cdp_disconnect_before_prompt_submit_remains_retry_safe(tmp_path
     assert run["signature"] == "cdp-disconnected-before-prompt-submit"
 
 
+def test_proven_exact_session_absence_is_classified_as_pre_submit_host_failure() -> None:
+    module = load()
+    verdict = module.classify_run(
+        {
+            "status": "attention_required",
+            "session_authority": "pre_submit",
+            "transport_status": "not_submitted",
+            "task_outcome": "pending",
+        },
+        stdout_text="",
+        has_output=False,
+        pre_submit_session_absence={
+            "code": "ORACLE_EXACT_SESSION_NOT_FOUND",
+            "output_absent": True,
+            "conversation_url_absent": True,
+        },
+    )
+
+    assert verdict == {
+        "bucket": "pre-submit-host-environment",
+        "signature": "exact-session-absent-before-submit",
+    }
+
+
 def test_durable_terminal_run_is_complete_and_not_executed_is_separated(tmp_path: Path) -> None:
     module = load()
     state_root = tmp_path / "oracle-state"

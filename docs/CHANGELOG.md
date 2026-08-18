@@ -1,5 +1,15 @@
 # 기술 변경 기록
 
+## 1.14.4 - Oracle 미제출 정산 잠금 호환성
+
+- 사용자 확인으로 정산된 Pro attachment run은 정산 뒤 프로젝트의 비미션
+  첨부파일이 정상 변경돼도 당시 state와 해시 영수증에 결속된 원본 identity를
+  유지합니다. 미션·운송 사본·로그·복구 증거·출력·대화 URL·영수증이 달라지면
+  기존처럼 fail-closed로 잠금을 유지합니다.
+- pre-submit run의 exact Oracle session 부재는 복구 로그 바이트와 locator를
+  재검증한 경우에만 진단·incident packet에서 명시적으로 분류합니다. 검증된
+  미제출 run만 fresh run 안전 판정에 참여합니다.
+
 ## 1.14.3 - GitHub 요청과 복구 경계 정비
 
 - 설치 오류 뒤 정상 rollback이 완료되면 WAL을 terminal 상태로 기록하고,

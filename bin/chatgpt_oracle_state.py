@@ -1312,6 +1312,8 @@ def _settlement_logs_have_conversation_url(state_path: Path) -> bool:
 
 def _standalone_pro_attachment_no_submission_evidence(
     state_path: Path,
+    *,
+    allow_settled_attachment_source_drift: bool = False,
 ) -> dict[str, Any] | None:
     """Return bounded user-adjudication evidence for attachment upload timeout.
 
@@ -1445,28 +1447,44 @@ def _standalone_pro_attachment_no_submission_evidence(
         recorded_sha256 = str(item.get("sha256") or "")
         try:
             recorded_size = int(item.get("size_bytes"))
-            attachment_path = recorded_path.resolve(strict=True)
+            attachment_path = recorded_path.resolve(
+                strict=not allow_settled_attachment_source_drift
+            )
             if (
-                not attachment_path.is_file()
-                or attachment_path.is_symlink()
+                not recorded_path.is_absolute()
                 or not re.fullmatch(r"[a-f0-9]{64}", recorded_sha256)
                 or recorded_size < 0
             ):
                 return None
-            attachment_bytes = attachment_path.read_bytes()
         except (OSError, TypeError, ValueError):
             return None
         normalized_path = os.path.normcase(str(attachment_path))
         if normalized_path in seen_paths:
             return None
         seen_paths.add(normalized_path)
-        actual_sha256 = hashlib.sha256(attachment_bytes).hexdigest()
-        if actual_sha256 != recorded_sha256 or len(attachment_bytes) != recorded_size:
-            return None
         if attachment_path == source_path:
+            if not attachment_path.is_file() or attachment_path.is_symlink():
+                return None
             mission_attachment_found = (
                 recorded_sha256 == mission_sha256 and recorded_size == len(source_bytes)
             )
+            actual_sha256 = source_sha256
+        elif allow_settled_attachment_source_drift:
+            # A user-confirmed settlement binds the original attachment
+            # identity in both state.json and its hashed receipt.  Project
+            # support files may legitimately evolve later; re-reading those
+            # mutable paths would resurrect a false submitted_unknown owner.
+            actual_sha256 = recorded_sha256
+        else:
+            try:
+                if not attachment_path.is_file() or attachment_path.is_symlink():
+                    return None
+                attachment_bytes = attachment_path.read_bytes()
+            except OSError:
+                return None
+            actual_sha256 = hashlib.sha256(attachment_bytes).hexdigest()
+            if actual_sha256 != recorded_sha256 or len(attachment_bytes) != recorded_size:
+                return None
         attachment_evidence.append({
             "path": str(attachment_path),
             "sha256": actual_sha256,
@@ -1956,6 +1974,15 @@ def proven_user_confirmed_no_submission(state_path: Path) -> dict[str, Any] | No
     ):
         return None
     current = _user_confirmable_no_submission_evidence(state_path)
+    if (
+        current is None
+        and recorded.get("settlement_eligibility")
+        == "oracle-standalone-pro-attachment/v1"
+    ):
+        current = _standalone_pro_attachment_no_submission_evidence(
+            state_path,
+            allow_settled_attachment_source_drift=True,
+        )
     if current is None:
         return None
     for key in (
@@ -2922,6 +2949,59 @@ def settle_pre_submit_session_absent(
     })
     write_json_atomic(state_path, payload)
     return payload
+
+
+def proven_pre_submit_session_absence(state_path: Path) -> dict[str, Any] | None:
+    """Revalidate exact-session absence without granting post-submit authority."""
+    payload = load_state(state_path)
+    evidence = payload.get("pre_submit_session_absence")
+    if (
+        not isinstance(evidence, dict)
+        or str(payload.get("session_authority") or "") != "pre_submit"
+        or evidence.get("schema")
+        != "codex.chatgpt.oracle-pre-submit-session-absence/v1"
+        or evidence.get("code") != "ORACLE_EXACT_SESSION_NOT_FOUND"
+        or evidence.get("output_absent") is not True
+        or evidence.get("conversation_url_absent") is not True
+        or _state_has_conversation_url(payload)
+        or _settlement_logs_have_conversation_url(state_path)
+    ):
+        return None
+    artifacts = payload.get("artifacts") if isinstance(payload.get("artifacts"), dict) else {}
+    output = Path(str(artifacts.get("output") or ""))
+    if str(output) and output_is_nonempty(output):
+        return None
+    oracle = payload.get("oracle") if isinstance(payload.get("oracle"), dict) else {}
+    locator = str(evidence.get("oracle_locator") or "")
+    if (
+        not locator
+        or locator != str(oracle.get("session_locator") or "")
+        or locator != str(oracle.get("slug") or "")
+    ):
+        return None
+    expected_sha256 = str(evidence.get("recovery_sha256") or "")
+    if not re.fullmatch(r"[a-f0-9]{64}", expected_sha256):
+        return None
+    run_dir = state_path.parent
+    for recovery_stdout in sorted(run_dir.glob("recovery-*-stdout.log"), key=lambda item: item.name):
+        recovery_stderr = recovery_stdout.with_name(
+            recovery_stdout.name.replace("-stdout.log", "-stderr.log")
+        )
+        try:
+            if recovery_stdout.is_symlink() or recovery_stderr.is_symlink():
+                continue
+            combined = b"\n".join((recovery_stdout.read_bytes(), recovery_stderr.read_bytes()))
+            text = combined.decode("utf-8", errors="strict")
+        except (OSError, UnicodeDecodeError):
+            continue
+        matches = [match.group("locator") for match in ORACLE_NO_SESSION_RE.finditer(text)]
+        if hashlib.sha256(combined).hexdigest() == expected_sha256 and matches == [locator]:
+            return {
+                **evidence,
+                "recovery_stdout": str(recovery_stdout),
+                "recovery_stderr": str(recovery_stderr),
+            }
+    return None
 
 
 def resolve_lifecycle(state: dict[str, Any], *, output_is_present: bool | None = None) -> dict[str, Any]:

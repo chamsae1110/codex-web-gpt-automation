@@ -1788,6 +1788,13 @@ def test_recovery_no_session_keeps_pre_submit_authority_and_allows_fresh_attempt
     assert recovered["safe_for_fresh_run"] is True
     assert settled["session_authority"] == "pre_submit"
     assert settled["pre_submit_session_absence"]["oracle_locator"] == layout.slug
+    proof = runner.STATE.proven_pre_submit_session_absence(layout.state_path)
+    assert proof is not None
+    assert proof["code"] == "ORACLE_EXACT_SESSION_NOT_FOUND"
+    (layout.run_dir / "recovery-harvest-stderr.log").write_text(
+        "No session found with ID oracle-other-session.\n", encoding="utf-8"
+    )
+    assert runner.STATE.proven_pre_submit_session_absence(layout.state_path) is None
 
 
 def test_recovery_no_session_never_releases_submitted_unknown_run(tmp_path: Path) -> None:
@@ -2043,6 +2050,74 @@ def test_standalone_pro_attachment_upload_timeout_is_hash_bound_and_user_settled
     assert proof["source_mission_sha256"] == proof["transport_mission_sha256"]
     assert len(proof["attachment_evidence"]) == 2
     assert len(proof["attachment_manifest_sha256"]) == 64
+
+
+def test_settled_attachment_run_survives_later_non_mission_source_edits(tmp_path: Path) -> None:
+    runner = load_runner()
+    initial = execute_run(
+        runner,
+        pro_manifest(tmp_path, run_id="b" * 32),
+        run_factory=version_0171_runner,
+        popen_factory=attachment_upload_timeout_popen,
+    )
+    run_dir = Path(initial["run_dir"])
+    runner.recover_run(
+        run_dir,
+        action="harvest",
+        oracle_command=["oracle"],
+        popen_factory=recovery_binding_unavailable_popen,
+    )
+    runner.settle_user_confirmed_no_submission(
+        run_dir,
+        confirmation=runner.STATE.USER_CONFIRMED_NO_SUBMISSION,
+        reason="user inspected the exact ChatGPT history and confirmed no prompt or response",
+    )
+    state_path = run_dir / "state.json"
+    state = runner.STATE.load_state(state_path)
+
+    Path(state["attachments"][1]["path"]).write_text(
+        "later legitimate project policy edit", encoding="utf-8"
+    )
+
+    proof = runner.STATE.proven_user_confirmed_no_submission(state_path)
+    owners = runner.STATE.unresolved_project_sessions(run_dir.parent, tmp_path)
+
+    assert proof is not None
+    assert proof["attachment_evidence"] == json.loads(
+        (run_dir / "user-confirmed-no-submission.json").read_text(encoding="utf-8")
+    )["attachment_evidence"]
+    assert owners == []
+
+
+def test_settled_attachment_run_still_locks_when_bound_metadata_is_changed(tmp_path: Path) -> None:
+    runner = load_runner()
+    initial = execute_run(
+        runner,
+        pro_manifest(tmp_path, run_id="c" * 32),
+        run_factory=version_0171_runner,
+        popen_factory=attachment_upload_timeout_popen,
+    )
+    run_dir = Path(initial["run_dir"])
+    runner.recover_run(
+        run_dir,
+        action="harvest",
+        oracle_command=["oracle"],
+        popen_factory=recovery_binding_unavailable_popen,
+    )
+    runner.settle_user_confirmed_no_submission(
+        run_dir,
+        confirmation=runner.STATE.USER_CONFIRMED_NO_SUBMISSION,
+        reason="user inspected the exact ChatGPT history and confirmed no prompt or response",
+    )
+    state_path = run_dir / "state.json"
+    state = runner.STATE.load_state(state_path)
+    state["attachments"][1]["sha256"] = "0" * 64
+    runner.STATE.write_json_atomic(state_path, state)
+
+    assert runner.STATE.proven_user_confirmed_no_submission(state_path) is None
+    owners = runner.STATE.unresolved_project_sessions(run_dir.parent, tmp_path)
+    assert len(owners) == 1
+    assert owners[0]["session_authority"] == "submitted_unknown"
 
 
 @pytest.mark.parametrize(
