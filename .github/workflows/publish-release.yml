@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing annotated release tag to publish or repair"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -14,27 +20,36 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.tag || github.ref }}
           fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
       - name: Validate release metadata and annotated tag
+        id: release
+        env:
+          REQUESTED_TAG: ${{ inputs.tag }}
         shell: bash
         run: |
           set -euo pipefail
+          tag="${REQUESTED_TAG:-${GITHUB_REF_NAME}}"
           version="$(python -c 'import json; print(json.load(open("package.json", encoding="utf-8"))["version"])')"
-          test "${GITHUB_REF_NAME}" = "v${version}"
-          test "$(git cat-file -t "${GITHUB_REF_NAME}")" = "tag"
+          test "${tag}" = "v${version}"
+          git fetch --force origin "refs/tags/${tag}:refs/tags/${tag}"
+          test "$(git cat-file -t "refs/tags/${tag}")" = "tag"
+          test "$(git rev-parse HEAD)" = "$(git rev-list -n 1 "refs/tags/${tag}")"
           python scripts/check_docs.py --root .
+          echo "tag=${tag}" >> "${GITHUB_OUTPUT}"
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
         shell: bash
         run: |
           set -euo pipefail
-          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
-            echo "Release ${GITHUB_REF_NAME} already exists; leaving it unchanged."
+          if gh release view "${RELEASE_TAG}" >/dev/null 2>&1; then
+            echo "Release ${RELEASE_TAG} already exists; leaving it unchanged."
           else
-            gh release create "${GITHUB_REF_NAME}" --verify-tag --generate-notes --title "${GITHUB_REF_NAME}"
+            gh release create "${RELEASE_TAG}" --verify-tag --generate-notes --title "${RELEASE_TAG}"
           fi
-          test "$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${GITHUB_REF_NAME}" --jq .draft)" = "false"
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" --jq .draft)" = "false"

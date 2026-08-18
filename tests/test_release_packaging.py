@@ -178,12 +178,16 @@ def test_release_workflow_runs_focused_and_full_contract_checks() -> None:
 def test_tag_push_workflow_publishes_only_validated_annotated_release() -> None:
     workflow = (ROOT / '.github/workflows/publish-release.yml').read_text(encoding='utf-8')
     assert 'tags:' in workflow and '"v*"' in workflow
+    assert 'workflow_dispatch:' in workflow
+    assert 'ref: ${{ inputs.tag || github.ref }}' in workflow
     assert 'contents: write' in workflow
-    assert 'test "${GITHUB_REF_NAME}" = "v${version}"' in workflow
-    assert 'git cat-file -t "${GITHUB_REF_NAME}"' in workflow
+    assert 'test "${tag}" = "v${version}"' in workflow
+    assert 'git fetch --force origin "refs/tags/${tag}:refs/tags/${tag}"' in workflow
+    assert 'git cat-file -t "refs/tags/${tag}"' in workflow
+    assert 'git rev-parse HEAD' in workflow and 'git rev-list -n 1' in workflow
     assert 'scripts/check_docs.py --root .' in workflow
-    assert 'gh release create "${GITHUB_REF_NAME}" --verify-tag --generate-notes' in workflow
-    assert 'releases/tags/${GITHUB_REF_NAME}' in workflow
+    assert 'gh release create "${RELEASE_TAG}" --verify-tag --generate-notes' in workflow
+    assert 'releases/tags/${RELEASE_TAG}' in workflow
 
 
 def test_update_guard_never_confuses_version_bump_with_published_release() -> None:
