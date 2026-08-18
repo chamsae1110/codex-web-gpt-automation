@@ -20,6 +20,15 @@ contract-validate agbrowse for an old persisted run.
   release badge, and social-preview asset match the current product name.
 - Create an annotated `vMAJOR.MINOR.PATCH` tag and GitHub Release only after the
   exact commit passes both Windows and macOS CI. Never move a published tag.
+- A source version bump, commit, push, or successful branch CI is not a
+  published release. Push the annotated tag only after exact-commit CI passes;
+  the tag-push workflow must then validate the tag and create the GitHub
+  Release.
+- Before reporting completion, independently verify that the peeled remote tag
+  resolves to the exact release commit, the GitHub Release is non-draft, and
+  GitHub `releases/latest` returns the same tag. Also record the release workflow
+  run, lifecycle-install receipt, and source/install parity. Any missing gate is
+  `release incomplete`, not released.
 
 - Run `python scripts/check_portability.py --root .`, `python scripts/run_v4_contract_tests.py --focused`, `python scripts/run_v3_contract_tests.py`, and `python scripts/run_v4_contract_tests.py --full`.
 - Confirm `install-manifest.json` and `package.json` inventory every shipped runtime/schema file, the v4 runner, and both v7/v8 quiescent app-trace incident fixtures.

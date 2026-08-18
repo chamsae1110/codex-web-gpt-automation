@@ -38,7 +38,15 @@ must not be created until the exact commit passes both Windows and macOS CI.
 4. Commit and push public-safe source to `main`.
 5. Require successful Windows and macOS CI for that commit.
 6. Create the annotated tag and GitHub Release from the same commit.
-7. Verify the release badge and downloadable source archives.
+7. Let the tag-push publication workflow validate the annotated tag and create
+   the non-draft GitHub Release.
+8. Verify the peeled remote tag commit, GitHub Release tag,
+   `releases/latest`, release workflow, release badge, and downloadable source
+   archives independently.
+
+Changing the four source version fields completes only release preparation.
+Commit, push, or branch CI does not mean a release was published. If any
+publication verification is unavailable, report the release as incomplete.
 
 Do not reuse a published version. If release publication fails after a tag is
 public, correct the release metadata or publish the next patch; do not move the

@@ -33,8 +33,32 @@ preserve unrelated local customizations.
 5. Batch coherent edits, inspect the final diff once, run focused regression
    tests, then broader tests according to blast radius.
 6. Synchronize reusable GPT automation changes to the authoritative
-   `codexpro-automation` source, install the verified bytes, commit with a
+   `codex-web-gpt-automation` source, install the verified bytes, commit with a
    descriptive message, push public-safe changes, and check CI.
+
+## Release completion gate
+
+A version bump is only release metadata preparation. It is never evidence that
+GitHub publication completed.
+
+- Treat a change to `package.json`, either root version in
+  `package-lock.json`, `install-manifest.json`, or the newest changelog heading
+  as release-bearing work.
+- Before reporting a release complete, require successful Windows and macOS CI
+  for the exact release commit, then create and push the annotated
+  `vMAJOR.MINOR.PATCH` tag for that exact commit. The tag-push release workflow
+  must finish successfully and create a non-draft GitHub Release.
+- Verify all four identities independently: source metadata version, the
+  peeled remote tag commit, GitHub Release tag, and GitHub `releases/latest`.
+  They must
+  name the same version and exact commit. Also verify the lifecycle install
+  receipt and source/install byte parity for shipped files.
+- If the tag, release workflow, GitHub Release, latest-release pointer, exact CI,
+  receipt, or parity cannot be verified, report `release incomplete` with the
+  missing gate. Never call a version bump, commit, push, or successful branch CI
+  a published release.
+- Never move or recreate a published tag. Repair release metadata in place when
+  its tag is correct; otherwise publish a new patch version.
 
 ## Single repair owner
 
@@ -73,4 +97,6 @@ instead of the layer that failed.
 
 Report updated components, preserved customizations, focused and broad
 verification, installed/source synchronization, commit/push/CI state, rollback
-evidence, and any remaining risk.
+evidence, and any remaining risk. For release-bearing work, separately report
+the version, exact commit, remote annotated tag, GitHub Release URL,
+`releases/latest` result, release-workflow run, install receipt, and parity.

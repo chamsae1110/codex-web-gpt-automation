@@ -175,6 +175,29 @@ def test_release_workflow_runs_focused_and_full_contract_checks() -> None:
     assert 'macos-14' in workflow
 
 
+def test_tag_push_workflow_publishes_only_validated_annotated_release() -> None:
+    workflow = (ROOT / '.github/workflows/publish-release.yml').read_text(encoding='utf-8')
+    assert 'tags:' in workflow and '"v*"' in workflow
+    assert 'contents: write' in workflow
+    assert 'test "${GITHUB_REF_NAME}" = "v${version}"' in workflow
+    assert 'git cat-file -t "${GITHUB_REF_NAME}"' in workflow
+    assert 'scripts/check_docs.py --root .' in workflow
+    assert 'gh release create "${GITHUB_REF_NAME}" --verify-tag --generate-notes' in workflow
+    assert 'releases/tags/${GITHUB_REF_NAME}' in workflow
+
+
+def test_update_guard_never_confuses_version_bump_with_published_release() -> None:
+    skill = (ROOT / 'skills/mcp-update-guard/SKILL.md').read_text(encoding='utf-8')
+    checklist = (ROOT / 'docs/RELEASE_CHECKLIST.md').read_text(encoding='utf-8')
+    for text in (skill, checklist):
+        assert 'release incomplete' in text
+        assert 'releases/latest' in text
+        assert 'peeled remote tag' in text
+        assert 'source/install' in text
+    assert 'A version bump is only release metadata preparation' in skill
+    assert 'Never call a version bump, commit, push, or successful branch CI' in skill
+
+
 def test_readme_release_badges_use_published_tags() -> None:
     for name in ('README.md', 'README.en.md'):
         text = (ROOT / name).read_text(encoding='utf-8')

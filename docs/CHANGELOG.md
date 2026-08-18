@@ -2,6 +2,10 @@
 
 ## 1.14.4 - Oracle 미제출 정산 잠금 호환성
 
+- 버전 파일만 갱신하고 GitHub Release를 빠뜨리는 일을 막기 위해 annotated
+  `v*` 태그 push 시 버전·태그 형식을 검증하고 Release를 자동 발행합니다.
+  유지보수 스킬은 exact CI, peeled remote tag, `releases/latest`, 설치 영수증과
+  source/install parity를 모두 확인하기 전에는 발행 완료로 보고하지 않습니다.
 - 사용자 확인으로 정산된 Pro attachment run은 정산 뒤 프로젝트의 비미션
   첨부파일이 정상 변경돼도 당시 state와 해시 영수증에 결속된 원본 identity를
   유지합니다. 미션·운송 사본·로그·복구 증거·출력·대화 URL·영수증이 달라지면
