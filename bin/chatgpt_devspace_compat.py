@@ -14,6 +14,11 @@ from typing import Any, Sequence
 SUPPORTED_VERSION = "1.0.4"
 CREATE_NO_WINDOW = 0x08000000
 PATCHES = {
+    "dist/oauth-provider.js": {
+        "patch": "oauth-refresh-replay.patch",
+        "pristine": "90ff3fd116735e98af5751de1065538964f6eaae913171223e8e19337b9831b8",
+        "patched": "51376673f3def7a3dc05884a409ef52b1ae8580510ba9de86d0b4014b3cd6239",
+    },
     "dist/server.js": {
         "patch": "directory-read.patch",
         "pristine": "c49c1c607b42e040cdf0b15d5a4a93cfef9ddb8147d492a3cfa2a8c3889dab24",
@@ -136,6 +141,107 @@ def check_native_runtime(
             )
         checked.append(str(root))
     return {"ok": True, "status": "loadable", "version": SUPPORTED_VERSION, "package_roots": checked}
+
+
+def check_oauth_refresh_replay(
+    *,
+    package_root: Path,
+    runner: Any = subprocess.run,
+) -> dict[str, Any]:
+    """Exercise the bounded refresh-token replay grace against an isolated database."""
+    root = package_root.expanduser().resolve(strict=True)
+    node = shutil.which("node")
+    if not node:
+        raise DevSpaceCompatError("DEVSPACE_NODE_MISSING", "Node.js is required for DevSpace")
+    source = r"""
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { SingleUserOAuthProvider } from "./dist/oauth-provider.js";
+const state = fs.mkdtempSync(path.join(os.tmpdir(), "codex-devspace-oauth-replay-"));
+let provider;
+try {
+  const resource = new URL("https://example.test/mcp");
+  provider = new SingleUserOAuthProvider({
+    ownerToken: "synthetic-test-only",
+    accessTokenTtlSeconds: 60,
+    refreshTokenTtlSeconds: 600,
+    scopes: ["devspace", "offline_access"],
+    allowedRedirectHosts: ["chatgpt.com"],
+  }, resource, state);
+  const client = await provider.clientsStore.registerClient({
+    redirect_uris: ["https://chatgpt.com/connector/oauth/callback"],
+    client_name: "Codex synthetic replay check",
+  });
+  const seed = provider.issueTokens(client.client_id, ["devspace"], resource);
+  const first = await provider.exchangeRefreshToken(client, seed.refresh_token);
+  const replay = await provider.exchangeRefreshToken(client, seed.refresh_token);
+  assert.deepEqual(replay, first);
+  await assert.rejects(() => provider.exchangeRefreshToken(
+    { ...client, client_id: "wrong-client" }, seed.refresh_token));
+  await assert.rejects(() => provider.exchangeRefreshToken(
+    client, seed.refresh_token, ["offline_access"]));
+  await assert.rejects(() => provider.exchangeRefreshToken(
+    client, seed.refresh_token, undefined, new URL("https://other.test/mcp")));
+  await provider.verifyAccessToken(first.access_token);
+  await provider.revokeToken(client, { token: first.refresh_token });
+  await assert.rejects(() => provider.exchangeRefreshToken(client, seed.refresh_token));
+  const secondSeed = provider.issueTokens(client.client_id, ["devspace"], resource);
+  await provider.exchangeRefreshToken(client, secondSeed.refresh_token);
+  for (const value of provider.refreshReplays.values()) value.expiresAtMs = 0;
+  await assert.rejects(() => provider.exchangeRefreshToken(client, secondSeed.refresh_token));
+  console.log(JSON.stringify({
+    ok: true,
+    replayed_same_pair: true,
+    mismatch_rejected: true,
+    revoke_invalidated: true,
+    expired_rejected: true,
+  }));
+} finally {
+  if (provider) provider.close();
+  fs.rmSync(state, { recursive: true, force: true });
+}
+"""
+    completed = runner(
+        [node, "--input-type=module", "-e", source],
+        cwd=str(root),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+        timeout=30,
+        **_git_kwargs(),
+    )
+    if completed.returncode != 0:
+        raise DevSpaceCompatError(
+            "DEVSPACE_OAUTH_REFRESH_REPLAY_CHECK_FAILED",
+            "DevSpace OAuth refresh replay compatibility check failed",
+            {"root": str(root), "stderr": (completed.stderr or "").strip()[-1200:]},
+        )
+    try:
+        result = json.loads((completed.stdout or "").strip())
+    except json.JSONDecodeError as exc:
+        raise DevSpaceCompatError(
+            "DEVSPACE_OAUTH_REFRESH_REPLAY_CHECK_INVALID",
+            "DevSpace OAuth refresh replay check did not return valid JSON",
+            {"root": str(root)},
+        ) from exc
+    expected = {
+        "ok": True,
+        "replayed_same_pair": True,
+        "mismatch_rejected": True,
+        "revoke_invalidated": True,
+        "expired_rejected": True,
+    }
+    if result != expected:
+        raise DevSpaceCompatError(
+            "DEVSPACE_OAUTH_REFRESH_REPLAY_CHECK_INCOMPLETE",
+            "DevSpace OAuth refresh replay check did not prove every safety boundary",
+            {"root": str(root), "result": result},
+        )
+    return {**result, "root": str(root), "status": "bounded-replay-verified"}
 
 
 def patch_root() -> Path:
@@ -375,6 +481,7 @@ def ensure_devspace_compatibility(
     )
     changed: list[str] = []
     already: list[str] = []
+    oauth_checks: list[dict[str, Any]] = []
     for root in roots:
         if package_version(root) != SUPPORTED_VERSION:
             raise DevSpaceCompatError(
@@ -412,6 +519,8 @@ def ensure_devspace_compatibility(
                     {"path": str(target), "actual": actual, "expected": contract["patched"]},
                 )
             changed.append(item)
+        if "dist/oauth-provider.js" in PATCHES:
+            oauth_checks.append(check_oauth_refresh_replay(package_root=root))
     marker = restart_marker_path()
     if changed:
         marker = _write_restart_marker(roots)
@@ -421,6 +530,7 @@ def ensure_devspace_compatibility(
         "package_roots": [str(root) for root in roots],
         "changed": changed,
         "already_patched": already,
+        "oauth_refresh_replay_checks": oauth_checks,
         "service_restart_required": marker.is_file(),
         "restart_marker": str(marker),
     }
@@ -504,12 +614,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Apply the exact DevSpace 1.0.4 bounded workspace discovery patch."
+        description=(
+            "Apply the exact DevSpace 1.0.4 bounded workspace and OAuth refresh "
+            "compatibility patches."
+        )
     )
     parser.add_argument("--package-root", type=Path)
     parser.add_argument("--confirm-service-restarted", action="store_true")
     parser.add_argument("--stop-exact-service", action="store_true")
     parser.add_argument("--check-native-runtime", action="store_true")
+    parser.add_argument("--check-oauth-refresh-replay", action="store_true")
     parser.add_argument("--allow-package-absent", action="store_true")
     parser.add_argument("--local-port", type=int, default=7676)
     args = parser.parse_args(argv)
@@ -518,6 +632,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.confirm_service_restarted,
             args.stop_exact_service,
             args.check_native_runtime,
+            args.check_oauth_refresh_replay,
         ))
         if selected > 1:
             raise DevSpaceCompatError(
@@ -529,6 +644,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 package_root=args.package_root,
                 allow_package_absent=args.allow_package_absent,
             )
+        elif args.check_oauth_refresh_replay:
+            roots = (
+                [args.package_root.expanduser().resolve(strict=True)]
+                if args.package_root is not None
+                else resolve_package_roots()
+            )
+            result = {
+                "ok": True,
+                "version": SUPPORTED_VERSION,
+                "checks": [check_oauth_refresh_replay(package_root=root) for root in roots],
+            }
         elif args.confirm_service_restarted:
             result = confirm_service_restarted(
                 package_root=args.package_root,

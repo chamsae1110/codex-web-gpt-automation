@@ -99,6 +99,16 @@ small directory listing. Codex Desktop's built-in `DevSpace` plugin is a
 different connector; its tools cannot prove that the manually registered
 ChatGPT app works. A Pro submission must never be the first connectivity test.
 
+For a terminal `OAuth token request failed 503` that begins only when a
+previously working long run reaches access-token expiry, run the exact
+DevSpace compatibility helper before changing any credential or ChatGPT app
+setting. Its 1.0.4 contract hash-gates a short, client/scope/resource-bound
+refresh replay grace and exercises it against an isolated SQLite database.
+Preserve the real OAuth database, roots, Owner credential, and Funnel; restart
+only the exact managed service once, then require a regular non-Pro exact-root
+read plus no-op command canary. Expired, revoked, mismatched, or unverified
+replay remains fail-closed, and Pro stays blocked until the canary succeeds.
+
 Before the first DevSpace-backed Oracle question for a new project, the Oracle
 runner checks that the normalized exact project root is present in the local
 `allowedRoots`. Parent, child, and similarly named roots do not qualify. A

@@ -1,5 +1,19 @@
 # 기술 변경 기록
 
+## 1.14.6 - DevSpace OAuth 장시간 세션 안정화
+
+- DevSpace 1.0.4의 회전형 refresh token을 여러 도구 호출이 동시에 갱신할
+  때 한 요청만 성공하고 나머지가 `OAuth token request failed 503`으로
+  끊기는 경쟁을 보완했습니다. 이미 소비된 token을 영구 재허용하지 않고,
+  동일 client·scope·resource 요청에만 30초 동안 같은 회전 결과를 최대 32개
+  메모리에서 재생합니다. 만료·불일치·revoke는 계속 fail-closed입니다.
+- 호환 패치는 upstream 버전과 pristine/patched SHA-256으로 고정되며, 실제
+  DevSpace 모듈과 격리 SQLite DB를 사용하는 무네트워크 replay/revoke/expiry
+  검사까지 통과해야 Oracle 실행 전 호환성 확인이 성공합니다.
+- 장애 복구 뒤에는 config·OAuth DB·ChatGPT 앱 설정을 변경하지 않고 관리
+  서비스만 한 번 재기동한 뒤 regular non-Pro canary로 exact root의 읽기와
+  no-op 명령 반환을 검증합니다. Pro는 이 canary가 성공하기 전까지 막습니다.
+
 ## 1.14.5 - DevSpace exact-root 응답 경로 보강
 
 - Oracle의 regular·Pro DevSpace composer가 미션 경로보다 먼저 exact project

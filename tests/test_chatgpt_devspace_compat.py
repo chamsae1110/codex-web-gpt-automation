@@ -51,6 +51,41 @@ def test_native_runtime_probe_loads_exact_binding_and_fails_actionably(tmp_path:
     assert "install-scripts" in failure.value.evidence["next_action"]
 
 
+def test_oauth_refresh_replay_probe_is_isolated_and_fail_closed(tmp_path: Path) -> None:
+    compat = load_compat()
+    package = tmp_path / "devspace"
+    package.mkdir()
+    calls: list[tuple[list[str], dict]] = []
+    expected = {
+        "ok": True,
+        "replayed_same_pair": True,
+        "mismatch_rejected": True,
+        "revoke_invalidated": True,
+        "expired_rejected": True,
+    }
+
+    def passing(argv, **kwargs):
+        calls.append((list(argv), dict(kwargs)))
+        return SimpleNamespace(returncode=0, stdout=json.dumps(expected), stderr="")
+
+    report = compat.check_oauth_refresh_replay(package_root=package, runner=passing)
+    assert report["status"] == "bounded-replay-verified"
+    assert calls[0][1]["cwd"] == str(package.resolve())
+    source = calls[0][0][-1]
+    assert "fs.mkdtempSync" in source
+    assert "fs.rmSync(state" in source
+    assert "wrong-client" in source
+    assert "other.test" in source
+    assert "refresh_token" not in calls[0][1]
+
+    def failing(argv, **kwargs):
+        return SimpleNamespace(returncode=1, stdout="", stderr="synthetic failure")
+
+    with pytest.raises(compat.DevSpaceCompatError) as failure:
+        compat.check_oauth_refresh_replay(package_root=package, runner=failing)
+    assert failure.value.code == "DEVSPACE_OAUTH_REFRESH_REPLAY_CHECK_FAILED"
+
+
 def test_exact_devspace_patch_is_hash_gated_idempotent_and_backed_up(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -282,6 +317,29 @@ def test_bounded_workspace_patch_skips_transient_trees_and_batches_discovery() -
     assert '".venv"' in patch
     assert "const batchSize = 24" in patch
     assert "await Promise.all(batch.map" in patch
+
+
+def test_oauth_refresh_patch_is_hash_gated_bounded_and_revocation_aware() -> None:
+    compat = load_compat()
+    patch = (
+        MODULE_PATH.parent
+        / "devspace-compat"
+        / compat.SUPPORTED_VERSION
+        / "oauth-refresh-replay.patch"
+    ).read_text(encoding="utf-8")
+
+    assert compat.PATCHES["dist/oauth-provider.js"] == {
+        "patch": "oauth-refresh-replay.patch",
+        "pristine": "90ff3fd116735e98af5751de1065538964f6eaae913171223e8e19337b9831b8",
+        "patched": "51376673f3def7a3dc05884a409ef52b1ae8580510ba9de86d0b4014b3cd6239",
+    }
+    assert "const REFRESH_REPLAY_GRACE_MS = 30 * 1000;" in patch
+    assert "const MAX_REFRESH_REPLAYS = 32;" in patch
+    assert "replay.clientId === client.client_id" in patch
+    assert "sameStringSet(requestedScopes, replay.scopes)" in patch
+    assert "requestedResource === replay.resource" in patch
+    assert "hashToken(replay.tokens.refresh_token) === hashed" in patch
+    assert "this.refreshReplays.clear();" in patch
 
 
 def test_directory_read_patch_routes_directories_without_widening_read_access() -> None:

@@ -108,6 +108,17 @@ mission. Repair of that external binding requires the one manual reconnect
 already described above, followed by one regular non-Pro probe; Pro remains
 blocked until that exact registered-app probe succeeds.
 
+When a previously healthy long-running session fails only as its access token
+expires, the managed DevSpace 1.0.4 compatibility layer also checks a bounded
+server-side refresh replay grace. It returns the same rotated pair only for an
+identical client, scope, and resource during a 30-second window, keeps at most
+32 entries in memory, and rejects expiry, mismatch, or revocation. This avoids
+parallel tool calls losing a rotated refresh token without making old tokens
+durably reusable. Apply the hash-gated compatibility update, recycle only the
+exact managed service once, and prove the registered app with a regular
+non-Pro read plus no-op command canary. Do not delete OAuth state or reconnect
+the app merely to exercise this repair.
+
 ## Idempotent service/Funnel recovery
 
 After a DevSpace or Tailscale restart, restore only the already-approved public
