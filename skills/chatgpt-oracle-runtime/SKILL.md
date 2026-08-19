@@ -95,6 +95,12 @@ python skills/chatgpt-oracle-runtime/scripts/run_chatgpt_oracle.py recover --run
 ```
 
 Use `--action live` only to keep following the same stored session. A successful recovery must write a nonempty stored `output.md`, update `state.json` to `complete`, and refresh `transcript.md`; exit code zero without output is `attention_required`.
+Exact recovery is serialized by an exact-run mutex rather than re-entering the
+project submission mutex. This lets the same slug harvest a provider-terminal
+answer when a disconnected original observer still holds the submission mutex;
+the unresolved run state continues to block every fresh submission until the
+durable terminal artifact is committed. Recovery never stops or replaces a
+live/uncertain provider session merely to acquire a lock.
 The CLI keeps `--action live` bound to the same exact slug. At each 80-minute
 caution interval it records a status audit and, if the observer process must
 return while the session is still live, automatically opens another live

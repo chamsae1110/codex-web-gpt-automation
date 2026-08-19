@@ -862,6 +862,27 @@ def execute_run(
             STATE.cleanup_owned_browser_temp(layout.browser_temp_path)
         return {"ok": False, "run_dir": str(layout.run_dir), "result": STATE.update_state(layout.state_path, status="failed")}
     STATE.write_transcript(layout)
+    # Exact recovery is allowed to finish under its own run-scoped mutex while
+    # this original observer still owns the submission mutex.  If recovery won
+    # that race, the stale observer must not overwrite durable terminal state
+    # when its child process eventually exits.
+    latest_after_wait = STATE.load_state(layout.state_path)
+    latest_output = Path(str(latest_after_wait.get("artifacts", {}).get("output") or layout.output_path))
+    if (
+        latest_after_wait.get("status") == "complete"
+        and latest_after_wait.get("session_authority") == "terminal"
+        and latest_after_wait.get("terminal_harvested") is True
+        and STATE.output_is_nonempty(latest_output)
+    ):
+        STATE.cleanup_owned_browser_temp(layout.browser_temp_path)
+        return {
+            "ok": True,
+            "status": "complete",
+            "run_dir": str(layout.run_dir),
+            "result": latest_after_wait,
+            "output_path": str(latest_output),
+            "monotonic_race_preserved": True,
+        }
     pre_submit_failure = STATE.settle_proven_pre_submit_failure(layout.state_path)
     if pre_submit_failure is not None:
         STATE.cleanup_owned_browser_temp(layout.browser_temp_path)
@@ -1673,13 +1694,14 @@ def recover_run(
             "stored parallel parent id is invalid",
             {"parallel_parent_id": parallel_parent_id},
         )
-    mutex_root = (
-        project_root / ".oracle-parallel-submit" / parallel_parent_id
-        if parallel_parent_id
-        else project_root
-    )
-    with STATE.project_submit_mutex(
-        mutex_root,
+    # Recovery is an exact-slug, prompt-free write to one persisted run.  Do
+    # not re-enter the project submit mutex: the original browser observer may
+    # still own it after a recoverable CDP disconnect even though the bound
+    # provider conversation is already terminal.  A run-scoped mutex prevents
+    # competing harvesters, while unresolved_project_sessions keeps every new
+    # submission fail-closed until durable terminal recovery completes.
+    with STATE.exact_run_recovery_mutex(
+        directory,
         timeout_seconds=30,
         platform_name=platform_name,
     ):

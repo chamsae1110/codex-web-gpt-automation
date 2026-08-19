@@ -3222,6 +3222,12 @@ def submit_mutex_name(project_root: Path) -> str:
     return f"Local\\codexpro-oracle-submit-{digest}"
 
 
+def recovery_mutex_name(run_dir: Path) -> str:
+    """Return a mutex name scoped to one immutable Oracle run directory."""
+    digest = hashlib.sha256(str(run_dir).casefold().encode("utf-8")).hexdigest()[:32]
+    return f"Local\\codexpro-oracle-recovery-{digest}"
+
+
 class WindowsSubmitMutex(AbstractContextManager["WindowsSubmitMutex"]):
     def __init__(self, name: str, timeout_seconds: float):
         self.name, self.timeout_seconds, self.handle, self.acquired = name, timeout_seconds, None, False
@@ -3310,6 +3316,26 @@ def project_submit_mutex(
     platform_name: str | None = None,
 ) -> AbstractContextManager[Any]:
     name = submit_mutex_name(project_root)
+    platform = os.name if platform_name is None else platform_name
+    if platform == "nt":
+        return WindowsSubmitMutex(name, timeout_seconds)
+    return FileSubmitMutex(name, timeout_seconds)
+
+
+def exact_run_recovery_mutex(
+    run_dir: Path,
+    *,
+    timeout_seconds: float,
+    platform_name: str | None = None,
+) -> AbstractContextManager[Any]:
+    """Serialize recovery writers without re-entering the submission mutex.
+
+    Recovery commands are prompt-free and bound to one persisted run/slug.  A
+    stale original observer can legitimately keep the project submission mutex
+    while the provider has already become terminal, so exact recovery needs its
+    own lock.  The unresolved run state continues to block every fresh submit.
+    """
+    name = recovery_mutex_name(run_dir)
     platform = os.name if platform_name is None else platform_name
     if platform == "nt":
         return WindowsSubmitMutex(name, timeout_seconds)

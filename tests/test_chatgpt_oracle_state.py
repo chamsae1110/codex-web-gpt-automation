@@ -302,6 +302,19 @@ def test_nonempty_output_mutex_and_windows_flags(tmp_path: Path) -> None:
     assert state.windows_subprocess_kwargs(platform_name="nt")["creationflags"] & state.CREATE_NO_WINDOW
 
 
+def test_exact_recovery_mutex_is_distinct_from_project_submit_mutex(tmp_path: Path) -> None:
+    state = load_state()
+    project_root = tmp_path / "project"
+    run_dir = tmp_path / "state" / "runs" / ("a" * 32)
+
+    submit_name = state.submit_mutex_name(project_root)
+    recovery_name = state.recovery_mutex_name(run_dir)
+
+    assert submit_name.startswith("Local\\codexpro-oracle-submit-")
+    assert recovery_name.startswith("Local\\codexpro-oracle-recovery-")
+    assert recovery_name != submit_name
+
+
 def test_run_owned_browser_temp_is_removed_and_prior_boot_orphans_are_swept(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

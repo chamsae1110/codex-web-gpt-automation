@@ -1117,6 +1117,59 @@ def test_status_audit_race_accepts_a_process_that_already_exited(
     assert result["result"]["browser_observer"]["status"] == "process-exited"
 
 
+def test_original_observer_exit_cannot_overwrite_concurrent_exact_harvest(
+    tmp_path: Path,
+) -> None:
+    runner = load_runner()
+
+    class StaleObserverProcess:
+        pid = 4545
+
+        def __init__(self, output_path: Path):
+            self.output_path = output_path
+
+        def wait(self, timeout=None):
+            self.output_path.write_text(
+                "durable exact answer\nTASK_OUTCOME: EXECUTED\n",
+                encoding="utf-8",
+            )
+            state_path = self.output_path.parent / "state.json"
+            runner.STATE.update_state(
+                state_path,
+                status="complete",
+                exit_code=0,
+                session_authority="terminal",
+                terminal_harvested=True,
+                artifact_sha256=runner.STATE.sha256_file(self.output_path),
+                transport_status="complete",
+                task_outcome="executed",
+                task_outcome_reason="explicit-output-marker",
+            )
+            return 7
+
+    def stale_popen(command, **kwargs):
+        output_path = Path(command[command.index("--write-output") + 1])
+        return StaleObserverProcess(output_path)
+
+    result = execute_run(
+        runner,
+        manifest(
+            tmp_path,
+            run_id="6" * 32,
+            task_outcome_contract="v1",
+        ),
+        run_factory=version_runner,
+        popen_factory=stale_popen,
+    )
+
+    assert result["ok"] is True
+    assert result["status"] == "complete"
+    assert result["monotonic_race_preserved"] is True
+    assert result["result"]["session_authority"] == "terminal"
+    assert result["result"]["terminal_harvested"] is True
+    assert result["result"]["task_outcome"] == "executed"
+
+
 def test_pro_recovery_uses_exact_slug_without_attachments_or_resubmit(tmp_path: Path) -> None:
     runner = load_runner()
     result = execute_run(
@@ -3413,22 +3466,29 @@ def test_recovery_never_downgrades_durable_complete(tmp_path: Path) -> None:
     assert calls == []
 
 
-def test_parallel_recovery_reuses_the_parent_scoped_submit_mutex(tmp_path: Path) -> None:
+def test_parallel_recovery_uses_exact_run_mutex_without_reentering_submit_mutex(tmp_path: Path) -> None:
     runner = load_runner()
     parent_id = "a" * 32
-    roots: list[Path] = []
+    submit_roots: list[Path] = []
+    recovery_roots: list[Path] = []
 
     class Mutex:
         def __init__(self, root: Path):
             self.root = root
 
         def __enter__(self):
-            roots.append(self.root)
+            submit_roots.append(self.root)
 
         def __exit__(self, *args):
             return None
 
     runner.STATE.project_submit_mutex = lambda root, **kwargs: Mutex(root)
+
+    class RecoveryMutex(Mutex):
+        def __enter__(self):
+            recovery_roots.append(self.root)
+
+    runner.STATE.exact_run_recovery_mutex = lambda root, **kwargs: RecoveryMutex(root)
     result = execute_run(
         runner,
         manifest(tmp_path, parallel_parent_id=parent_id),
@@ -3439,4 +3499,53 @@ def test_parallel_recovery_reuses_the_parent_scoped_submit_mutex(tmp_path: Path)
     expected = tmp_path.resolve() / ".oracle-parallel-submit" / parent_id
     assert result["result"]["status"] == "attention_required"
     assert recovered["status"] == "dry-run"
-    assert roots == [expected, expected]
+    assert submit_roots == [expected]
+    assert recovery_roots == [Path(result["run_dir"]).resolve()]
+
+
+def test_exact_recovery_bypasses_live_submit_mutex_and_harvests_same_slug(tmp_path: Path) -> None:
+    runner = load_runner()
+    initial = execute_run(
+        runner,
+        manifest(tmp_path),
+        run_factory=version_runner,
+        popen_factory=popen_for(7, None, {}, []),
+    )
+    run_dir = Path(initial["run_dir"])
+
+    def forbidden_submit_mutex(*args, **kwargs):
+        raise AssertionError("exact recovery must not wait on the project submit mutex")
+
+    class RecoveryMutex:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+    runner.STATE.project_submit_mutex = forbidden_submit_mutex
+    runner.STATE.exact_run_recovery_mutex = lambda root, **kwargs: RecoveryMutex()
+
+    def completed_recovery(command, **kwargs):
+        candidate = Path(command[command.index("--write-output") + 1])
+        candidate.write_text("durable exact answer", encoding="utf-8")
+        kwargs["stdout"].write(
+            b"State: completed\nURL: https://chatgpt.com/c/exact-stale-observer\n"
+        )
+        kwargs["stdout"].flush()
+        return Process(0, [])
+
+    recovered = runner.recover_run(
+        run_dir,
+        action="harvest",
+        oracle_command=["oracle"],
+        popen_factory=completed_recovery,
+    )
+
+    assert recovered["ok"] is True
+    assert recovered["status"] == "complete"
+    assert recovered["result"]["session_authority"] == "terminal"
+    assert recovered["result"]["terminal_harvested"] is True
+    assert recovered["result"]["oracle"]["conversation_url"] == (
+        "https://chatgpt.com/c/exact-stale-observer"
+    )

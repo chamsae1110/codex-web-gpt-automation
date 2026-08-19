@@ -50,6 +50,10 @@ pre-submit -> submitted/unknown -> live -> terminal -> harvested
 Authority is monotonic. A post-submit timeout never creates a replacement run;
 recovery uses the persisted Oracle slug and conversation URL. A proven
 pre-submit failure can be settled only through its supported evidence path.
+Exact recovery uses a run-scoped mutex, not the project submission mutex. This
+allows a prompt-free harvest of the same slug when a disconnected original
+observer still owns the project mutex, while unresolved state continues to
+block every fresh submission until terminal output is durably committed.
 
 The 80-minute mark is a caution/status-audit threshold, not a deadline. The
 host records exact-run liveness and artifact/terminal evidence and continues

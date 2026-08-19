@@ -1,5 +1,16 @@
 # 기술 변경 기록
 
+## 1.14.7 - Oracle stale observer exact recovery
+
+- CDP가 끊긴 원래 Oracle observer가 프로젝트 submission mutex를 계속 보유해도
+  동일 run/slug의 prompt 없는 `live`/`harvest` 복구는 exact-run 전용 mutex로
+  직렬화됩니다. unresolved run 상태가 새 제출을 계속 차단하므로 중복 prompt를
+  허용하지 않으면서 provider-terminal 응답을 안전하게 수확할 수 있습니다.
+- exact recovery가 프로젝트 mutex를 다시 기다리지 않는 회귀 테스트와 동시
+  recovery writer 직렬화 경계를 추가했습니다. 기존 terminal authority의 단조성,
+  exact URL/slug 결속, output/transcript 원자 저장 규칙은 그대로 유지합니다.
+  늦게 종료된 원래 observer도 이미 수확된 terminal state를 덮어쓰지 못합니다.
+
 ## 1.14.6 - DevSpace OAuth 장시간 세션 안정화
 
 - DevSpace 1.0.4의 회전형 refresh token을 여러 도구 호출이 동시에 갱신할
