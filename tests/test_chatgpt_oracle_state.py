@@ -96,9 +96,14 @@ def test_prompt_is_plain_app_plus_absolute_mission_instruction(tmp_path: Path) -
     mission.write_text("work", encoding="utf-8")
     config = state.load_manifest(manifest(tmp_path, mission.resolve()))
     prompt = state.composer_prompt(config)
-    assert prompt.startswith(f"@DevSpace {mission.resolve()} 파일을 읽고 끝까지 수행하세요.")
+    assert prompt.startswith(
+        f"@DevSpace 먼저 정확한 프로젝트 루트 {tmp_path.resolve()}를 checkout 모드로 여세요."
+    )
+    assert f"그 다음 미션 파일 {mission.resolve()}를 읽고 끝까지 수행" in prompt
+    assert "미션 디렉터리·상위·하위·현재 활성 작업공간을 대신 열지 마세요" in prompt
+    assert prompt.index(str(tmp_path.resolve())) < prompt.index(str(mission.resolve()))
     assert "동일한 정확한 루트만 한 번 재시도" in prompt
-    assert "상위·하위·현재 활성 작업공간이나 셸 경계 우회" in prompt
+    assert "셸 경계 우회로 대체하지 마세요" in prompt
     assert "\n" not in prompt
 
 
@@ -161,9 +166,12 @@ def test_pro_devspace_manifest_is_write_capable_and_stays_inside_project(tmp_pat
     assert state.is_devspace_transport(config.transport)
     assert config.attachments == ()
     assert state.composer_prompt(config).startswith(
-        f"@DevSpace Read and execute the mission file: {mission.resolve()}."
+        f"@DevSpace First open exactly this project root in checkout mode: {tmp_path.resolve()}."
     )
     prompt = state.composer_prompt(config)
+    assert f"Then read and execute the mission file: {mission.resolve()}." in prompt
+    assert "Do not open the mission directory, a parent, a child" in prompt
+    assert prompt.index(str(tmp_path.resolve())) < prompt.index(str(mission.resolve()))
     assert "create, edit, and remove mission-owned files and run commands" in prompt
     assert "Put every citation, footnote, and Markdown reference definition before" in prompt
     assert prompt.endswith("as the final nonempty line; append nothing after it.")
@@ -197,9 +205,11 @@ def test_pro_devspace_manifest_is_write_capable_and_stays_inside_project(tmp_pat
         research="off",
         task_outcome_contract="v1",
     ))
-    assert state.composer_prompt(legacy).startswith(
-        f"@DevSpace Read the read-only mission file: {mission.resolve()}."
+    legacy_prompt = state.composer_prompt(legacy)
+    assert legacy_prompt.startswith(
+        f"@DevSpace First open exactly this project root in checkout mode: {tmp_path.resolve()}."
     )
+    assert f"Then read the read-only mission file: {mission.resolve()}." in legacy_prompt
 
 
 def test_pro_composer_identity_changes_with_project_or_attachment_bytes(tmp_path: Path) -> None:

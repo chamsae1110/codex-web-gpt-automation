@@ -14,9 +14,11 @@ Use this routing in the Codex global `AGENTS.md` after installing the package.
 - Regular web work selects `gpt-5.6` with Oracle `extra-high`, the highest
   supported non-Pro reasoning tier. It does not silently fall back to a lower
   tier or upgrade to Pro.
-- The regular composer contains only `@DevSpace` and an absolute UTF-8 mission
-  path. It does not attach the task body and does not inspect or mutate ChatGPT
-  app settings per question.
+- The regular composer contains only `@DevSpace`, the exact UTF-8 project root,
+  and the absolute UTF-8 mission path. It tells DevSpace to open the exact root
+  before reading the mission, never the mission directory, a parent, a child,
+  or the active workspace as a substitute. It does not attach the task body and
+  does not inspect or mutate ChatGPT app settings per question.
 - Pro is quota-limited and explicit-only. Ordinary modes, comprehensive plans,
   and recovery logic must never select or upgrade to Pro automatically. A
   standard comprehensive manifest must contain `allow_pro: true`, supplied

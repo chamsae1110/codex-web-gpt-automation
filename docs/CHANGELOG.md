@@ -1,5 +1,15 @@
 # 기술 변경 기록
 
+## 1.14.5 - DevSpace exact-root 응답 경로 보강
+
+- Oracle의 regular·Pro DevSpace composer가 미션 경로보다 먼저 exact project
+  root를 명시해 checkout으로 열도록 변경했습니다. 미션 디렉터리, 상위·하위
+  폴더, 현재 활성 workspace를 exact root 대신 선택하지 못하게 해 미션과 명령
+  결과가 다른 workspace session으로 분리되는 재발을 줄입니다.
+- DevSpace 장애 복구 뒤 첫 검증은 계속 quota 없는 regular Oracle canary로
+  수행합니다. 로컬/public doctor만으로 registered ChatGPT app 응답 성공을
+  주장하거나 Pro 제출을 연결 확인용으로 소비하지 않습니다.
+
 ## 1.14.4 - Oracle 미제출 정산 잠금 호환성
 
 - 버전 파일만 갱신하고 GitHub Release를 빠뜨리는 일을 막기 위해 annotated

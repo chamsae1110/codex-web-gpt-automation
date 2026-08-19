@@ -587,8 +587,10 @@ def composer_prompt(config: OracleConfig, mission_path: Path | None = None) -> s
     effective_path = config.mission_path if mission_path is None else mission_path
     if str(config.transport or "").strip().casefold() == "pro-devspace":
         return (
-            f"@{config.app_name} Read and execute the mission file: {effective_path}. "
-            "Use only the exact project root recorded there; read the mission and applicable AGENTS.md fully first. "
+            f"@{config.app_name} First open exactly this project root in checkout mode: {config.project_root}. "
+            "Do not open the mission directory, a parent, a child, or the active workspace as a substitute. "
+            f"Then read and execute the mission file: {effective_path}. "
+            "Read the mission and applicable AGENTS.md fully first. "
             "You may inspect, create, edit, and remove mission-owned files and run commands inside that exact root as "
             "required by the mission. Obey all repository safety rules. Do not change accounts, app settings, or external "
             "state unless the mission explicitly authorizes that action. "
@@ -598,8 +600,10 @@ def composer_prompt(config: OracleConfig, mission_path: Path | None = None) -> s
         )
     if is_pro_readonly_transport(config.transport):
         return (
-            f"@{config.app_name} Read the read-only mission file: {effective_path}. "
-            "Use only the exact project root recorded there; read the mission and applicable AGENTS.md fully first. "
+            f"@{config.app_name} First open exactly this project root in checkout mode: {config.project_root}. "
+            "Do not open the mission directory, a parent, a child, or the active workspace as a substitute. "
+            f"Then read the read-only mission file: {effective_path}. "
+            "Read the mission and applicable AGENTS.md fully first. "
             "Perform read-only work only; do not modify files, settings, accounts, or external state. "
             "Put every citation, footnote, and Markdown reference definition before the outcome marker. "
             "End the final response with exactly one of TASK_OUTCOME: EXECUTED, TASK_OUTCOME: NOT_EXECUTED, or "
@@ -608,10 +612,10 @@ def composer_prompt(config: OracleConfig, mission_path: Path | None = None) -> s
     # Keep the Windows npx.cmd prompt in one argument line. A literal newline
     # truncates the prompt after the app mention before Oracle receives it.
     return (
-        f"@{config.app_name} {effective_path} 파일을 읽고 끝까지 수행하세요. "
-        "그 파일에 기록된 정확한 프로젝트 루트만 사용하고 적용되는 AGENTS.md를 먼저 끝까지 읽으세요. "
-        "작업공간 열기가 시간 초과되면 동일한 정확한 루트만 한 번 재시도하며 상위·하위·현재 활성 "
-        "작업공간이나 셸 경계 우회로 대체하지 마세요."
+        f"@{config.app_name} 먼저 정확한 프로젝트 루트 {config.project_root}를 checkout 모드로 여세요. "
+        "미션 디렉터리·상위·하위·현재 활성 작업공간을 대신 열지 마세요. "
+        f"그 다음 미션 파일 {effective_path}를 읽고 끝까지 수행하며 적용되는 AGENTS.md를 먼저 끝까지 읽으세요. "
+        "작업공간 열기가 시간 초과되면 동일한 정확한 루트만 한 번 재시도하고 셸 경계 우회로 대체하지 마세요."
         + (
             " 모든 인용, 각주, Markdown 참조 정의를 결과 마커 앞에 배치하세요. 마지막 비어 있지 않은 줄에 "
             "실제 작업 수행 결과를 TASK_OUTCOME: EXECUTED, TASK_OUTCOME: NOT_EXECUTED, "

@@ -671,7 +671,10 @@ def test_pro_devspace_dry_run_uses_write_capable_handoff_without_file_transport(
     assert "--file" not in argv
     assert argv[argv.index("--model") + 1] == "gpt-5.6-sol"
     assert argv[argv.index("--browser-thinking-time") + 1] == "heavy"
-    assert prompt.startswith(f"@DevSpace Read and execute the mission file: {tmp_path / 'mission.md'}.")
+    assert prompt.startswith(f"@DevSpace First open exactly this project root in checkout mode: {tmp_path}.")
+    assert f"Then read and execute the mission file: {tmp_path / 'mission.md'}." in prompt
+    assert "Do not open the mission directory, a parent, a child" in prompt
+    assert prompt.index(str(tmp_path)) < prompt.index(str(tmp_path / "mission.md"))
     assert "create, edit, and remove mission-owned files and run commands" in prompt
     assert preflight_calls == [True]
 

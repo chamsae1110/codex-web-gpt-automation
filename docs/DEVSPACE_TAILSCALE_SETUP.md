@@ -72,7 +72,9 @@ Verify the registered app with a fresh regular, non-Pro Oracle `@codex`
 read-only probe that opens the exact project root and reads a small directory
 listing. Do not substitute Codex Desktop's built-in `DevSpace` plugin tools:
 they are a separate connector and do not validate the manually registered
-ChatGPT app. Never spend a Pro submission as the first connectivity probe.
+ChatGPT app. Never spend a Pro submission as the first connectivity probe. The
+Oracle composer names the exact project root before the mission path so a
+mission directory cannot be mistaken for the workspace root.
 
 Before the first DevSpace-backed Oracle question in a new project, the runner
 checks that the normalized exact folder is present in local `allowedRoots`.
