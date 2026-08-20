@@ -75,6 +75,11 @@ PATCHES_0161 = {
 }
 
 PATCHES = {
+    "dist/src/cli/browserTabs.js": {
+        "patch": "browserTabs.live-terminal-timeout.patch",
+        "pristine": "05256692ffa9b35415346963adde5ff42aeacd78ce46dd6f484496678f5d0281",
+        "patched": "9329e259f030ecb4a935fb9e368bf55074bf0afe7ed5e5a0c6206a5f2bbacee4",
+    },
     "dist/src/browser/recoverConversation.js": {
         "patch": "recoverConversation.copy-profile.patch",
         "pristine": "d7e39d21acf07e6d227e761944519e11cd8d93930629cc87555d7de75a42d1ca",

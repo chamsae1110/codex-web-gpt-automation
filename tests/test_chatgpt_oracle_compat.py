@@ -135,6 +135,19 @@ def test_published_0171_patch_requires_extra_high_and_pro_selection_proof(tmp_pa
     assert set(compat.PATCHES) <= touched
     node = shutil.which("node")
     assert node is not None, "Node.js is required to validate the patched Oracle source"
+    browser_tabs = package / "dist/src/cli/browserTabs.js"
+    browser_tabs_text = browser_tabs.read_text(encoding="utf-8")
+    assert "ORACLE_LIVE_TERMINAL_TIMEOUT_MS" in browser_tabs_text
+    assert "holdRecoveredConnection" in browser_tabs_text
+    assert "recoveredContentDeadlineMs = holdRecoveredConnection" in browser_tabs_text
+    assert compat.sha256_file(browser_tabs) == compat.PATCHES["dist/src/cli/browserTabs.js"]["patched"]
+    browser_tabs_syntax = subprocess.run(
+        [node, "--check", str(browser_tabs)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert browser_tabs_syntax.returncode == 0, browser_tabs_syntax.stderr
     recovery_target = package / "dist/src/browser/recoverConversation.js"
     recovery_text = recovery_target.read_text(encoding="utf-8")
     assert "copyProfileSource" in recovery_text

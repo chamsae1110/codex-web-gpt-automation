@@ -1,5 +1,14 @@
 # 기술 변경 기록
 
+## 1.15.4 - Oracle 0.17.1 exact-session live recovery 보강
+
+- Oracle 0.17.1의 복구된 Pro 대화 준비 대기를 고정 60초가 아니라 host가 전달한
+  `ORACLE_LIVE_TERMINAL_TIMEOUT_MS` 전체 기한까지 유지합니다.
+- 느린 대화 로딩이나 장기 tool-result 대기 중 같은 exact slug/profile/tab을 보존하고,
+  readiness timeout 때문에 recovery browser를 반복 생성하지 않습니다.
+- published Oracle 0.17.1 byte hash, patch 결과 hash, Node 구문을 회귀 테스트로
+  fail-closed 검증합니다.
+
 ## 1.15.3 - Chrome Local Network Access 최초 설치 보강
 
 - Windows 최초 설치에서 `chatgpt.com` 정확한 origin만 Chrome의 공식
