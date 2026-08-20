@@ -1,5 +1,15 @@
 # 기술 변경 기록
 
+## 1.15.2 - 터미널 복구 후 observer 자동 정리
+
+- exact-slug recovery가 durable output과 terminal authority를 확정하면 원래
+  runner가 자신이 시작한 Oracle 프로세스 트리만 즉시 종료해 프로젝트 submit
+  mutex를 반환합니다. 새 prompt나 replacement run은 만들지 않습니다.
+- recovery가 먼저 끝난 뒤 80분 caution audit가 도착하더라도 이미 확정된
+  `complete / terminal / terminal_harvested` 상태를 `running`으로 되돌리지 않도록
+  단조성 회귀 검사를 추가했습니다. 불완전하거나 모순된 상태에는 자동 정리가
+  작동하지 않습니다.
+
 ## 1.15.1 - 모델 선택 전 미제출 정산 결속
 
 - Oracle 0.17.1이 ChatGPT 홈에서 모델 선택 버튼을 찾지 못해 prompt 전송 전에

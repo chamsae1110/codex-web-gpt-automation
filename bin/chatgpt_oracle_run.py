@@ -10,6 +10,7 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Sequence
@@ -210,6 +211,9 @@ def wait_for_oracle_process(
     status_audit_seconds: float,
     *,
     on_status_audit: Callable[[int], None] | None = None,
+    terminal_harvest_probe: Callable[[], bool] | None = None,
+    terminate_owned_process: Callable[[Any], None] | None = None,
+    terminal_probe_interval_seconds: float = 1.0,
 ) -> int:
     """Wait for one exact Oracle process; time alone never ends the wait."""
     if not math.isfinite(status_audit_seconds) or status_audit_seconds <= 0:
@@ -217,19 +221,98 @@ def wait_for_oracle_process(
             "STATUS_AUDIT_INTERVAL_INVALID",
             "status audit interval must be a positive finite duration",
         )
+    if terminal_harvest_probe is not None and (
+        not math.isfinite(terminal_probe_interval_seconds)
+        or terminal_probe_interval_seconds <= 0
+    ):
+        raise OracleRunError(
+            "TERMINAL_PROBE_INTERVAL_INVALID",
+            "terminal harvest probe interval must be a positive finite duration",
+        )
+    watcher_stop = threading.Event()
+    watcher: threading.Thread | None = None
+    if terminal_harvest_probe is not None and terminate_owned_process is not None:
+        def watch_terminal_harvest() -> None:
+            while not watcher_stop.is_set():
+                try:
+                    if terminal_harvest_probe():
+                        terminate_owned_process(process)
+                        return
+                except (OSError, RuntimeError, ValueError, TypeError, KeyError):
+                    # A partial atomic-state observation is never authority to
+                    # terminate the exact observer. Retry without changing state.
+                    pass
+                watcher_stop.wait(terminal_probe_interval_seconds)
+
+        watcher = threading.Thread(
+            target=watch_terminal_harvest,
+            name="oracle-terminal-harvest-watcher",
+            daemon=True,
+        )
+        watcher.start()
     audit_count = 0
-    while True:
-        try:
-            return int(process.wait(timeout=status_audit_seconds))
-        except subprocess.TimeoutExpired:
-            poll = getattr(process, "poll", None)
-            if callable(poll):
-                raced_exit_code = poll()
-                if raced_exit_code is not None:
-                    return int(raced_exit_code)
-            audit_count += 1
-            if on_status_audit is not None:
-                on_status_audit(audit_count)
+    try:
+        while True:
+            try:
+                return int(process.wait(timeout=status_audit_seconds))
+            except subprocess.TimeoutExpired:
+                poll = getattr(process, "poll", None)
+                if callable(poll):
+                    raced_exit_code = poll()
+                    if raced_exit_code is not None:
+                        return int(raced_exit_code)
+                audit_count += 1
+                if on_status_audit is not None:
+                    on_status_audit(audit_count)
+    finally:
+        watcher_stop.set()
+        if watcher is not None:
+            watcher.join(timeout=max(1.0, terminal_probe_interval_seconds * 2))
+
+
+def exact_run_is_durably_terminal(layout: Any) -> bool:
+    """Return true only after exact recovery durably harvested a real output."""
+    state = STATE.load_state(layout.state_path)
+    artifacts = state.get("artifacts") if isinstance(state.get("artifacts"), dict) else {}
+    output_path = Path(str(artifacts.get("output") or layout.output_path))
+    return (
+        state.get("status") == "complete"
+        and state.get("session_authority") == "terminal"
+        and state.get("terminal_harvested") is True
+        and STATE.output_is_nonempty(output_path)
+    )
+
+
+def terminate_owned_oracle_process_tree(
+    process: Any,
+    *,
+    platform_name: str | None = None,
+    run_factory: Callable[..., Any] = subprocess.run,
+) -> None:
+    """Stop only the Popen-owned Oracle tree after durable exact recovery."""
+    poll = getattr(process, "poll", None)
+    if callable(poll) and poll() is not None:
+        return
+    platform = os.name if platform_name is None else platform_name
+    pid = getattr(process, "pid", None)
+    if platform == "nt" and isinstance(pid, int) and pid > 0:
+        taskkill = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "taskkill.exe"
+        completed = run_factory(
+            [str(taskkill), "/PID", str(pid), "/T", "/F"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            **STATE.windows_subprocess_kwargs(platform_name=platform),
+        )
+        if int(getattr(completed, "returncode", 1)) != 0 and (
+            not callable(poll) or poll() is None
+        ):
+            raise OSError("owned Oracle process tree did not stop")
+        return
+    terminate = getattr(process, "terminate", None)
+    if callable(terminate):
+        terminate()
 
 
 ORACLE_VERSION_RESOLUTION_TIMEOUT_SECONDS = 90
@@ -324,6 +407,18 @@ def record_exact_run_status_audit(
     poll_result = poll() if callable(poll) else None
     pid = getattr(process, "pid", None)
     state = STATE.load_state(layout.state_path)
+    if exact_run_is_durably_terminal(layout):
+        return {
+            "threshold_kind": "caution-status-audit",
+            "threshold_seconds": status_audit_seconds,
+            "audit_count": audit_count,
+            "observed_at_unix_seconds": time.time(),
+            "exact_slug": str((state.get("oracle") or {}).get("slug") or layout.slug),
+            "decision": "exact-recovery-terminal-harvested-stop-owned-observer",
+            "time_alone_is_terminal": False,
+            "ownership_action": "release-owned-observer",
+            "submission_action": "none",
+        }
     exact_slug = str((state.get("oracle") or {}).get("slug") or layout.slug)
     audit = {
         "threshold_kind": "caution-status-audit",
@@ -884,11 +979,23 @@ def execute_run(
                 )
                 if not config.parallel_parent_id:
                     exit_code = wait_for_oracle_process(
-                        process, status_audit_seconds, on_status_audit=audit_callback
+                        process,
+                        status_audit_seconds,
+                        on_status_audit=audit_callback,
+                        terminal_harvest_probe=lambda: exact_run_is_durably_terminal(layout),
+                        terminate_owned_process=lambda owned: terminate_owned_oracle_process_tree(
+                            owned, platform_name=platform_name
+                        ),
                     )
             if config.parallel_parent_id:
                 exit_code = wait_for_oracle_process(
-                    process, status_audit_seconds, on_status_audit=audit_callback
+                    process,
+                    status_audit_seconds,
+                    on_status_audit=audit_callback,
+                    terminal_harvest_probe=lambda: exact_run_is_durably_terminal(layout),
+                    terminate_owned_process=lambda owned: terminate_owned_oracle_process_tree(
+                        owned, platform_name=platform_name
+                    ),
                 )
     except Exception as exc:
         code = f"{exc.code}: " if isinstance(exc, OracleRunError) else ""

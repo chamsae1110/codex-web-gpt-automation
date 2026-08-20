@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pytest
@@ -1172,6 +1173,127 @@ def test_status_audit_keeps_same_process_until_it_exits(
     assert Path(state["artifacts"]["browser_temp"]).is_dir()
     assert not Path(state["artifacts"]["output"]).exists()
     assert not list(Path(result["run_dir"]).glob("recovery-*-stdout.log"))
+
+
+def test_durable_terminal_recovery_stops_only_the_owned_observer_before_audit() -> None:
+    runner = load_runner()
+    exited = threading.Event()
+    probes = 0
+    actions: list[str] = []
+
+    class BlockingProcess:
+        pid = 4242
+
+        def wait(self, timeout=None):
+            if exited.wait(timeout):
+                return 143
+            raise subprocess.TimeoutExpired("oracle", timeout)
+
+        def poll(self):
+            return 143 if exited.is_set() else None
+
+    process = BlockingProcess()
+
+    def terminal_probe() -> bool:
+        nonlocal probes
+        probes += 1
+        return probes >= 2
+
+    def terminate_owned(candidate) -> None:
+        assert candidate is process
+        actions.append("terminate-owned-tree")
+        exited.set()
+
+    result = runner.wait_for_oracle_process(
+        process,
+        4800,
+        terminal_harvest_probe=terminal_probe,
+        terminate_owned_process=terminate_owned,
+        terminal_probe_interval_seconds=0.01,
+    )
+
+    assert result == 143
+    assert actions == ["terminate-owned-tree"]
+
+
+def test_windows_terminal_cleanup_targets_the_popen_owned_tree() -> None:
+    runner = load_runner()
+    calls: list[tuple[list[str], dict]] = []
+
+    class LiveProcess:
+        pid = 4242
+
+        def poll(self):
+            return None
+
+    def taskkill(command, **kwargs):
+        calls.append((list(command), kwargs))
+        return subprocess.CompletedProcess(command, 0)
+
+    runner.terminate_owned_oracle_process_tree(
+        LiveProcess(),
+        platform_name="nt",
+        run_factory=taskkill,
+    )
+
+    assert len(calls) == 1
+    assert calls[0][0][-4:] == ["/PID", "4242", "/T", "/F"]
+    assert calls[0][1]["check"] is False
+
+
+def test_status_audit_never_downgrades_durable_terminal_recovery(tmp_path: Path) -> None:
+    runner = load_runner()
+    initial = execute_run(
+        runner,
+        manifest(tmp_path),
+        run_factory=version_runner,
+        popen_factory=popen_for(7, None, {}, []),
+    )
+    run_dir = Path(initial["run_dir"])
+    state_path = run_dir / "state.json"
+    state = runner.STATE.load_state(state_path)
+    output = Path(state["artifacts"]["output"])
+    output.write_text("durable terminal answer", encoding="utf-8")
+    runner.STATE.update_state(
+        state_path,
+        status="complete",
+        exit_code=0,
+        session_authority="terminal",
+        terminal_harvested=True,
+        artifact_sha256=runner.STATE.sha256_file(output),
+        transport_status="complete",
+        task_outcome="executed",
+    )
+
+    class StillLiveProcess:
+        pid = 4242
+
+        def poll(self):
+            return None
+
+    audit = runner.record_exact_run_status_audit(
+        runner.STATE.RunLayout(
+            state["run_id"],
+            state["oracle"]["slug"],
+            run_dir,
+            state_path,
+            output,
+            Path(state["artifacts"]["transcript"]),
+            Path(state["artifacts"]["stdout"]),
+            Path(state["artifacts"]["stderr"]),
+            Path(state["artifacts"]["browser_temp"]),
+        ),
+        process=StillLiveProcess(),
+        audit_count=1,
+        status_audit_seconds=4800,
+        prior_observations={},
+    )
+    final = runner.STATE.load_state(state_path)
+
+    assert audit["decision"] == "exact-recovery-terminal-harvested-stop-owned-observer"
+    assert final["status"] == "complete"
+    assert final["session_authority"] == "terminal"
+    assert final["terminal_harvested"] is True
 
 
 def test_status_audit_race_accepts_a_process_that_already_exited(
