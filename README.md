@@ -94,7 +94,7 @@ python3 doctor.py
 2. **DevSpace 설정** — 사용할 모든 exact project root와 public origin 등록
 3. **Owner 승인 정보 보존** — 암호를 CLI·Git·로그에 복사하지 않음
 4. **상주 복구 검증** — 로그인 watchdog, local/public endpoint, root persistence 확인
-5. **Oracle 전용 브라우저 로그인** — 일상 Chrome과 분리된 프로필
+5. **Oracle 전용 브라우저 로그인 및 Local network 영속 허용** — 일상 Chrome과 분리; Windows는 정확한 `chatgpt.com` 정책 helper 사용
 6. **ChatGPT 앱 수동 등록** — 이름 `codex`, URL `https://고정주소/mcp`
 7. **일반 GPT 연결 검사** — Pro를 소비하지 않고 `@codex` read probe 수행
 

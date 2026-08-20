@@ -183,7 +183,7 @@ python skills/chatgpt-workspace-setup/scripts/devspace_tailscale_setup.py doctor
 거부나 timeout은 정상으로 보지 않습니다. 현재 config roots와 bootstrap roots가
 완전히 같아야 합니다.
 
-## 6. Oracle 전용 브라우저에 한 번 로그인
+## 6. Oracle 전용 브라우저 로그인과 Local network 영속 허용
 
 일상 Chrome 프로필이 아닌 Oracle 전용 프로필을 초기화합니다.
 
@@ -194,12 +194,32 @@ npx --yes @steipete/oracle@0.17.1 --engine browser `
   -p "HI"
 ```
 
-열린 전용 브라우저에서 ChatGPT 로그인만 완료합니다. 이후 실제 실행은 이 프로필의
+열린 전용 브라우저에서 ChatGPT 로그인을 완료합니다. 이후 실제 실행은 이 프로필의
 throwaway copy를 사용하므로 동시 프로젝트가 같은 브라우저 상태를 공유하지 않습니다.
+
+Chrome의 **Local network** 권한은 `chatgpt.com`이 로컬 DevSpace MCP에 연결할 때
+필요합니다. 실행용 throwaway copy에서 허용하면 다음 실행에 남지 않으므로, Windows는
+다음 helper로 `https://chatgpt.com` 정확한 origin만 사용자 범위 Chrome 정책에
+영속 등록합니다. 기존 정책 값은 보존하고 receipt를 남깁니다.
+
+```powershell
+python .\bin\chatgpt_chrome_local_network.py enable
+python .\bin\chatgpt_chrome_local_network.py status
+```
+
+조직 정책 ACL이나 일반 사용자 권한 때문에 `CHROME_POLICY_WRITE_DENIED`가 나오면
+관리자 권한을 우회하지 않습니다. 아래 비-Windows 절차와 똑같이 전용 Oracle
+프로필에서 한 번 직접 허용합니다.
+
+macOS 등 비-Windows 환경에서는 전용 Oracle 프로필에서 `chatgpt.com`의 **Local
+network**를 한 번 허용한 뒤 Chrome을 완전히 종료해 seed profile에 저장합니다.
+온보딩 `status`는 정책 또는 seed profile의 실제 허용을 확인하며, 로그인만 된 상태를
+준비 완료로 인정하지 않습니다.
 
 ## 7. ChatGPT 앱을 마지막에 수동 등록
 
-고정 URL, DevSpace, OAuth, 재부팅 복구, Oracle 로그인이 모두 준비된 뒤 진행합니다.
+고정 URL, DevSpace, OAuth, 재부팅 복구, Oracle 로그인과 Local network 영속 허용이
+모두 준비된 뒤 진행합니다.
 
 1. ChatGPT `Settings` → `Security and login`에서 Developer mode를 켭니다.
 2. ChatGPT Plugins 화면에서 `+`를 선택합니다.

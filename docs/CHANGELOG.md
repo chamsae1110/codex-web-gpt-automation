@@ -1,5 +1,16 @@
 # 기술 변경 기록
 
+## 1.15.3 - Chrome Local Network Access 최초 설치 보강
+
+- Windows 최초 설치에서 `chatgpt.com` 정확한 origin만 Chrome의 공식
+  `LocalNetworkAccessAllowedForUrls` 사용자 정책에 추가하는 receipt-backed
+  helper를 제공합니다. 기존 정책 항목은 덮어쓰지 않습니다. 정책 ACL이 쓰기를
+  거부하면 traceback 대신 정확한 수동 seed-profile 1회 허용 절차로 전환합니다.
+- 온보딩 상태는 영속 정책 또는 전용 Oracle seed profile의 실제 Local network
+  허용을 확인하며, 로그인만 된 상태를 더 이상 준비 완료로 오판하지 않습니다.
+  macOS 등 비-Windows 환경은 전용 seed profile에서 한 번 직접 허용한 뒤 Chrome을
+  완전히 종료하도록 안내합니다.
+
 ## 1.15.2 - 터미널 복구 후 observer 자동 정리
 
 - exact-slug recovery가 durable output과 terminal authority를 확정하면 원래

@@ -1,0 +1,169 @@
+from __future__ import annotations
+
+"""Persist the narrow Chrome Local Network Access grant used by DevSpace.
+
+The Windows implementation uses Chrome's documented per-user enterprise policy
+and appends one exact origin without replacing unrelated policy entries.
+"""
+
+import argparse
+import datetime as dt
+import json
+import os
+import sys
+import tempfile
+from pathlib import Path
+from typing import Any, Mapping
+
+
+CHATGPT_ORIGIN = "https://chatgpt.com"
+POLICY_SUBKEY = r"Software\Policies\Google\Chrome\LocalNetworkAccessAllowedForUrls"
+
+
+def _normalized(value: object) -> str:
+    return str(value).strip().rstrip("/").casefold()
+
+
+def policy_contains_origin(values: Mapping[str, object], origin: str = CHATGPT_ORIGIN) -> bool:
+    expected = _normalized(origin)
+    return any(_normalized(value) == expected for value in values.values())
+
+
+def next_policy_value_name(values: Mapping[str, object]) -> str:
+    used = {int(name) for name in values if str(name).isdigit() and int(name) > 0}
+    candidate = 1
+    while candidate in used:
+        candidate += 1
+    return str(candidate)
+
+
+def _read_windows_policy() -> dict[str, str]:
+    import winreg
+
+    try:
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, POLICY_SUBKEY, 0, winreg.KEY_READ)
+    except FileNotFoundError:
+        return {}
+    values: dict[str, str] = {}
+    with key:
+        index = 0
+        while True:
+            try:
+                name, value, _kind = winreg.EnumValue(key, index)
+            except OSError:
+                break
+            values[str(name)] = str(value)
+            index += 1
+    return values
+
+
+def policy_status() -> dict[str, Any]:
+    if sys.platform != "win32":
+        return {
+            "schema": "codex-web-gpt.chrome-local-network/v1",
+            "supported": False,
+            "enabled": False,
+            "origin": CHATGPT_ORIGIN,
+            "reason": "WINDOWS_CHROME_POLICY_ONLY",
+        }
+    values = _read_windows_policy()
+    return {
+        "schema": "codex-web-gpt.chrome-local-network/v1",
+        "supported": True,
+        "enabled": policy_contains_origin(values),
+        "origin": CHATGPT_ORIGIN,
+        "policy_subkey": POLICY_SUBKEY,
+        "matching_value_names": [
+            name for name, value in values.items() if _normalized(value) == _normalized(CHATGPT_ORIGIN)
+        ],
+        "entry_count": len(values),
+    }
+
+
+def _write_json_atomic(path: Path, value: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            json.dump(value, handle, ensure_ascii=True, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def enable_policy(*, codex_home: Path | None = None) -> dict[str, Any]:
+    if sys.platform != "win32":
+        raise RuntimeError("WINDOWS_CHROME_POLICY_ONLY")
+    import winreg
+
+    before = _read_windows_policy()
+    changed = not policy_contains_origin(before)
+    value_name: str | None = None
+    if changed:
+        value_name = next_policy_value_name(before)
+        with winreg.CreateKeyEx(
+            winreg.HKEY_CURRENT_USER,
+            POLICY_SUBKEY,
+            0,
+            winreg.KEY_READ | winreg.KEY_WRITE,
+        ) as key:
+            winreg.SetValueEx(key, value_name, 0, winreg.REG_SZ, CHATGPT_ORIGIN)
+    after = _read_windows_policy()
+    if not policy_contains_origin(after):
+        raise RuntimeError("CHATGPT_LOCAL_NETWORK_POLICY_NOT_DURABLE")
+    root = (codex_home or Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex"))).resolve()
+    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d-%H%M%S%f")
+    receipt = root / "receipts" / f"chatgpt-local-network-policy-{stamp}.json"
+    payload = {
+        "schema": "codex-web-gpt.chrome-local-network-receipt/v1",
+        "applied_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "origin": CHATGPT_ORIGIN,
+        "policy_subkey": POLICY_SUBKEY,
+        "changed": changed,
+        "created_value_name": value_name,
+        "preserved_entry_count": len(before),
+        "enabled": True,
+    }
+    _write_json_atomic(receipt, payload)
+    return {**policy_status(), "changed": changed, "receipt": str(receipt)}
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Manage exact chatgpt.com Chrome Local Network Access")
+    parser.add_argument("command", choices=("status", "enable"))
+    parser.add_argument("--codex-home", type=Path)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parser().parse_args(argv)
+    try:
+        result = policy_status() if args.command == "status" else enable_policy(codex_home=args.codex_home)
+    except PermissionError:
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": "CHROME_POLICY_WRITE_DENIED",
+                    "next_action": (
+                        "Grant Local network once in the dedicated Oracle browser profile, "
+                        "then fully exit Chrome."
+                    ),
+                },
+                ensure_ascii=False,
+            )
+        )
+        return 2
+    except RuntimeError as exc:
+        print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
+        return 2
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0 if result.get("enabled") else 3
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

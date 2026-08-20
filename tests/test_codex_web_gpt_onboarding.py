@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import sys
 from pathlib import Path
 
 import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "bin"))
 SPEC = importlib.util.spec_from_file_location(
     "codex_web_gpt_onboarding_test", ROOT / "bin" / "codex_web_gpt_onboarding.py"
 )
@@ -33,6 +35,7 @@ def test_plan_orders_the_complete_first_install_without_secrets(tmp_path: Path) 
         "04_reboot_service",
         "05_endpoint_check",
         "06_oracle_login",
+        "06b_local_network_access",
         "07_chatgpt_app",
         "08_final_gate",
     ]
@@ -85,6 +88,8 @@ def test_status_requires_exact_root_order_and_bootstrap_match(tmp_path: Path) ->
         codex_home=codex_home,
         devspace_home=devspace_home,
         http_probe=healthy,
+        oracle_profile_dir=tmp_path / "browser-profile",
+        local_network_policy_probe=lambda: {"enabled": True},
     )
     assert status["checks"]["exact_roots_configured"] is True
     assert status["checks"]["bootstrap_matches_config"] is True
@@ -98,6 +103,8 @@ def test_status_requires_exact_root_order_and_bootstrap_match(tmp_path: Path) ->
         codex_home=codex_home,
         devspace_home=devspace_home,
         http_probe=healthy,
+        oracle_profile_dir=tmp_path / "browser-profile",
+        local_network_policy_probe=lambda: {"enabled": True},
     )
     assert mismatch["checks"]["exact_roots_configured"] is False
     assert mismatch["ready"] is False
@@ -140,9 +147,65 @@ def test_plan_status_and_cli_share_the_same_arbitrary_app_name(tmp_path: Path) -
         codex_home=codex_home,
         devspace_home=devspace_home,
         http_probe=lambda _url: {"ok": True, "status": 401},
+        oracle_profile_dir=tmp_path / "browser-profile",
+        local_network_policy_probe=lambda: {"enabled": True},
     )
     assert status["checks"]["app_name_matches_expected"] is True
     assert status["expected_app_name"] == "dongju"
+
+
+def test_status_fails_closed_without_persistent_local_network_grant(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    codex_home = tmp_path / ".codex"
+    devspace_home = tmp_path / ".devspace"
+    profile = tmp_path / "browser-profile"
+    (codex_home / "config").mkdir(parents=True)
+    devspace_home.mkdir()
+    profile.mkdir()
+    (profile / "marker").write_text("signed-in", encoding="utf-8")
+    (devspace_home / "config.json").write_text(json.dumps({"allowedRoots": [str(project)]}))
+    (codex_home / "config" / "codexpro-devspace-bootstrap.json").write_text(
+        json.dumps({"roots": [str(project)]})
+    )
+    (codex_home / "chatgpt-workspace.json").write_text(json.dumps({"app_name": "codex"}))
+    status = module.readiness_status(
+        provider="custom",
+        registration_url="https://mcp.example.com/mcp",
+        roots=[str(project)],
+        codex_home=codex_home,
+        devspace_home=devspace_home,
+        http_probe=lambda _url: {"ok": True, "status": 401},
+        oracle_profile_dir=profile,
+        local_network_policy_probe=lambda: {"enabled": False},
+    )
+    assert status["checks"]["oracle_profile_initialized"] is True
+    assert status["checks"]["chatgpt_local_network_allowed"] is False
+    assert status["ready"] is False
+
+
+def test_seed_profile_local_network_grant_is_accepted(tmp_path: Path) -> None:
+    profile = tmp_path / "browser-profile"
+    preferences = profile / "Default" / "Preferences"
+    preferences.parent.mkdir(parents=True)
+    preferences.write_text(
+        json.dumps(
+            {
+                "profile": {
+                    "content_settings": {
+                        "exceptions": {
+                            "local_network": {
+                                "https://chatgpt.com:443,*": {"setting": 1}
+                            }
+                        }
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert module.browser_profile_local_network_allowed(profile) is True
+    assert module.browser_profile_local_network_allowed(tmp_path / "missing") is False
 
 
 @pytest.mark.parametrize("value", ["", "@dongju", "bad/name", "bad\\name", "bad\nname"])

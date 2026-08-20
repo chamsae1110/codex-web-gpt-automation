@@ -16,6 +16,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Sequence
 
+from chatgpt_chrome_local_network import policy_status
+
 
 PRODUCT_NAME = "Codex Web GPT Automation"
 APP_NAME = "codex"
@@ -203,6 +205,17 @@ def onboarding_plan(
             ),
         },
         {
+            "id": "06b_local_network_access",
+            "owner": "agent_after_explicit_user_consent",
+            "complete_when": (
+                "chatgpt.com has a persistent Local Network Access grant before disposable Oracle profiles are copied"
+            ),
+            "windows_command": f"{python_executable} bin/chatgpt_chrome_local_network.py enable",
+            "status_command": f"{python_executable} bin/chatgpt_chrome_local_network.py status",
+            "scope": "exact origin https://chatgpt.com only; preserve unrelated Chrome policy entries",
+            "non_windows": "Grant Local network once in the dedicated persistent Oracle browser profile, then fully exit Chrome.",
+        },
+        {
             "id": "07_chatgpt_app",
             "owner": "user_manual_chatgpt_ui",
             "complete_when": "ChatGPT discovers the tools and Owner approval succeeds",
@@ -244,6 +257,25 @@ def _load_json(path: Path) -> dict[str, Any] | None:
     return value if isinstance(value, dict) else None
 
 
+def browser_profile_local_network_allowed(profile_dir: Path) -> bool:
+    preferences = _load_json(profile_dir / "Default" / "Preferences") or {}
+    exceptions = (
+        preferences.get("profile", {})
+        .get("content_settings", {})
+        .get("exceptions", {})
+        .get("local_network", {})
+    )
+    if not isinstance(exceptions, dict):
+        return False
+    expected = "https://chatgpt.com:443,*"
+    return any(
+        str(pattern).casefold() == expected
+        and isinstance(entry, dict)
+        and entry.get("setting") == 1
+        for pattern, entry in exceptions.items()
+    )
+
+
 def _root_identities(values: Sequence[Any]) -> list[str]:
     return [os.path.normcase(str(Path(str(value)).expanduser().resolve())) for value in values]
 
@@ -269,6 +301,8 @@ def readiness_status(
     codex_home: Path | None = None,
     devspace_home: Path | None = None,
     http_probe: Any = probe_http,
+    oracle_profile_dir: Path | None = None,
+    local_network_policy_probe: Any = policy_status,
 ) -> dict[str, Any]:
     plan = onboarding_plan(
         provider=provider,
@@ -288,8 +322,12 @@ def readiness_status(
     bootstrap_matches = configured == bootstrapped
     local = http_probe(f"http://127.0.0.1:{DEFAULT_LOCAL_PORT}/mcp")
     public = http_probe(plan["registration_url"])
-    browser_profile = Path.home() / ".oracle" / "browser-profile"
+    browser_profile = (oracle_profile_dir or (Path.home() / ".oracle" / "browser-profile")).resolve()
     browser_profile_initialized = browser_profile.is_dir() and any(browser_profile.iterdir())
+    local_network_policy = local_network_policy_probe()
+    local_network_allowed = bool(local_network_policy.get("enabled")) or browser_profile_local_network_allowed(
+        browser_profile
+    )
     checks = {
         "exact_roots_configured": exact_roots_configured,
         "bootstrap_matches_config": bootstrap_matches,
@@ -297,6 +335,7 @@ def readiness_status(
         "local_mcp_oauth_challenge": bool(local.get("ok")),
         "public_mcp_oauth_challenge": bool(public.get("ok")),
         "oracle_profile_initialized": browser_profile_initialized,
+        "chatgpt_local_network_allowed": local_network_allowed,
     }
     return {
         "schema": "codex-web-gpt.onboarding-status/v1",
@@ -309,6 +348,7 @@ def readiness_status(
         "bootstrap_roots": [str(value) for value in bootstrap.get("roots") or []],
         "local_endpoint": local,
         "public_endpoint": public,
+        "chatgpt_local_network": local_network_policy,
         "next_action": "READY" if all(checks.values()) else "COMPLETE_THE_FIRST_FAILED_STAGE_IN_PLAN",
     }
 
