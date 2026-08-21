@@ -53,7 +53,7 @@ PRE_SUBMIT_CANCEL_ERRORS = {
     PRE_SUBMIT_DEVSPACE_BRIDGE_TIMEOUT: "pre-submit-devspace-bridge-timeout",
     PRE_SUBMIT_DEVSPACE_SERVICE_RESTART: "pre-submit-devspace-service-restart-required",
 }
-TERMINAL_SCOPE_STATUSES = {"complete", "canceled"}
+TERMINAL_SCOPE_STATUSES = {"complete", "canceled", "blocked"}
 USER_STOPPABLE_OUTCOMES = {"blocked", "not_executed", "pending", "unknown"}
 STANDARD_PROFILE = "standard"
 ULTRA_ECONOMY_PROFILE = "ultra-economy"
@@ -406,15 +406,23 @@ def _write_workflow_state(path: Path, config: dict[str, Any], value: dict[str, A
     payload = {**value, "review_policy": dict(config["_review_policy"])}
     _write(path, payload)
     scope_status = str(payload.get("status") or "active")
-    _write(_scope_path(config), {
+    scope_payload = {
         "schema": SCOPE_SCHEMA,
-        "status": scope_status if scope_status in {"complete", "canceled", "attention_required", "failed"} else "active",
+        "status": scope_status if scope_status in {"complete", "canceled", "blocked", "attention_required", "failed"} else "active",
         "active_workflow_id": config["workflow_id"],
         "project_root": str(config["project_root"]),
         "workflow_parent": str(config["workflow_dir"].parent),
         "workflow_state_path": str(path),
         "review_policy": dict(config["_review_policy"]),
-    })
+    }
+    if scope_status == "blocked" and payload.get("terminal_status") == "REVIEW_FAILED":
+        scope_payload.update({
+            "terminal": True,
+            "terminal_status": "REVIEW_FAILED",
+            "scope_released": True,
+            "review_receipt_sha256": payload.get("review_receipt_sha256"),
+        })
+    _write(_scope_path(config), scope_payload)
 
 
 def _required_sha256(value: str, *, label: str) -> str:
@@ -1495,7 +1503,14 @@ def _validate_receipt(
             "plan": "review", "review": "web-multi", "web-multi": "final-web-gate",
             "final-web-gate": "complete",
         }.get(stage)
-        if required_next and next_stage != required_next:
+        terminal_review_fail = (
+            stage == "review"
+            and raw_status == "FAIL"
+            and not next_stage
+            and value.get("ready_for_next") is False
+            and bool(value.get("blocker"))
+        )
+        if required_next and next_stage != required_next and not terminal_review_fail:
             raise WorkflowError(
                 f"ULTRA_GPT_STAGE_ORDER_REQUIRED: {stage} must proceed to {required_next}"
             )
@@ -1572,6 +1587,8 @@ def _validate_receipt(
         **value,
         **compatibility,
         "output_path": str(output),
+        "_receipt_path": str(receipt_path.resolve(strict=True)),
+        "_receipt_sha256": sha(receipt_path),
         **({"_receipt_path_compatibility": path_compatibility} if path_compatibility else {}),
     }
     if stage == "review":
@@ -1810,13 +1827,20 @@ def _terminal_review_state(
         return None
     return {
         "schema": STATE_SCHEMA,
-        "status": "attention_required",
+        "status": "blocked",
+        "terminal": True,
+        "terminal_status": "REVIEW_FAILED",
+        "scope_released": True,
         "workflow_id": workflow_id,
         "manifest_sha256": config["manifest_sha256"],
         "records": records,
         "review_status": receipt.get("status"),
         "review_output_path": receipt.get("output_path"),
-        "blocker": blocker,
+        "review_receipt_path": receipt.get("_receipt_path"),
+        "review_receipt_sha256": receipt.get("_receipt_sha256"),
+        "critical_findings_sha256": receipt.get("critical_findings_sha256"),
+        "critical_finding_count": len(receipt.get("critical_finding_ids") or []),
+        "blocker": "review returned a valid terminal FAIL receipt",
         "next_stage": None,
     }
 
@@ -1948,6 +1972,8 @@ def _run_workflow_locked(
         if stored.get("status") == "complete":
             return {"ok": True, **stored}
         if stored.get("status") == "canceled":
+            return {"ok": False, **stored}
+        if stored.get("status") == "blocked" and stored.get("terminal_status") == "REVIEW_FAILED":
             return {"ok": False, **stored}
         if stored.get("status") == "awaiting_receipt":
             stored_receipt = Path(str(stored["receipt_path"])).resolve()

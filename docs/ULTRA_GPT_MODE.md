@@ -90,7 +90,9 @@ python "$env:USERPROFILE\.codex\bin\chatgpt_oracle_comprehensive.py" `
 - 내부 `allow_pro=true`
 - `max_stages`가 5 미만
 - planner가 `review` 외 단계로 전환
-- reviewer가 `web-multi` 외 단계로 전환
+- reviewer의 `PASS`/`PASS_WITH_NOTES`가 `web-multi` 외 단계로 전환
+- reviewer의 유효한 `FAIL` receipt가 아닌데 `ready_for_next=false`,
+  `next_stage=null`로 workflow를 종결하려 함
 - solver 수가 2~5 범위를 벗어남
 - 동시 실행 수가 3을 초과함
 - Multi schema가 `codex.chatgpt.oracle-multi/v2`가 아님
@@ -107,6 +109,10 @@ Pro 설계 자문이 필요하면 사용자의 별도 명시 승인을 받은 �
 울트라 GPT workflow identity나 복구 체인에 섞지 않습니다.
 
 완료는 final web PASS receipt와 local gate exit code 0이 모두 있어야 합니다.
+review가 hash-bound `FAIL` receipt를 반환하면 구현 lane을 만들지 않고 workflow를
+`BLOCKED / REVIEW_FAILED`로 종결해 scope를 해제합니다. `FAIL`은
+`ready_for_next=false`, `next_stage=null`, 비어 있지 않은 blocker와 유효한
+critical finding 결속을 모두 만족해야 하며, PASS 계열만 `web-multi`로 갑니다.
 제출 여부가 불명확한 세션은 같은 exact slug만 복구하며 새 세션으로 대체하지
 않습니다. 80분은 상태 점검 시점이지 종료 시간이 아닙니다.
 

@@ -152,6 +152,153 @@ def test_ultra_gpt_plan_cannot_skip_review(tmp_path: Path) -> None:
         )
 
 
+def _ultra_review_receipt(
+    module, tmp_path: Path, *, status: str, ready: bool, next_stage: object, blocker: str
+) -> Path:
+    output = tmp_path / "review-output.md"
+    output.write_text("review completed", encoding="utf-8")
+    receipt = tmp_path / "review-stage-result.json"
+    value = {
+        "schema": module.RECEIPT_SCHEMA,
+        "workflow_id": "a" * 32,
+        "stage": "review",
+        "attempt_id": "b" * 32,
+        "input_mission_sha256": "c" * 64,
+        "status": status,
+        "output_path": str(output),
+        "output_sha256": module.sha(output),
+        "next_stage": next_stage,
+        "next_mission_path": None,
+        "next_mission_sha256": None,
+        "ready_for_next": ready,
+        "blocker": blocker,
+        "critical_finding_ids": ["critical-a", "critical-b"],
+        "critical_findings_sha256": module._finding_hash(["critical-a", "critical-b"]),
+    }
+    receipt.write_text(json.dumps(value), encoding="utf-8")
+    return receipt
+
+
+def test_ultra_gpt_review_fail_is_terminal_and_releases_scope(tmp_path: Path) -> None:
+    module = load_comprehensive()
+    config = module.load_manifest(workflow_manifest(tmp_path))
+    receipt_path = _ultra_review_receipt(
+        module, tmp_path, status="FAIL", ready=False, next_stage=None, blocker="bounded finding"
+    )
+
+    receipt = module._validate_receipt(
+        config, receipt_path, "a" * 32, "review", "b" * 32, "c" * 64
+    )
+    terminal = module._terminal_review_state(config, "a" * 32, receipt, [])
+    assert terminal is not None
+    assert terminal["status"] == "blocked"
+    assert terminal["terminal_status"] == "REVIEW_FAILED"
+    assert terminal["scope_released"] is True
+    assert terminal["review_receipt_sha256"] == module.sha(receipt_path)
+    assert terminal["critical_finding_count"] == 2
+
+    state_path = module._state_path(config, "a" * 32)
+    module._write_workflow_state(state_path, config, terminal)
+    scope = module._json(module._scope_path(config))
+    assert scope["status"] == "blocked"
+    assert scope["terminal"] is True
+    assert scope["scope_released"] is True
+
+    replacement = dict(config)
+    replacement["workflow_id"] = "d" * 32
+    module._claim_scope(replacement, replacement["workflow_id"])
+    assert module._json(module._scope_path(config))["active_workflow_id"] == "d" * 32
+
+
+def test_ultra_gpt_terminal_review_fail_never_resubmits_on_resume(tmp_path: Path) -> None:
+    module = load_comprehensive()
+    submitted: list[str] = []
+
+    def fake_execute(path: Path, *, dry_run: bool):
+        value = json.loads(path.read_text(encoding="utf-8"))
+        mission = Path(value["mission_path"])
+        text = mission.read_text(encoding="utf-8")
+        stage = "review" if "stage=review\n" in text else "plan"
+        attempt = next(
+            line.split("=", 1)[1]
+            for line in text.splitlines()
+            if line.startswith("attempt_id=")
+        )
+        input_sha = next(
+            line.split("=", 1)[1]
+            for line in text.splitlines()
+            if line.startswith("input_mission_sha256=")
+        )
+        submitted.append(stage)
+        output = mission.parent / "output.md"
+        output.write_text(stage, encoding="utf-8")
+        receipt = {
+            "schema": module.RECEIPT_SCHEMA,
+            "workflow_id": "a" * 32,
+            "stage": stage,
+            "attempt_id": attempt,
+            "input_mission_sha256": input_sha,
+            "status": "FAIL" if stage == "review" else "PASS",
+            "output_path": str(output),
+            "output_sha256": module.sha(output),
+            "next_stage": None if stage == "review" else "review",
+            "next_mission_path": None,
+            "next_mission_sha256": None,
+            "ready_for_next": stage != "review",
+            "blocker": "bounded finding" if stage == "review" else "",
+        }
+        if stage == "plan":
+            next_mission = tmp_path / "review.md"
+            next_mission.write_text("review the plan", encoding="utf-8")
+            receipt["next_mission_path"] = str(next_mission)
+            receipt["next_mission_sha256"] = module.sha(next_mission)
+        else:
+            ids = ["critical-a", "critical-b"]
+            receipt["critical_finding_ids"] = ids
+            receipt["critical_findings_sha256"] = module._finding_hash(ids)
+        (mission.parent / "stage-result.json").write_text(
+            json.dumps(receipt), encoding="utf-8"
+        )
+        run_dir = mission.parent / "run"
+        run_dir.mkdir()
+        return {"ok": True, "run_dir": str(run_dir)}
+
+    manifest_path = workflow_manifest(tmp_path)
+    first = module.run_workflow(manifest_path, oracle_execute=fake_execute)
+    assert first["status"] == "blocked"
+    assert first["terminal_status"] == "REVIEW_FAILED"
+    assert submitted == ["plan", "review"]
+
+    def never_submit(*_args, **_kwargs):
+        raise AssertionError("terminal REVIEW_FAILED workflow must never submit")
+
+    second = module.run_workflow(manifest_path, oracle_execute=never_submit)
+    assert second["status"] == "blocked"
+    assert second["terminal_status"] == "REVIEW_FAILED"
+
+
+@pytest.mark.parametrize(
+    ("status", "ready", "next_stage", "blocker"),
+    [
+        ("PASS", True, None, ""),
+        ("FAIL", True, None, "bounded finding"),
+        ("FAIL", False, None, ""),
+    ],
+)
+def test_ultra_gpt_review_only_bounded_fail_may_omit_web_multi(
+    tmp_path: Path, status: str, ready: bool, next_stage: object, blocker: str
+) -> None:
+    module = load_comprehensive()
+    config = module.load_manifest(workflow_manifest(tmp_path))
+    receipt = _ultra_review_receipt(
+        module, tmp_path, status=status, ready=ready, next_stage=next_stage, blocker=blocker
+    )
+    with pytest.raises(module.WorkflowError):
+        module._validate_receipt(
+            config, receipt, "a" * 32, "review", "b" * 32, "c" * 64
+        )
+
+
 def strict_multi_config(config: dict[str, object], *, solvers: list[dict[str, object]], max_concurrency: int = 3) -> dict[str, object]:
     return {
         "strict": True,

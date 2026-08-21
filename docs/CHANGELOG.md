@@ -1,5 +1,17 @@
 # 기술 변경 기록
 
+## 1.15.8 - Ultra review FAIL 종결 수리
+
+- hash-bound review receipt가 `FAIL`, `ready_for_next=false`, `next_stage=null`,
+  비어 있지 않은 blocker와 유효한 critical finding 결속을 제공하면 workflow를
+  `BLOCKED / REVIEW_FAILED`로 즉시 종결하고 comprehensive scope를 해제합니다.
+- `PASS`와 `PASS_WITH_NOTES`만 계속 `web-multi`로 진행해야 합니다. 불완전하거나
+  모순된 FAIL receipt는 계속 실패 폐쇄되며, 기존 Oracle run·output·receipt는
+  수정하지 않습니다.
+- terminal review 상태에는 receipt SHA-256과 critical finding 집합의 해시·개수만
+  보존하여 다음 workflow가 이전 의미 내용을 상속하지 않고도 정산을 감사할 수
+  있습니다.
+
 ## 1.15.7 - DevSpace read bridge 사전검증 수리
 
 - DevSpace의 50KB 초과 단일행 `read_chunk` 사전검증이 전체 MCP 서버
