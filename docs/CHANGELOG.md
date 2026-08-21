@@ -1,5 +1,13 @@
 # 기술 변경 기록
 
+## 1.15.11 - DevSpace restart pre-submit 공식 정산
+
+- direct Oracle의 exact `DEVSPACE_SERVICE_RESTART_REQUIRED` 오류를 출력·대화
+  URL·Oracle 실행이 모두 없는 bounded pre-submit host failure로 분류합니다.
+- 기존 `settle-no-submission` 명령이 이 exact pre-submit 증거를 mission copy,
+  stderr/transcript 및 locator 해시에 결속한 append-only receipt로 정산합니다.
+  유사 오류, 출력 존재, URL 존재 또는 다른 lifecycle 상태는 계속 거부합니다.
+
 ## 1.15.10 - DevSpace 테스트 restart marker 격리
 
 - DevSpace compatibility 테스트의 restart-marker state를 각 테스트의 격리된

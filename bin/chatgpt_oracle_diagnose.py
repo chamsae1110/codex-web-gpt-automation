@@ -148,6 +148,8 @@ def classify_run(
             return {"bucket": PRE_SUBMIT_UI, "signature": "thinking-time-selection-unverified"}
         if code == "ORACLE_CDP_DISCONNECT_PRE_SUBMIT_FAILED":
             return {"bucket": PRE_SUBMIT_UI, "signature": "cdp-disconnected-before-prompt-submit"}
+        if code == "DEVSPACE_SERVICE_RESTART_PRELAUNCH_FAILED":
+            return {"bucket": PRE_SUBMIT_HOST, "signature": "devspace-service-restart-required"}
         if code != "ORACLE_VERSION_RESOLUTION_PRELAUNCH_FAILED":
             return {"bucket": UNCLASSIFIED, "signature": "unrecognized-pre-submit-host-failure"}
         return {

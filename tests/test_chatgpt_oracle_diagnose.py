@@ -501,6 +501,30 @@ def test_version_resolution_prelaunch_failure_is_host_safe_only_with_absence_pro
     }
 
 
+def test_devspace_restart_prelaunch_failure_has_a_bounded_signature() -> None:
+    module = load()
+    verdict = module.classify_run(
+        {
+            "status": "failed",
+            "session_authority": "pre_submit",
+            "terminal_harvested": False,
+            "task_outcome": "pending",
+            "pre_submit_failure": {
+                "code": "DEVSPACE_SERVICE_RESTART_PRELAUNCH_FAILED",
+                "output_absent": True,
+                "conversation_url_absent": True,
+            },
+        },
+        stdout_text="",
+        has_output=False,
+    )
+
+    assert verdict == {
+        "bucket": "pre-submit-host-environment",
+        "signature": "devspace-service-restart-required",
+    }
+
+
 def test_oracle_attachment_size_preflight_is_host_safe_with_no_conversation() -> None:
     module = load()
     verdict = module.classify_run(

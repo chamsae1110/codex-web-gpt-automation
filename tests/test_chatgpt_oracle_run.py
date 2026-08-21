@@ -976,10 +976,83 @@ def test_devspace_patch_change_blocks_before_submission_until_restart(
     )
 
     assert result["ok"] is False
-    assert result["result"]["status"] == "failed"
+    assert result["status"] == "pre_submit_failed"
+    assert result["safe_for_fresh_run"] is True
+    assert result["result"]["status"] == "attention_required"
+    assert result["result"]["session_authority"] == "pre_submit"
+    assert result["result"]["pre_submit_failure"]["code"] == (
+        "DEVSPACE_SERVICE_RESTART_PRELAUNCH_FAILED"
+    )
     assert launched == []
     stderr = Path(result["result"]["artifacts"]["stderr"]).read_text(encoding="utf-8")
     assert "DEVSPACE_SERVICE_RESTART_REQUIRED" in stderr
+
+    settled = runner.settle_user_confirmed_no_submission(
+        Path(result["run_dir"]),
+        confirmation=runner.STATE.USER_CONFIRMED_NO_SUBMISSION,
+        reason="exact DevSpace restart preflight failed before Oracle launch",
+    )
+
+    assert settled["safe_for_fresh_run"] is True
+    assert settled["unresolved_owners"] == []
+    assert settled["result"]["task_outcome_reason"] == (
+        "user-confirmed-no-submission-after-devspace-restart-required"
+    )
+    receipt = Path(result["run_dir"]) / "user-confirmed-no-submission.json"
+    recorded = json.loads(receipt.read_text(encoding="utf-8"))
+    assert recorded["settlement_eligibility"] == "oracle-pre-submit-host/v1"
+    assert recorded["host_failure"]["failure_reason"] == "devspace-service-restart-required"
+    assert runner.STATE.proven_user_confirmed_no_submission(
+        Path(result["run_dir"]) / "state.json"
+    ) is not None
+
+
+@pytest.mark.parametrize("mutation", ["similar-error", "output", "conversation-url"])
+def test_devspace_restart_no_submission_settlement_rejects_incomplete_evidence(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    runner = load_runner()
+    result = runner.execute_run(
+        manifest(tmp_path),
+        run_factory=version_runner,
+        compat_factory=lambda version: {"ok": True, "version": version},
+        devspace_compat_factory=lambda: {
+            "ok": True,
+            "changed": ["dist/workspaces.js"],
+            "package_roots": ["package"],
+            "service_restart_required": True,
+        },
+        devspace_qualification_factory=lambda root: {
+            "qualified": True,
+            "project_root": str(root),
+        },
+    )
+    run_dir = Path(result["run_dir"])
+    if mutation == "similar-error":
+        for name in ("stderr.log", "transcript.md"):
+            path = run_dir / name
+            path.write_text(
+                path.read_text(encoding="utf-8").replace("restarted once", "restarted again"),
+                encoding="utf-8",
+            )
+    elif mutation == "output":
+        (run_dir / "output.md").write_text("unexpected provider output", encoding="utf-8")
+    else:
+        state_path = run_dir / "state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["oracle"]["conversation_url"] = "https://chatgpt.com/c/unexpected"
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    with pytest.raises(runner.STATE.OracleStateError) as failure:
+        runner.settle_user_confirmed_no_submission(
+            run_dir,
+            confirmation=runner.STATE.USER_CONFIRMED_NO_SUBMISSION,
+            reason="must remain fail closed",
+        )
+
+    assert failure.value.code == "NO_SUBMISSION_AUTHORITY_INVALID"
+    assert not (run_dir / "user-confirmed-no-submission.json").exists()
 
 
 def test_exact_output_hash_adjudication_marks_legacy_task_not_executed(

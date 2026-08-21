@@ -116,6 +116,10 @@ ORACLE_MODEL_SELECTOR_BUTTON_PRE_SUBMIT_ERROR = (
 )
 ORACLE_STANDALONE_PRO_NO_SUBMISSION_VERSIONS = {"0.17.1"}
 USER_CONFIRMED_NO_SUBMISSION = "user-confirmed-no-submission"
+DEVSPACE_SERVICE_RESTART_REQUIRED_ERROR = (
+    "version resolution failed: DEVSPACE_SERVICE_RESTART_REQUIRED: "
+    "DevSpace was safely patched before submission and must be restarted once"
+)
 USER_CONFIRMED_EXECUTION_ENDED = "user-confirmed-task-ended"
 USER_AUTHORIZED_FRESH_AFTER_RECURSIVE_SELF_OBSERVATION = (
     "user-authorized-fresh-run-after-recursive-self-observation"
@@ -2195,6 +2199,9 @@ def _user_confirmable_no_submission_evidence(state_path: Path) -> dict[str, Any]
     comprehensive = _comprehensive_no_submission_evidence(state_path)
     if comprehensive is not None:
         return comprehensive
+    pre_submit_host = _pre_submit_host_no_submission_evidence(state_path)
+    if pre_submit_host is not None:
+        return pre_submit_host
     direct_devspace = _direct_devspace_no_submission_evidence(
         state_path, require_persisted_recovery=True
     )
@@ -2292,6 +2299,11 @@ def proven_user_confirmed_no_submission(state_path: Path) -> dict[str, Any] | No
             "source_mission_sha256", "transport_mission_path", "transport_mission_sha256",
             "oracle_version",
         )
+    elif current.get("settlement_eligibility") == "oracle-pre-submit-host/v1":
+        required = (
+            "settlement_eligibility", "transport", "transport_mission_path",
+            "transport_mission_sha256", "transcript_sha256", "host_failure",
+        )
     elif current.get("settlement_eligibility") == "oracle-web-multi-child/v1":
         required = (
             "settlement_eligibility", "parallel_parent_id", "source_mission_path",
@@ -2333,12 +2345,18 @@ def settle_user_confirmed_no_submission(
     existing = proven_user_confirmed_no_submission(state_path)
     if existing is not None:
         return payload
-    if str(payload.get("session_authority") or "") != "submitted_unknown":
+    authority = str(payload.get("session_authority") or "")
+    evidence = _user_confirmable_no_submission_evidence(state_path)
+    pre_submit_host_eligible = (
+        authority == "pre_submit"
+        and isinstance(evidence, dict)
+        and evidence.get("settlement_eligibility") == "oracle-pre-submit-host/v1"
+    )
+    if authority != "submitted_unknown" and not pre_submit_host_eligible:
         raise OracleStateError(
             "NO_SUBMISSION_AUTHORITY_INVALID",
-            "only a submitted_unknown run may be adjudicated as not submitted",
+            "only a submitted_unknown run or an exact proven pre-submit host failure may be adjudicated as not submitted",
         )
-    evidence = _user_confirmable_no_submission_evidence(state_path)
     if evidence is None:
         # Legacy prompt-observation failures predate the durable recovery
         # receipt.  Only this explicit, exact user-attestation command may
@@ -2371,7 +2389,9 @@ def settle_user_confirmed_no_submission(
         "transport_status": "not_submitted_user_confirmed",
         "task_outcome": "pending",
         "task_outcome_reason": (
-            "user-confirmed-no-submission-after-model-selector-failure"
+            "user-confirmed-no-submission-after-devspace-restart-required"
+            if evidence.get("settlement_eligibility") == "oracle-pre-submit-host/v1"
+            else "user-confirmed-no-submission-after-model-selector-failure"
             if evidence.get("pre_submit_marker")
             == "oracle-model-selector-button-missing/v1"
             else "user-confirmed-no-submission-after-prompt-timeout"
@@ -2839,6 +2859,27 @@ def proven_pre_submit_host_failure(state_path: Path) -> dict[str, Any] | None:
         return None
     elif not normalized_error.startswith("version resolution failed:"):
         return None
+    elif normalized_error.strip() == DEVSPACE_SERVICE_RESTART_REQUIRED_ERROR:
+        lifecycle_shape = (
+            (state.get("status"), str(state.get("transport_status") or ""))
+            in {
+                ("failed", "prepared"),
+                ("attention_required", "failed_pre_submit"),
+                ("attention_required", "not_submitted_user_confirmed"),
+            }
+        )
+        if (
+            authority != "pre_submit"
+            or not lifecycle_shape
+            or state.get("terminal_harvested") is not False
+            or str(state.get("transport") or "") != "devspace"
+            or str(state.get("mode") or "") != "browser"
+            or str(state.get("task_outcome") or "") != "pending"
+            or stdout_bytes
+        ):
+            return None
+        failure_reason = "devspace-service-restart-required"
+        code = "DEVSPACE_SERVICE_RESTART_PRELAUNCH_FAILED"
     elif "Oracle compatibility is validated only for the tested version" in normalized_error:
         failure_reason = "compatibility-version-drift"
         code = "ORACLE_VERSION_RESOLUTION_PRELAUNCH_FAILED"
@@ -2859,6 +2900,66 @@ def proven_pre_submit_host_failure(state_path: Path) -> dict[str, Any] | None:
         "conversation_url_absent": True,
         "resolved_version": "unresolved",
         "failure_reason": failure_reason,
+    }
+
+
+def _pre_submit_host_no_submission_evidence(state_path: Path) -> dict[str, Any] | None:
+    """Bind the exact DevSpace restart preflight failure without reading project files."""
+    failure = proven_pre_submit_host_failure(state_path)
+    if (
+        failure is None
+        or failure.get("code") != "DEVSPACE_SERVICE_RESTART_PRELAUNCH_FAILED"
+    ):
+        return None
+    state = load_state(state_path)
+    run_dir = state_path.parent
+    run_id = str(state.get("run_id") or "")
+    mission = state.get("mission") if isinstance(state.get("mission"), dict) else {}
+    transport_path = Path(str(mission.get("transport_path") or ""))
+    mission_sha256 = str(mission.get("sha256") or "").casefold()
+    oracle = state.get("oracle") if isinstance(state.get("oracle"), dict) else {}
+    locator = str(oracle.get("session_locator") or oracle.get("slug") or "").strip()
+    transcript_record = _artifact_bytes(state, "transcript")
+    if (
+        not run_id
+        or run_dir.name != run_id
+        or not locator
+        or not re.fullmatch(r"[a-f0-9]{64}", mission_sha256)
+        or transport_path.resolve() != (run_dir / "mission.md").resolve()
+        or transport_path.is_symlink()
+        or transcript_record is None
+    ):
+        return None
+    transcript_path, transcript_bytes = transcript_record
+    try:
+        transport_bytes = transport_path.read_bytes()
+        project_root = Path(str(state.get("project_root") or "")).resolve(strict=True)
+    except OSError:
+        return None
+    if (
+        not project_root.is_dir()
+        or transcript_path.resolve() != (run_dir / "transcript.md").resolve()
+        or transcript_path.is_symlink()
+        or hashlib.sha256(transport_bytes).hexdigest() != mission_sha256
+        or hashlib.sha256(transcript_bytes).hexdigest() != failure["stderr_sha256"]
+    ):
+        return None
+    return {
+        "settlement_eligibility": "oracle-pre-submit-host/v1",
+        "project_root": str(project_root),
+        "run_id": run_id,
+        "transport": "devspace",
+        "transport_mission_path": str(transport_path),
+        "transport_mission_sha256": mission_sha256,
+        "mission_sha256": mission_sha256,
+        "oracle_locator": locator,
+        "stdout_sha256": failure["stdout_sha256"],
+        "stderr_sha256": failure["stderr_sha256"],
+        "transcript_sha256": hashlib.sha256(transcript_bytes).hexdigest(),
+        "recovery_evidence": [],
+        "output_absent": True,
+        "conversation_url_absent": True,
+        "host_failure": failure,
     }
 
 
