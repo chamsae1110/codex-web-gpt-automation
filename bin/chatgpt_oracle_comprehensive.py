@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import importlib.util
 import json
@@ -9,6 +10,7 @@ import re
 import subprocess
 import sys
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
@@ -36,6 +38,11 @@ PRO_OUTPUT_PREFIX_KEYS = (
 PRO_OUTPUT_RECOVERY_SCHEMA = "codex.chatgpt.oracle-pro-output-recovery/v1"
 STATE_SCHEMA = "codex.chatgpt.oracle-comprehensive-state/v1"
 SCOPE_SCHEMA = "codex.chatgpt.oracle-comprehensive-scope/v1"
+USER_STOP_SETTLEMENT_SCHEMA = "codex.chatgpt.oracle-comprehensive-user-stop/v1"
+USER_STOP_COMPLETION_SCHEMA = "codex.chatgpt.oracle-comprehensive-user-stop-completion/v1"
+USER_STOP_CONFIRMATION = "user-confirmed-provider-stop"
+TERMINAL_SCOPE_STATUSES = {"complete", "canceled"}
+USER_STOPPABLE_OUTCOMES = {"blocked", "not_executed", "pending", "unknown"}
 STANDARD_PROFILE = "standard"
 ULTRA_ECONOMY_PROFILE = "ultra-economy"
 ULTRA_GPT_PROFILE = "ultra-gpt"
@@ -227,6 +234,23 @@ def _write(path: Path, value: dict[str, Any]) -> None:
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def _atomic_write(path: Path, value: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{uuid.uuid4().hex[:12]}.tmp")
+    data = (json.dumps(value, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    try:
+        with temporary.open("xb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
 def _finding_hash(ids: list[str]) -> str:
     payload = json.dumps(ids, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
@@ -350,7 +374,9 @@ def _claim_scope(config: dict[str, Any], workflow_id: str) -> None:
         stored = _json(path)
         active = str(stored.get("active_workflow_id") or "")
         status = str(stored.get("status") or "")
-        if active and active != workflow_id and status != "complete":
+        if active == workflow_id and status in TERMINAL_SCOPE_STATUSES:
+            return
+        if active and active != workflow_id and status not in TERMINAL_SCOPE_STATUSES:
             raise WorkflowError(
                 f"comprehensive scope already belongs to active workflow {active}; recover that exact workflow"
             )
@@ -370,13 +396,392 @@ def _write_workflow_state(path: Path, config: dict[str, Any], value: dict[str, A
     scope_status = str(payload.get("status") or "active")
     _write(_scope_path(config), {
         "schema": SCOPE_SCHEMA,
-        "status": scope_status if scope_status in {"complete", "attention_required", "failed"} else "active",
+        "status": scope_status if scope_status in {"complete", "canceled", "attention_required", "failed"} else "active",
         "active_workflow_id": config["workflow_id"],
         "project_root": str(config["project_root"]),
         "workflow_parent": str(config["workflow_dir"].parent),
         "workflow_state_path": str(path),
         "review_policy": dict(config["_review_policy"]),
     })
+
+
+def _required_sha256(value: str, *, label: str) -> str:
+    normalized = str(value or "").strip().casefold()
+    if not re.fullmatch(r"[0-9a-f]{64}", normalized):
+        raise WorkflowError(f"{label} must be an exact SHA-256")
+    return normalized
+
+
+def _load_expected_json(path: Path, expected_sha256: str, *, label: str) -> tuple[dict[str, Any], str]:
+    if path.is_symlink():
+        raise WorkflowError(f"{label} must not be a symlink")
+    data = path.read_bytes()
+    digest = hashlib.sha256(data).hexdigest()
+    if digest != expected_sha256:
+        raise WorkflowError(f"{label} SHA-256 mismatch")
+    try:
+        text = data.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise WorkflowError(f"{label} must be strict UTF-8") from exc
+    return _json_object_no_duplicates(text, label=label), digest
+
+
+def _relative_state_path(path: Path, root: Path, *, label: str) -> tuple[str, ...]:
+    try:
+        return path.relative_to(root).parts
+    except ValueError as exc:
+        raise WorkflowError(f"{label} must remain inside the Oracle state root") from exc
+
+
+def _user_stop_receipt_path(state_root: Path, project_key: str, workflow_id: str, run_id: str) -> Path:
+    return (
+        state_root
+        / "workflow-user-stop-settlements"
+        / project_key
+        / workflow_id
+        / f"{run_id}.json"
+    )
+
+
+def _user_stop_completion_path(state_root: Path, project_key: str, workflow_id: str, run_id: str) -> Path:
+    return (
+        state_root
+        / "workflow-user-stop-settlements"
+        / project_key
+        / workflow_id
+        / f"{run_id}.completion.json"
+    )
+
+
+def _binding_sha256(value: dict[str, Any]) -> str:
+    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _decode_preimage(value: Any, *, expected_sha256: str, label: str) -> dict[str, Any]:
+    if not isinstance(value, str) or not value:
+        raise WorkflowError(f"{label} preimage is missing")
+    try:
+        data = base64.b64decode(value, validate=True)
+    except (ValueError, TypeError) as exc:
+        raise WorkflowError(f"{label} preimage is not valid base64") from exc
+    if hashlib.sha256(data).hexdigest() != expected_sha256:
+        raise WorkflowError(f"{label} preimage SHA-256 mismatch")
+    try:
+        text = data.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise WorkflowError(f"{label} preimage must be strict UTF-8") from exc
+    return _json_object_no_duplicates(text, label=f"{label} preimage")
+
+
+def settle_user_stopped_workflow(
+    *,
+    workflow_state_path: Path,
+    scope_state_path: Path,
+    run_dir: Path,
+    workflow_id: str,
+    run_id: str,
+    expected_workflow_sha256: str,
+    expected_scope_sha256: str,
+    expected_run_state_sha256: str,
+    confirmation: str,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    if confirmation != USER_STOP_CONFIRMATION:
+        raise WorkflowError(f"confirmation must be {USER_STOP_CONFIRMATION}")
+    if not re.fullmatch(r"[0-9a-f]{32}", workflow_id):
+        raise WorkflowError("workflow_id must be exact 32-character lowercase hex")
+    if not re.fullmatch(r"[0-9a-f]{32}", run_id):
+        raise WorkflowError("run_id must be exact 32-character lowercase hex")
+    expected_workflow_sha256 = _required_sha256(expected_workflow_sha256, label="workflow state")
+    expected_scope_sha256 = _required_sha256(expected_scope_sha256, label="scope state")
+    expected_run_state_sha256 = _required_sha256(expected_run_state_sha256, label="Oracle run state")
+
+    state_root = RUNNER.STATE.oracle_state_root().resolve(strict=True)
+    workflow_path = workflow_state_path.expanduser().resolve(strict=True)
+    scope_path = scope_state_path.expanduser().resolve(strict=True)
+    directory = run_dir.expanduser().resolve(strict=True)
+    run_state_path = (directory / "state.json").resolve(strict=True)
+    for candidate, label in (
+        (workflow_path, "workflow state"),
+        (scope_path, "scope state"),
+        (run_state_path, "Oracle run state"),
+    ):
+        if not candidate.is_file() or candidate.is_symlink():
+            raise WorkflowError(f"{label} must be a regular non-symlink file")
+
+    workflow_parts = _relative_state_path(workflow_path, state_root, label="workflow state")
+    scope_parts = _relative_state_path(scope_path, state_root, label="scope state")
+    run_parts = _relative_state_path(directory, state_root, label="Oracle run directory")
+    if len(workflow_parts) != 3 or workflow_parts[0] != "workflows" or workflow_path.name != f"{workflow_id}.json":
+        raise WorkflowError("workflow state path identity mismatch")
+    project_key = workflow_parts[1]
+    if (
+        len(scope_parts) != 3
+        or scope_parts[0] != "comprehensive-scopes"
+        or scope_parts[1] != project_key
+        or scope_path.suffix != ".json"
+    ):
+        raise WorkflowError("scope state path identity mismatch")
+    if (
+        len(run_parts) != 4
+        or run_parts[0] != "projects"
+        or run_parts[1] != project_key
+        or run_parts[2] != "runs"
+        or run_parts[3] != run_id
+    ):
+        raise WorkflowError("Oracle run directory identity mismatch")
+
+    run_state, _ = _load_expected_json(
+        run_state_path, expected_run_state_sha256, label="Oracle run state"
+    )
+    project_root = Path(str(run_state.get("project_root") or "")).expanduser()
+    if not project_root.is_absolute():
+        raise WorkflowError("Oracle run project_root is not absolute")
+    expected_project_key = hashlib.sha256(str(project_root.resolve()).casefold().encode("utf-8")).hexdigest()[:24]
+    if expected_project_key != project_key:
+        raise WorkflowError("Oracle run project binding mismatch")
+
+    receipt_path = _user_stop_receipt_path(state_root, project_key, workflow_id, run_id)
+    with RUNNER.STATE.project_submit_mutex(project_root, timeout_seconds=30):
+        run_state, _ = _load_expected_json(
+            run_state_path, expected_run_state_sha256, label="Oracle run state"
+        )
+        if (
+            run_state.get("schema") != RUNNER.STATE.STATE_SCHEMA
+            or run_state.get("run_id") != run_id
+            or run_state.get("status") != "attention_required"
+            or run_state.get("session_authority") != "terminal"
+            or run_state.get("terminal_harvested") is not True
+            or run_state.get("task_outcome") not in USER_STOPPABLE_OUTCOMES
+            or run_state.get("transport_status") not in {"complete", "failed"}
+        ):
+            raise WorkflowError("Oracle run is not a bounded terminal user-stop candidate")
+
+        receipt: dict[str, Any] | None = None
+        receipt_sha256 = ""
+        completion_path = _user_stop_completion_path(state_root, project_key, workflow_id, run_id)
+        if receipt_path.exists() or receipt_path.is_symlink():
+            if receipt_path.is_symlink() or not receipt_path.is_file():
+                raise WorkflowError("user-stop settlement receipt path is unsafe")
+            receipt = _json_object_no_duplicates(
+                receipt_path.read_text(encoding="utf-8", errors="strict"),
+                label="user-stop settlement receipt",
+            )
+            receipt_sha256 = sha(receipt_path)
+
+        workflow_current_bytes = workflow_path.read_bytes()
+        scope_current_bytes = scope_path.read_bytes()
+        workflow_current = _json_object_no_duplicates(
+            workflow_current_bytes.decode("utf-8", errors="strict"), label="workflow state"
+        )
+        scope_current = _json_object_no_duplicates(
+            scope_current_bytes.decode("utf-8", errors="strict"), label="scope state"
+        )
+        workflow_current_sha = hashlib.sha256(workflow_current_bytes).hexdigest()
+        scope_current_sha = hashlib.sha256(scope_current_bytes).hexdigest()
+
+        if receipt is None:
+            workflow_before = workflow_current
+            scope_before = scope_current
+        else:
+            workflow_before = _decode_preimage(
+                receipt.get("workflow_state_preimage_base64"),
+                expected_sha256=expected_workflow_sha256,
+                label="workflow state",
+            )
+            scope_before = _decode_preimage(
+                receipt.get("scope_state_preimage_base64"),
+                expected_sha256=expected_scope_sha256,
+                label="scope state",
+            )
+
+        binding = {
+            "confirmation": confirmation,
+            "workflow_id": workflow_id,
+            "run_id": run_id,
+            "project_key": project_key,
+            "manifest_sha256": str(workflow_before.get("manifest_sha256") or ""),
+            "workflow_state_sha256": expected_workflow_sha256,
+            "scope_state_sha256": expected_scope_sha256,
+            "run_state_sha256": expected_run_state_sha256,
+            "current_stage": str(workflow_before.get("current_stage") or ""),
+            "current_attempt_id": str(workflow_before.get("current_attempt_id") or ""),
+            "current_input_sha256": str(workflow_before.get("current_input_sha256") or ""),
+        }
+        binding_sha256 = _binding_sha256(binding)
+
+        if receipt is not None:
+            expected_receipt = {
+                "schema": USER_STOP_SETTLEMENT_SCHEMA,
+                "status": "CANCELED",
+                "authority": confirmation,
+                "authority_binding_sha256": binding_sha256,
+                **binding,
+            }
+            if any(receipt.get(key) != value for key, value in expected_receipt.items()):
+                raise WorkflowError("existing user-stop settlement receipt binding mismatch")
+            if receipt.get("workflow_state_path") != str(workflow_path):
+                raise WorkflowError("existing settlement workflow path mismatch")
+            if receipt.get("scope_state_path") != str(scope_path):
+                raise WorkflowError("existing settlement scope path mismatch")
+            if receipt.get("run_state_path") != str(run_state_path):
+                raise WorkflowError("existing settlement run path mismatch")
+            if dry_run:
+                return {
+                    "ok": True,
+                    "status": "dry-run",
+                    "terminal_status": "CANCELED",
+                    "workflow_id": workflow_id,
+                    "run_id": run_id,
+                    "authority_binding_sha256": binding_sha256,
+                    "settlement_path": str(receipt_path),
+                    "submission_action": "none",
+                }
+        else:
+            if workflow_current_sha != expected_workflow_sha256:
+                raise WorkflowError("workflow state SHA-256 mismatch")
+            if scope_current_sha != expected_scope_sha256:
+                raise WorkflowError("scope state SHA-256 mismatch")
+            if (
+                workflow_current.get("schema") != STATE_SCHEMA
+                or workflow_current.get("status") not in {"running", "attention_required"}
+                or workflow_current.get("workflow_id") != workflow_id
+                or workflow_current.get("current_attempt_id") != run_id
+                or workflow_current.get("oracle_run_id") != run_id
+                or Path(str(workflow_current.get("oracle_run_dir") or "")).expanduser().resolve() != directory
+                or not re.fullmatch(r"[0-9a-f]{64}", str(workflow_current.get("manifest_sha256") or ""))
+                or not re.fullmatch(r"[0-9a-f]{64}", str(workflow_current.get("current_input_sha256") or ""))
+            ):
+                raise WorkflowError("workflow state is not bound to the exact Oracle run")
+            records = workflow_current.get("records")
+            if not isinstance(records, list) or not any(
+                isinstance(record, dict)
+                and Path(str(record.get("run_dir") or "")).expanduser().resolve() == directory
+                for record in records
+            ):
+                raise WorkflowError("workflow records do not bind the exact Oracle run")
+            if (
+                scope_current.get("schema") != SCOPE_SCHEMA
+                or scope_current.get("status") in TERMINAL_SCOPE_STATUSES
+                or scope_current.get("active_workflow_id") != workflow_id
+            ):
+                raise WorkflowError("scope state is not owned by the exact workflow")
+            receipt = {
+                "schema": USER_STOP_SETTLEMENT_SCHEMA,
+                "status": "CANCELED",
+                "authority": confirmation,
+                "authority_binding_sha256": binding_sha256,
+                **binding,
+                "workflow_state_path": str(workflow_path),
+                "scope_state_path": str(scope_path),
+                "run_state_path": str(run_state_path),
+                "workflow_state_preimage_base64": base64.b64encode(workflow_current_bytes).decode("ascii"),
+                "scope_state_preimage_base64": base64.b64encode(scope_current_bytes).decode("ascii"),
+                "settled_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            }
+            if dry_run:
+                return {
+                    "ok": True,
+                    "status": "dry-run",
+                    "terminal_status": "CANCELED",
+                    "workflow_id": workflow_id,
+                    "run_id": run_id,
+                    "authority_binding_sha256": binding_sha256,
+                    "settlement_path": str(receipt_path),
+                    "submission_action": "none",
+                }
+            _atomic_write(receipt_path, receipt)
+            receipt_sha256 = sha(receipt_path)
+
+        if not receipt_sha256:
+            receipt_sha256 = sha(receipt_path)
+        reference = {
+            "schema": USER_STOP_SETTLEMENT_SCHEMA,
+            "status": "CANCELED",
+            "run_id": run_id,
+            "path": str(receipt_path),
+            "sha256": receipt_sha256,
+            "authority_binding_sha256": binding_sha256,
+        }
+        canceled_workflow = {
+            **workflow_before,
+            "status": "canceled",
+            "terminal": True,
+            "terminal_status": "CANCELED",
+            "blocker": "user explicitly stopped the provider response and canceled this workflow",
+            "user_stop_settlement": reference,
+        }
+        canceled_scope = {
+            **scope_before,
+            "status": "canceled",
+            "terminal": True,
+            "terminal_status": "CANCELED",
+            "scope_released": True,
+            "user_stop_settlement": reference,
+        }
+        if workflow_current_sha == expected_workflow_sha256:
+            _atomic_write(workflow_path, canceled_workflow)
+        elif workflow_current != canceled_workflow:
+            raise WorkflowError("workflow state changed outside the user-stop settlement")
+
+        if scope_current_sha == expected_scope_sha256:
+            _atomic_write(scope_path, canceled_scope)
+        elif scope_current != canceled_scope:
+            raise WorkflowError("scope state changed outside the user-stop settlement")
+
+        final_workflow = _json(workflow_path)
+        final_scope = _json(scope_path)
+        if final_workflow.get("status") != "canceled" or final_scope.get("status") != "canceled":
+            raise WorkflowError("user-stop settlement did not reach a terminal canceled state")
+        workflow_final_sha = sha(workflow_path)
+        scope_final_sha = sha(scope_path)
+        if completion_path.exists() or completion_path.is_symlink():
+            if completion_path.is_symlink() or not completion_path.is_file():
+                raise WorkflowError("user-stop completion receipt path is unsafe")
+            completion = _json_object_no_duplicates(
+                completion_path.read_text(encoding="utf-8", errors="strict"),
+                label="user-stop completion receipt",
+            )
+            if (
+                completion.get("schema") != USER_STOP_COMPLETION_SCHEMA
+                or completion.get("settlement_sha256") != receipt_sha256
+                or completion.get("workflow_state_sha256") != workflow_final_sha
+                or completion.get("scope_state_sha256") != scope_final_sha
+            ):
+                raise WorkflowError("user-stop completion receipt binding mismatch")
+        else:
+            completion = {
+                "schema": USER_STOP_COMPLETION_SCHEMA,
+                "status": "CANCELED",
+                "workflow_id": workflow_id,
+                "run_id": run_id,
+                "settlement_path": str(receipt_path),
+                "settlement_sha256": receipt_sha256,
+                "workflow_state_path": str(workflow_path),
+                "workflow_state_sha256": workflow_final_sha,
+                "scope_state_path": str(scope_path),
+                "scope_state_sha256": scope_final_sha,
+                "completed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            }
+            _atomic_write(completion_path, completion)
+        completion_sha256 = sha(completion_path)
+        return {
+            "ok": True,
+            "status": "canceled",
+            "terminal_status": "CANCELED",
+            "workflow_id": workflow_id,
+            "run_id": run_id,
+            "authority_binding_sha256": binding_sha256,
+            "settlement_path": str(receipt_path),
+            "settlement_sha256": receipt_sha256,
+            "completion_path": str(completion_path),
+            "completion_sha256": completion_sha256,
+            "workflow_state_sha256": workflow_final_sha,
+            "scope_state_sha256": scope_final_sha,
+            "scope_released": True,
+            "submission_action": "none",
+        }
 
 
 def _stage_mission(
@@ -1486,6 +1891,8 @@ def _run_workflow_locked(
             raise WorkflowError("workflow manifest changed after preparation")
         if stored.get("status") == "complete":
             return {"ok": True, **stored}
+        if stored.get("status") == "canceled":
+            return {"ok": False, **stored}
         if stored.get("status") == "awaiting_receipt":
             stored_receipt = Path(str(stored["receipt_path"])).resolve()
             if not stored_receipt.is_file():
@@ -1938,11 +2345,53 @@ def run_workflow(
 
 def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run a bounded Oracle comprehensive workflow.")
-    parser.add_argument("--manifest", type=Path, required=True)
+    parser.add_argument("--manifest", type=Path)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--cancel-user-stopped", action="store_true")
+    parser.add_argument("--workflow-state", type=Path)
+    parser.add_argument("--scope-state", type=Path)
+    parser.add_argument("--run-dir", type=Path)
+    parser.add_argument("--workflow-id")
+    parser.add_argument("--run-id")
+    parser.add_argument("--expected-workflow-sha256")
+    parser.add_argument("--expected-scope-sha256")
+    parser.add_argument("--expected-run-state-sha256")
+    parser.add_argument("--confirmation")
     args = parser.parse_args(argv)
     try:
-        value = run_workflow(args.manifest, dry_run=args.dry_run)
+        if args.cancel_user_stopped:
+            if args.manifest is not None:
+                raise WorkflowError("--manifest cannot be combined with --cancel-user-stopped")
+            required = {
+                "workflow_state": args.workflow_state,
+                "scope_state": args.scope_state,
+                "run_dir": args.run_dir,
+                "workflow_id": args.workflow_id,
+                "run_id": args.run_id,
+                "expected_workflow_sha256": args.expected_workflow_sha256,
+                "expected_scope_sha256": args.expected_scope_sha256,
+                "expected_run_state_sha256": args.expected_run_state_sha256,
+                "confirmation": args.confirmation,
+            }
+            missing = sorted(key for key, value in required.items() if value in {None, ""})
+            if missing:
+                raise WorkflowError(f"cancel-user-stopped requires: {', '.join(missing)}")
+            value = settle_user_stopped_workflow(
+                workflow_state_path=args.workflow_state,
+                scope_state_path=args.scope_state,
+                run_dir=args.run_dir,
+                workflow_id=args.workflow_id,
+                run_id=args.run_id,
+                expected_workflow_sha256=args.expected_workflow_sha256,
+                expected_scope_sha256=args.expected_scope_sha256,
+                expected_run_state_sha256=args.expected_run_state_sha256,
+                confirmation=args.confirmation,
+                dry_run=args.dry_run,
+            )
+        else:
+            if args.manifest is None:
+                raise WorkflowError("--manifest is required unless --cancel-user-stopped is selected")
+            value = run_workflow(args.manifest, dry_run=args.dry_run)
     except Exception as exc:
         value = {"ok": False, "error": {"code": "ORACLE_COMPREHENSIVE_FAILED", "message": str(exc)}}
     print(json.dumps(value, ensure_ascii=False, indent=2))

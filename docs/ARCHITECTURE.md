@@ -79,8 +79,11 @@ terminate a run, release its lock, mark it failed, or authorize a replacement.
   When the web app withholds mutating tools, closed host-materialization
   envelopes preserve the same identity and ownership checks without
   mislabeling a write tool as read-only. A separate bounded `read_chunk`
-  surface reconstructs UTF-8 files whose first line exceeds the upstream
-  50KB line-oriented reader limit.
+  surface reconstructs UTF-8 files whose first line exceeds the upstream 50KB
+  line-oriented reader limit. An explicit provider-UI user stop is terminalized
+  only through the comprehensive runner's hash-bound `CANCELED` settlement. It preserves the
+  Oracle run state, records authority/completion receipts, and releases only the
+  exact workflow scope; canceled workflows cannot be reactivated.
   Local Codex retains deterministic control and release duties.
 
 ## Installation lifecycle

@@ -1,5 +1,16 @@
 # 기술 변경 기록
 
+## 1.15.6 - comprehensive 사용자 중지 정산
+
+- 사용자가 provider UI에서 응답을 명시적으로 중지하고 workflow 종료를
+  요청한 경우, terminal-harvested Oracle run과 exact workflow/scope/run state의
+  사전 SHA-256을 요구하는 공식 `--cancel-user-stopped` 경로를 추가했습니다.
+- 정산은 Oracle run state를 수정하거나 새 prompt/recovery를 만들지 않습니다.
+  user authority receipt, `CANCELED` workflow, released scope, completion receipt를
+  원자 기록하며 중단 후 재실행은 동일 결속에서만 idempotent하게 마무리합니다.
+- scope는 `canceled`를 terminal 상태로 인정해 새 workflow가 같은 exact scope를
+  청구할 수 있지만, 기존 canceled workflow 자체는 다시 활성화하지 않습니다.
+
 ## 1.15.5 - 읽기 전용 웹 표면용 Ultra host bridge
 
 - regular comprehensive planner/reviewer가 DevSpace의 변경 도구를 받지 못해도

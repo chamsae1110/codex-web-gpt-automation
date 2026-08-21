@@ -105,3 +105,10 @@ Pro 설계 자문이 필요하면 사용자의 별도 명시 승인을 받은 �
 완료는 final web PASS receipt와 local gate exit code 0이 모두 있어야 합니다.
 제출 여부가 불명확한 세션은 같은 exact slug만 복구하며 새 세션으로 대체하지
 않습니다. 80분은 상태 점검 시점이지 종료 시간이 아닙니다.
+
+사용자가 provider UI에서 응답을 직접 중지한 뒤 해당 workflow 전체를 그만두라고
+명시한 경우에는 JSON을 수동 수정하지 않습니다. 유지보수자는 설치된 comprehensive
+runner의 `--cancel-user-stopped`를 dry-run한 뒤 실행하며, exact workflow/scope/run
+state의 사전 SHA-256과 `user-confirmed-provider-stop` 확인 토큰을 모두 제공해야
+합니다. Oracle run이 terminal-harvested가 아니거나 결속이 하나라도 바뀌면 정산과
+scope 해제가 모두 실패 폐쇄됩니다.

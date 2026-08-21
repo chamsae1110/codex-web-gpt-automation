@@ -2080,3 +2080,232 @@ def test_awaiting_receipt_preserves_source_and_augmented_mission_bindings(tmp_pa
     assert result["current_binding_source_sha256"] == module.sha(source)
     assert result["current_augmented_mission_sha256"] == module.sha(augmented)
     assert result["current_binding_source_sha256"] != result["current_augmented_mission_sha256"]
+
+
+def _user_stop_fixture(module, tmp_path: Path) -> dict[str, object]:
+    path = manifest(tmp_path)
+    config = module.load_manifest(path)
+    config["_review_policy"] = module._default_review_policy()
+    workflow_id = str(config["workflow_id"])
+    run_id = "b" * 32
+    workflow_path = module._state_path(config, workflow_id)
+    scope_path = module._scope_path(config)
+    project_key = workflow_path.parent.name
+    run_dir = (
+        module.RUNNER.STATE.oracle_state_root()
+        / "projects"
+        / project_key
+        / "runs"
+        / run_id
+    )
+    run_dir.mkdir(parents=True)
+    run_state_path = run_dir / "state.json"
+    module._write(run_state_path, {
+        "schema": module.RUNNER.STATE.STATE_SCHEMA,
+        "run_id": run_id,
+        "project_root": str(config["project_root"]),
+        "status": "attention_required",
+        "transport_status": "complete",
+        "session_authority": "terminal",
+        "terminal_harvested": True,
+        "task_outcome": "blocked",
+        "exit_code": 0,
+    })
+    module._write(workflow_path, {
+        "schema": module.STATE_SCHEMA,
+        "status": "attention_required",
+        "workflow_id": workflow_id,
+        "manifest_sha256": config["manifest_sha256"],
+        "current_stage": "plan",
+        "current_attempt_id": run_id,
+        "current_input_sha256": "c" * 64,
+        "oracle_run_id": run_id,
+        "oracle_run_dir": str(run_dir),
+        "records": [{"stage": "plan", "run_dir": str(run_dir), "ok": False}],
+        "blocker": "exact recovery retained",
+    })
+    module._write(scope_path, {
+        "schema": module.SCOPE_SCHEMA,
+        "status": "active",
+        "active_workflow_id": workflow_id,
+        "project_root": str(config["project_root"]),
+        "workflow_parent": str(config["workflow_dir"].parent),
+        "review_policy": config["_review_policy"],
+    })
+    return {
+        "config": config,
+        "workflow_state_path": workflow_path,
+        "scope_state_path": scope_path,
+        "run_dir": run_dir,
+        "workflow_id": workflow_id,
+        "run_id": run_id,
+        "expected_workflow_sha256": module.sha(workflow_path),
+        "expected_scope_sha256": module.sha(scope_path),
+        "expected_run_state_sha256": module.sha(run_state_path),
+        "confirmation": module.USER_STOP_CONFIRMATION,
+        "run_state_path": run_state_path,
+        "workflow_before": workflow_path.read_bytes(),
+        "scope_before": scope_path.read_bytes(),
+    }
+
+
+def _settlement_args(fixture: dict[str, object]) -> dict[str, object]:
+    return {
+        key: fixture[key]
+        for key in (
+            "workflow_state_path",
+            "scope_state_path",
+            "run_dir",
+            "workflow_id",
+            "run_id",
+            "expected_workflow_sha256",
+            "expected_scope_sha256",
+            "expected_run_state_sha256",
+            "confirmation",
+        )
+    }
+
+
+def test_user_stop_settlement_dry_run_then_cancels_and_releases_scope(tmp_path: Path) -> None:
+    module = load()
+    fixture = _user_stop_fixture(module, tmp_path)
+    args = _settlement_args(fixture)
+
+    preview = module.settle_user_stopped_workflow(**args, dry_run=True)
+    assert preview["status"] == "dry-run"
+    assert module.sha(fixture["workflow_state_path"]) == fixture["expected_workflow_sha256"]
+    assert module.sha(fixture["scope_state_path"]) == fixture["expected_scope_sha256"]
+    assert not Path(preview["settlement_path"]).exists()
+
+    run_state_before = module.sha(fixture["run_state_path"])
+    result = module.settle_user_stopped_workflow(**args)
+    assert result["ok"] is True
+    assert result["terminal_status"] == "CANCELED"
+    assert result["scope_released"] is True
+    assert result["submission_action"] == "none"
+    assert module.sha(fixture["run_state_path"]) == run_state_before
+    workflow = module._json(fixture["workflow_state_path"])
+    scope = module._json(fixture["scope_state_path"])
+    receipt = module._json(Path(result["settlement_path"]))
+    completion = module._json(Path(result["completion_path"]))
+    assert workflow["status"] == "canceled" and workflow["terminal"] is True
+    assert scope["status"] == "canceled" and scope["scope_released"] is True
+    assert receipt["authority"] == module.USER_STOP_CONFIRMATION
+    assert receipt["workflow_state_sha256"] == fixture["expected_workflow_sha256"]
+    assert receipt["scope_state_sha256"] == fixture["expected_scope_sha256"]
+    assert completion["workflow_state_sha256"] == result["workflow_state_sha256"]
+    assert completion["scope_state_sha256"] == result["scope_state_sha256"]
+
+    second_config = dict(fixture["config"])
+    second_config["workflow_id"] = "d" * 32
+    module._claim_scope(second_config, second_config["workflow_id"])
+    claimed = module._json(fixture["scope_state_path"])
+    assert claimed["status"] == "active"
+    assert claimed["active_workflow_id"] == "d" * 32
+
+
+def test_user_stop_settlement_is_idempotent_and_recovers_partial_scope_write(tmp_path: Path) -> None:
+    module = load()
+    fixture = _user_stop_fixture(module, tmp_path)
+    args = _settlement_args(fixture)
+    first = module.settle_user_stopped_workflow(**args)
+    second = module.settle_user_stopped_workflow(**args)
+    assert second["settlement_sha256"] == first["settlement_sha256"]
+    assert second["completion_sha256"] == first["completion_sha256"]
+
+    Path(first["completion_path"]).unlink()
+    Path(fixture["scope_state_path"]).write_bytes(fixture["scope_before"])
+    recovered = module.settle_user_stopped_workflow(**args)
+    assert recovered["scope_released"] is True
+    assert module._json(fixture["scope_state_path"])["status"] == "canceled"
+
+
+def test_canceled_workflow_is_terminal_and_does_not_reactivate_scope(tmp_path: Path) -> None:
+    module = load()
+    fixture = _user_stop_fixture(module, tmp_path)
+    args = _settlement_args(fixture)
+    module.settle_user_stopped_workflow(**args)
+
+    def never_submit(*_args, **_kwargs):
+        raise AssertionError("a canceled workflow must never submit")
+
+    result = module.run_workflow(
+        Path(fixture["config"]["initial_mission_path"]).with_name("workflow.json"),
+        oracle_execute=never_submit,
+    )
+    assert result["status"] == "canceled"
+    assert result["terminal_status"] == "CANCELED"
+    assert module._json(fixture["scope_state_path"])["status"] == "canceled"
+
+
+def test_cancel_user_stopped_cli_dry_run_requires_explicit_bound_evidence(
+    tmp_path: Path, capsys
+) -> None:
+    module = load()
+    fixture = _user_stop_fixture(module, tmp_path)
+    args = _settlement_args(fixture)
+    exit_code = module.main([
+        "--cancel-user-stopped",
+        "--workflow-state", str(args["workflow_state_path"]),
+        "--scope-state", str(args["scope_state_path"]),
+        "--run-dir", str(args["run_dir"]),
+        "--workflow-id", str(args["workflow_id"]),
+        "--run-id", str(args["run_id"]),
+        "--expected-workflow-sha256", str(args["expected_workflow_sha256"]),
+        "--expected-scope-sha256", str(args["expected_scope_sha256"]),
+        "--expected-run-state-sha256", str(args["expected_run_state_sha256"]),
+        "--confirmation", str(args["confirmation"]),
+        "--dry-run",
+    ])
+    value = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    assert value["status"] == "dry-run"
+    assert value["submission_action"] == "none"
+
+
+@pytest.mark.parametrize("mutation", ["run-live", "workflow-run", "foreign-scope"])
+def test_user_stop_settlement_rejects_insufficient_or_mismatched_evidence(
+    tmp_path: Path, mutation: str
+) -> None:
+    module = load()
+    fixture = _user_stop_fixture(module, tmp_path)
+    if mutation == "run-live":
+        value = module._json(fixture["run_state_path"])
+        value["terminal_harvested"] = False
+        value["session_authority"] = "live"
+        module._write(fixture["run_state_path"], value)
+        fixture["expected_run_state_sha256"] = module.sha(fixture["run_state_path"])
+    elif mutation == "workflow-run":
+        value = module._json(fixture["workflow_state_path"])
+        value["current_attempt_id"] = "e" * 32
+        module._write(fixture["workflow_state_path"], value)
+        fixture["expected_workflow_sha256"] = module.sha(fixture["workflow_state_path"])
+    else:
+        value = module._json(fixture["scope_state_path"])
+        value["active_workflow_id"] = "e" * 32
+        module._write(fixture["scope_state_path"], value)
+        fixture["expected_scope_sha256"] = module.sha(fixture["scope_state_path"])
+
+    with pytest.raises(module.WorkflowError):
+        module.settle_user_stopped_workflow(**_settlement_args(fixture))
+
+
+def test_user_stop_settlement_rejects_wrong_confirmation_hash_and_post_settlement_tamper(
+    tmp_path: Path,
+) -> None:
+    module = load()
+    fixture = _user_stop_fixture(module, tmp_path)
+    args = _settlement_args(fixture)
+    wrong = {**args, "confirmation": "user-confirmed-no-submission"}
+    with pytest.raises(module.WorkflowError, match="confirmation must be"):
+        module.settle_user_stopped_workflow(**wrong)
+    wrong_hash = {**args, "expected_scope_sha256": "0" * 64}
+    with pytest.raises(module.WorkflowError, match="scope state SHA-256 mismatch"):
+        module.settle_user_stopped_workflow(**wrong_hash)
+
+    module.settle_user_stopped_workflow(**args)
+    workflow = module._json(fixture["workflow_state_path"])
+    workflow["unexpected_external_edit"] = True
+    module._atomic_write(fixture["workflow_state_path"], workflow)
+    with pytest.raises(module.WorkflowError, match="changed outside"):
+        module.settle_user_stopped_workflow(**args)

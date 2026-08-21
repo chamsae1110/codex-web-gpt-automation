@@ -144,6 +144,18 @@ lets comprehensive mode consume at most one replacement for that immutable
 binding. Missing or changed evidence restores fail-closed project ownership;
 a replacement failure never authorizes a second submission.
 
+If the user explicitly clicks the provider UI stop control and then explicitly
+abandons the whole comprehensive workflow, do not use the legacy agbrowse stop
+path and do not edit Oracle or workflow JSON by hand. The maintenance owner may
+use the installed comprehensive runner's `--cancel-user-stopped` command only
+after binding the exact workflow state, scope state, and terminal-harvested
+Oracle run `state.json` by their current SHA-256 values. The exact confirmation
+token is `user-confirmed-provider-stop`. Dry-run first. The command launches no
+prompt or recovery, preserves the Oracle run state byte-for-byte, writes a
+durable authority and completion receipt, marks the workflow `CANCELED`, and
+releases only its exact comprehensive scope. Missing, live, executed, foreign,
+or changed evidence fails closed.
+
 Existing v1-v4 agbrowse comprehensive state and v3 parallel implementation are
 legacy recovery-only. Their files remain installed for exact recovery but are
 not the new-work route.
