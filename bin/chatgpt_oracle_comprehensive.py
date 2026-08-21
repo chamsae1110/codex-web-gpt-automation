@@ -41,6 +41,10 @@ SCOPE_SCHEMA = "codex.chatgpt.oracle-comprehensive-scope/v1"
 USER_STOP_SETTLEMENT_SCHEMA = "codex.chatgpt.oracle-comprehensive-user-stop/v1"
 USER_STOP_COMPLETION_SCHEMA = "codex.chatgpt.oracle-comprehensive-user-stop-completion/v1"
 USER_STOP_CONFIRMATION = "user-confirmed-provider-stop"
+PRE_SUBMIT_CANCEL_CONFIRMATION = "user-confirmed-pre-submit-workflow-cancel"
+PRE_SUBMIT_DEVSPACE_BRIDGE_TIMEOUT = (
+    "version resolution failed: DevSpace large single-line read bridge check timed out"
+)
 TERMINAL_SCOPE_STATUSES = {"complete", "canceled"}
 USER_STOPPABLE_OUTCOMES = {"blocked", "not_executed", "pending", "unknown"}
 STANDARD_PROFILE = "standard"
@@ -474,6 +478,47 @@ def _decode_preimage(value: Any, *, expected_sha256: str, label: str) -> dict[st
     return _json_object_no_duplicates(text, label=f"{label} preimage")
 
 
+def _user_stop_evidence_mode(run_state: dict[str, Any], run_dir: Path, confirmation: str) -> str:
+    if confirmation == USER_STOP_CONFIRMATION:
+        if (
+            run_state.get("schema") != RUNNER.STATE.STATE_SCHEMA
+            or run_state.get("status") != "attention_required"
+            or run_state.get("session_authority") != "terminal"
+            or run_state.get("terminal_harvested") is not True
+            or run_state.get("task_outcome") not in USER_STOPPABLE_OUTCOMES
+            or run_state.get("transport_status") not in {"complete", "failed"}
+        ):
+            raise WorkflowError("Oracle run is not a bounded terminal user-stop candidate")
+        return "provider-terminal-user-stop"
+    if confirmation != PRE_SUBMIT_CANCEL_CONFIRMATION:
+        raise WorkflowError(
+            f"confirmation must be {USER_STOP_CONFIRMATION} or {PRE_SUBMIT_CANCEL_CONFIRMATION}"
+        )
+    stdout_path = run_dir / "stdout.log"
+    stderr_path = run_dir / "stderr.log"
+    output_path = run_dir / "output.md"
+    if (
+        run_state.get("schema") != RUNNER.STATE.STATE_SCHEMA
+        or run_state.get("status") != "failed"
+        or run_state.get("session_authority") != "pre_submit"
+        or run_state.get("terminal_harvested") is not False
+        or run_state.get("transport_status") != "prepared"
+        or run_state.get("task_outcome") != "pending"
+        or run_state.get("exit_code") is not None
+        or str(run_state.get("conversation_url") or "").strip()
+        or output_path.exists()
+        or not stdout_path.is_file()
+        or stdout_path.is_symlink()
+        or stdout_path.stat().st_size != 0
+        or not stderr_path.is_file()
+        or stderr_path.is_symlink()
+        or stderr_path.read_text(encoding="utf-8", errors="strict").strip()
+        != PRE_SUBMIT_DEVSPACE_BRIDGE_TIMEOUT
+    ):
+        raise WorkflowError("Oracle run is not the bounded pre-submit DevSpace bridge failure")
+    return "pre-submit-devspace-bridge-timeout"
+
+
 def settle_user_stopped_workflow(
     *,
     workflow_state_path: Path,
@@ -487,8 +532,10 @@ def settle_user_stopped_workflow(
     confirmation: str,
     dry_run: bool = False,
 ) -> dict[str, Any]:
-    if confirmation != USER_STOP_CONFIRMATION:
-        raise WorkflowError(f"confirmation must be {USER_STOP_CONFIRMATION}")
+    if confirmation not in {USER_STOP_CONFIRMATION, PRE_SUBMIT_CANCEL_CONFIRMATION}:
+        raise WorkflowError(
+            f"confirmation must be {USER_STOP_CONFIRMATION} or {PRE_SUBMIT_CANCEL_CONFIRMATION}"
+        )
     if not re.fullmatch(r"[0-9a-f]{32}", workflow_id):
         raise WorkflowError("workflow_id must be exact 32-character lowercase hex")
     if not re.fullmatch(r"[0-9a-f]{32}", run_id):
@@ -547,16 +594,9 @@ def settle_user_stopped_workflow(
         run_state, _ = _load_expected_json(
             run_state_path, expected_run_state_sha256, label="Oracle run state"
         )
-        if (
-            run_state.get("schema") != RUNNER.STATE.STATE_SCHEMA
-            or run_state.get("run_id") != run_id
-            or run_state.get("status") != "attention_required"
-            or run_state.get("session_authority") != "terminal"
-            or run_state.get("terminal_harvested") is not True
-            or run_state.get("task_outcome") not in USER_STOPPABLE_OUTCOMES
-            or run_state.get("transport_status") not in {"complete", "failed"}
-        ):
-            raise WorkflowError("Oracle run is not a bounded terminal user-stop candidate")
+        if run_state.get("run_id") != run_id:
+            raise WorkflowError("Oracle run ID mismatch")
+        evidence_mode = _user_stop_evidence_mode(run_state, directory, confirmation)
 
         receipt: dict[str, Any] | None = None
         receipt_sha256 = ""
@@ -609,6 +649,8 @@ def settle_user_stopped_workflow(
             "current_attempt_id": str(workflow_before.get("current_attempt_id") or ""),
             "current_input_sha256": str(workflow_before.get("current_input_sha256") or ""),
         }
+        if evidence_mode != "provider-terminal-user-stop":
+            binding["evidence_mode"] = evidence_mode
         binding_sha256 = _binding_sha256(binding)
 
         if receipt is not None:
@@ -709,7 +751,11 @@ def settle_user_stopped_workflow(
             "status": "canceled",
             "terminal": True,
             "terminal_status": "CANCELED",
-            "blocker": "user explicitly stopped the provider response and canceled this workflow",
+            "blocker": (
+                "user explicitly stopped the provider response and canceled this workflow"
+                if evidence_mode == "provider-terminal-user-stop"
+                else "user explicitly canceled this workflow after a proven pre-submit failure"
+            ),
             "user_stop_settlement": reference,
         }
         canceled_scope = {

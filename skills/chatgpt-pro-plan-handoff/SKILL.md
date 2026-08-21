@@ -156,6 +156,13 @@ durable authority and completion receipt, marks the workflow `CANCELED`, and
 releases only its exact comprehensive scope. Missing, live, executed, foreign,
 or changed evidence fails closed.
 
+For the bounded pre-submit error `version resolution failed: DevSpace large
+single-line read bridge check timed out`, the same command accepts only the
+explicit token `user-confirmed-pre-submit-workflow-cancel`. It additionally
+requires empty stdout, no output, no conversation URL, and exact pre-submit
+state before it can write `CANCELED` and release the scope. Never use this token
+for another error or a possibly submitted run.
+
 Existing v1-v4 agbrowse comprehensive state and v3 parallel implementation are
 legacy recovery-only. Their files remain installed for exact recovery but are
 not the new-work route.

@@ -80,10 +80,16 @@ terminate a run, release its lock, mark it failed, or authorize a replacement.
   envelopes preserve the same identity and ownership checks without
   mislabeling a write tool as read-only. A separate bounded `read_chunk`
   surface reconstructs UTF-8 files whose first line exceeds the upstream 50KB
-  line-oriented reader limit. An explicit provider-UI user stop is terminalized
+  line-oriented reader limit. Its preflight executes the exact hash-gated
+  installed helper body in a dependency-minimal Node process instead of
+  importing the full MCP server graph. An explicit provider-UI user stop is terminalized
   only through the comprehensive runner's hash-bound `CANCELED` settlement. It preserves the
   Oracle run state, records authority/completion receipts, and releases only the
   exact workflow scope; canceled workflows cannot be reactivated.
+  The same settlement command accepts the distinct
+  `user-confirmed-pre-submit-workflow-cancel` authority only for the exact
+  known bridge-timeout pre-submit state with empty stdout, no output, and no
+  conversation binding.
   Local Codex retains deterministic control and release duties.
 
 ## Installation lifecycle

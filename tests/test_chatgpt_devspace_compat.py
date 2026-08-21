@@ -89,7 +89,14 @@ def test_oauth_refresh_replay_probe_is_isolated_and_fail_closed(tmp_path: Path) 
 def test_large_read_bridge_probe_is_utf8_bounded_and_fail_closed(tmp_path: Path) -> None:
     compat = load_compat()
     package = tmp_path / "devspace"
-    package.mkdir()
+    (package / "dist").mkdir(parents=True)
+    (package / "dist" / "server.js").write_text(
+        "export async function readUtf8Chunk(path, offsetBytes, limitBytes) {\n"
+        "  return {path, offsetBytes, limitBytes};\n"
+        "}\n"
+        "function serverInstructions() {}\n",
+        encoding="utf-8",
+    )
     calls: list[tuple[list[str], dict]] = []
     expected = {
         "ok": True,
@@ -107,6 +114,8 @@ def test_large_read_bridge_probe_is_utf8_bounded_and_fail_closed(tmp_path: Path)
     assert calls[0][1]["cwd"] == str(package.resolve())
     source = calls[0][0][-1]
     assert "readUtf8Chunk" in source
+    assert 'import { readUtf8Chunk } from "./dist/server.js"' not in source
+    assert "return {path, offsetBytes, limitBytes};" in source
     assert '"\\uAC00".repeat(24000)' in source
     assert "chunks.join" in source
     assert "fs.rmSync" in source
@@ -117,6 +126,17 @@ def test_large_read_bridge_probe_is_utf8_bounded_and_fail_closed(tmp_path: Path)
     with pytest.raises(compat.DevSpaceCompatError) as failure:
         compat.check_large_read_bridge(package_root=package, runner=failing)
     assert failure.value.code == "DEVSPACE_LARGE_READ_BRIDGE_CHECK_FAILED"
+
+
+def test_large_read_bridge_probe_rejects_missing_exact_installed_function(tmp_path: Path) -> None:
+    compat = load_compat()
+    package = tmp_path / "devspace"
+    (package / "dist").mkdir(parents=True)
+    (package / "dist" / "server.js").write_text("export const nope = true;\n", encoding="utf-8")
+
+    with pytest.raises(compat.DevSpaceCompatError) as failure:
+        compat.check_large_read_bridge(package_root=package)
+    assert failure.value.code == "DEVSPACE_LARGE_READ_BRIDGE_SOURCE_MISSING"
 
 
 def test_exact_devspace_patch_is_hash_gated_idempotent_and_backed_up(

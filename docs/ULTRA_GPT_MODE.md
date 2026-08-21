@@ -53,6 +53,10 @@ writer lane은 같은 방식으로 lane/parent/source-mission에 결속된 write
 `read_chunk`를 사용합니다. 0 byte offset에서 시작해 반환된
 `nextOffsetBytes`를 그대로 이어 쓰며 `eof=true`까지 읽습니다. 각 chunk는
 24KiB 이하이고 전체 파일 SHA-256, 전체 byte 수, UTF-8 경계를 함께 검증합니다.
+사전검증은 전체 DevSpace 서버 모듈을 import하지 않고, 해시로 게이트된
+설치본의 정확한 `readUtf8Chunk` 함수 본문만 최소 Node 프로세스에서
+실행합니다. 이로써 무관한 MCP dependency graph 로딩이 version resolution을
+막지 않습니다.
 
 ## Manifest
 

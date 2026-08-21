@@ -1,5 +1,18 @@
 # 기술 변경 기록
 
+## 1.15.7 - DevSpace read bridge 사전검증 수리
+
+- DevSpace의 50KB 초과 단일행 `read_chunk` 사전검증이 전체 MCP 서버
+  모듈 그래프 import에서 멈추던 문제를 수정했습니다. 설치된
+  `server.js`에서 해시 게이트된 정확한 함수 본문만 분리해 최소 Node
+  프로세스에서 검증하므로 Oracle 제출 전 버전 판정이 timeout으로
+  오인 실패하지 않습니다.
+- 정확히 결속된 `pre_submit` bridge-timeout run은 명시적
+  `user-confirmed-pre-submit-workflow-cancel` 권한으로 workflow를
+  `CANCELED`로 정산하고 scope를 해제할 수 있습니다. stdout/output/
+  conversation 흔적이나 다른 오류는 계속 fail-closed이며 Oracle run state는
+  변경하지 않습니다.
+
 ## 1.15.6 - comprehensive 사용자 중지 정산
 
 - 사용자가 provider UI에서 응답을 명시적으로 중지하고 workflow 종료를

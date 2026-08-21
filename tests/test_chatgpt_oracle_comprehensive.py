@@ -2166,6 +2166,26 @@ def _settlement_args(fixture: dict[str, object]) -> dict[str, object]:
     }
 
 
+def _make_pre_submit_bridge_timeout(module, fixture: dict[str, object]) -> None:
+    run_dir = Path(fixture["run_dir"])
+    state = module._json(fixture["run_state_path"])
+    state.update({
+        "status": "failed",
+        "transport_status": "prepared",
+        "session_authority": "pre_submit",
+        "terminal_harvested": False,
+        "task_outcome": "pending",
+        "exit_code": None,
+    })
+    module._write(fixture["run_state_path"], state)
+    (run_dir / "stdout.log").write_bytes(b"")
+    (run_dir / "stderr.log").write_text(
+        module.PRE_SUBMIT_DEVSPACE_BRIDGE_TIMEOUT + "\n", encoding="utf-8"
+    )
+    fixture["expected_run_state_sha256"] = module.sha(fixture["run_state_path"])
+    fixture["confirmation"] = module.PRE_SUBMIT_CANCEL_CONFIRMATION
+
+
 def test_user_stop_settlement_dry_run_then_cancels_and_releases_scope(tmp_path: Path) -> None:
     module = load()
     fixture = _user_stop_fixture(module, tmp_path)
@@ -2218,6 +2238,51 @@ def test_user_stop_settlement_is_idempotent_and_recovers_partial_scope_write(tmp
     recovered = module.settle_user_stopped_workflow(**args)
     assert recovered["scope_released"] is True
     assert module._json(fixture["scope_state_path"])["status"] == "canceled"
+
+
+def test_pre_submit_bridge_timeout_can_be_explicitly_canceled_without_run_mutation(
+    tmp_path: Path,
+) -> None:
+    module = load()
+    fixture = _user_stop_fixture(module, tmp_path)
+    _make_pre_submit_bridge_timeout(module, fixture)
+    run_state_before = module.sha(fixture["run_state_path"])
+
+    preview = module.settle_user_stopped_workflow(**_settlement_args(fixture), dry_run=True)
+    assert preview["status"] == "dry-run"
+    result = module.settle_user_stopped_workflow(**_settlement_args(fixture))
+
+    assert result["status"] == "canceled"
+    assert result["scope_released"] is True
+    assert result["submission_action"] == "none"
+    assert module.sha(fixture["run_state_path"]) == run_state_before
+    receipt = module._json(Path(result["settlement_path"]))
+    assert receipt["authority"] == module.PRE_SUBMIT_CANCEL_CONFIRMATION
+    assert receipt["evidence_mode"] == "pre-submit-devspace-bridge-timeout"
+
+
+@pytest.mark.parametrize("mutation", ["stderr", "stdout", "output", "conversation"])
+def test_pre_submit_cancel_rejects_ambiguous_or_mutated_evidence(
+    tmp_path: Path, mutation: str
+) -> None:
+    module = load()
+    fixture = _user_stop_fixture(module, tmp_path)
+    _make_pre_submit_bridge_timeout(module, fixture)
+    run_dir = Path(fixture["run_dir"])
+    if mutation == "stderr":
+        (run_dir / "stderr.log").write_text("version resolution failed: other\n", encoding="utf-8")
+    elif mutation == "stdout":
+        (run_dir / "stdout.log").write_text("possibly submitted", encoding="utf-8")
+    elif mutation == "output":
+        (run_dir / "output.md").write_text("provider output", encoding="utf-8")
+    else:
+        state = module._json(fixture["run_state_path"])
+        state["conversation_url"] = "https://chatgpt.com/c/example"
+        module._write(fixture["run_state_path"], state)
+        fixture["expected_run_state_sha256"] = module.sha(fixture["run_state_path"])
+
+    with pytest.raises(module.WorkflowError, match="bounded pre-submit"):
+        module.settle_user_stopped_workflow(**_settlement_args(fixture))
 
 
 def test_canceled_workflow_is_terminal_and_does_not_reactivate_scope(tmp_path: Path) -> None:

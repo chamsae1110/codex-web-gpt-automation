@@ -257,13 +257,40 @@ def check_large_read_bridge(
     node = shutil.which("node")
     if not node:
         raise DevSpaceCompatError("DEVSPACE_NODE_MISSING", "Node.js is required for DevSpace")
+    server_path = root / "dist" / "server.js"
+    try:
+        server_source = server_path.read_text(encoding="utf-8", errors="strict")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise DevSpaceCompatError(
+            "DEVSPACE_LARGE_READ_BRIDGE_SOURCE_UNREADABLE",
+            "DevSpace large single-line read bridge source is unreadable",
+            {"path": str(server_path)},
+        ) from exc
+    match = re.search(
+        r"export async function readUtf8Chunk\(path, offsetBytes, limitBytes\) \{.*?\n\}\n(?=function serverInstructions\()",
+        server_source,
+        flags=re.DOTALL,
+    )
+    if match is None:
+        raise DevSpaceCompatError(
+            "DEVSPACE_LARGE_READ_BRIDGE_SOURCE_MISSING",
+            "DevSpace large single-line read bridge source is missing",
+            {"path": str(server_path)},
+        )
+    # Importing dist/server.js loads the entire MCP dependency graph. Some
+    # supported Windows hosts can block indefinitely in that graph even though
+    # the bridge itself is valid. Execute the exact installed function body in
+    # a dependency-minimal Node process instead; the enclosing package file is
+    # already hash-gated by ensure_devspace_compatibility().
+    bridge_source = match.group(0).replace("export async function", "async function", 1)
     source = r"""
 import assert from "node:assert/strict";
-import crypto from "node:crypto";
+import crypto, { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { readUtf8Chunk } from "./dist/server.js";
+import { open } from "node:fs/promises";
+""" + bridge_source + r"""
 const state = fs.mkdtempSync(path.join(os.tmpdir(), "codex-devspace-read-chunk-"));
 const target = path.join(state, "single-line.json");
 const expected = JSON.stringify({payload: "\uAC00".repeat(24000)});
