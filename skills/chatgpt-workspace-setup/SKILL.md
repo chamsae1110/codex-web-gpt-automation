@@ -47,6 +47,13 @@ that skips transient `.pytest-*` and cache trees. If it reports
 `service_restart_required=true`, restart DevSpace before any Oracle
 submission. Unknown versions or hashes fail closed.
 
+The same hash-gated compatibility layer exposes read-only `read_chunk` for a
+regular UTF-8 file whose single line exceeds the upstream 50KB line reader.
+Start at `offsetBytes=0`, continue only with the returned
+`nextOffsetBytes`, and require one stable whole-file SHA-256 through
+`eof=true`. The isolated compatibility doctor reconstructs a 60KB-plus
+single-line Unicode fixture before readiness.
+
 On Windows, any Startup shortcut or service wrapper must read
 `%USERPROFILE%\.devspace\config.json` at every launch and derive
 `DEVSPACE_ALLOWED_ROOTS` from its current `allowedRoots`. Never hardcode a

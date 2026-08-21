@@ -40,6 +40,20 @@ worktree는 `<output_dir>\worktrees` 아래에 만들며, v2 parent/lane hash bi
 검증한 뒤 canonical 프로젝트의 기존 DevSpace qualification을 상속합니다. 따라서
 일시적인 worktree마다 `allowedRoots`를 추가하거나 서비스를 재시작하지 않습니다.
 
+웹 앱이 안전 정책에 따라 `write/edit/bash`를 모델에 노출하지 않는 경우에도
+planner/reviewer는 중단하지 않습니다. 각 단계는 닫힌 JSON envelope로
+output/next mission/receipt를 반환하고, 로컬 관제기가 workflow identity와
+UTF-8 바이트를 검증해 자동화 소유 stage 디렉터리에만 원자적으로 materialize합니다.
+writer lane은 같은 방식으로 lane/parent/source-mission에 결속된 writeset을
+반환할 수 있습니다. host는 파일 수·총 바이트·`owned_paths`·symlink/reparse
+경계·Git delta를 검증한 뒤 격리 worktree에 적용하며, 직접 쓰기와 writeset을
+동시에 사용하면 실패 폐쇄합니다. 쓰기 도구를 읽기 전용으로 허위 표시하지 않습니다.
+
+일반 `read`가 50KB를 넘는 단일 행을 반환하지 못하면 읽기 전용
+`read_chunk`를 사용합니다. 0 byte offset에서 시작해 반환된
+`nextOffsetBytes`를 그대로 이어 쓰며 `eof=true`까지 읽습니다. 각 chunk는
+24KiB 이하이고 전체 파일 SHA-256, 전체 byte 수, UTF-8 경계를 함께 검증합니다.
+
 ## Manifest
 
 ```json
@@ -81,6 +95,8 @@ python "$env:USERPROFILE\.codex\bin\chatgpt_oracle_comprehensive.py" `
 - 두 solver의 소유 경로가 같거나 상위·하위로 겹침
 - 실제 변경이 선언 범위를 벗어나거나 Git metadata가 변경됨
 - 일부 lane만 성공한 상태에서 merger를 요청함
+- host writeset identity/scope/key set/byte limit이 불일치함
+- 직접 workspace delta와 host writeset이 동시에 존재함
 
 Pro 설계 자문이 필요하면 사용자의 별도 명시 승인을 받은 한 세션을 워크플로
 전에 실행하고, 그 결과를 initial mission의 고정 입력으로 넣습니다. Pro 세션은

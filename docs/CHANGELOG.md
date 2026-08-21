@@ -1,5 +1,19 @@
 # 기술 변경 기록
 
+## 1.15.5 - 읽기 전용 웹 표면용 Ultra host bridge
+
+- regular comprehensive planner/reviewer가 DevSpace의 변경 도구를 받지 못해도
+  hash-bound stage envelope를 반환하면 host가 workflow 소유 output, next mission,
+  receipt를 동일 계약으로 materialize합니다.
+- Ultra GPT strict writer는 직접 쓰기 대신 parent/lane/source-mission에 결속된
+  닫힌 writeset을 반환할 수 있습니다. host는 격리 worktree의 선언된
+  `owned_paths`에만 원자 적용하고 file/byte/symlink/reparse/Git delta 경계를
+  검증하며 직접 delta와 writeset 혼용을 거부합니다.
+- DevSpace `read_chunk`를 추가해 50KB를 넘는 단일 UTF-8 행도 24KiB 이하의
+  연속 byte chunk, 전체 파일 SHA-256, EOF 결속으로 shell 없이 완전 복원합니다.
+- write/edit/bash의 MCP 안전 annotation은 완화하거나 읽기 전용으로 위장하지
+  않습니다.
+
 ## 1.15.4 - Oracle 0.17.1 exact-session live recovery 보강
 
 - Oracle 0.17.1의 복구된 Pro 대화 준비 대기를 고정 60초가 아니라 host가 전달한

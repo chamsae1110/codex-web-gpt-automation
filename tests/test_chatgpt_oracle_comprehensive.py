@@ -158,6 +158,121 @@ def test_web_authored_relay_reaches_complete_without_host_semantic_rewrite(tmp_p
     assert result["status"] == "complete"
 
 
+def test_read_only_web_surface_uses_bound_host_stage_materialization(tmp_path: Path) -> None:
+    module = load()
+    order = ["plan", "review", "implementation", "final-web-gate"]
+    seen: list[str] = []
+
+    def fake_execute(path: Path, *, dry_run: bool):
+        value = json.loads(path.read_text(encoding="utf-8"))
+        mission = Path(value["mission_path"])
+        text = mission.read_text(encoding="utf-8")
+        stage = next(item for item in order if f"stage={item}\n" in text)
+        attempt = next(
+            line.split("=", 1)[1] for line in text.splitlines() if line.startswith("attempt_id=")
+        )
+        input_sha = next(
+            line.split("=", 1)[1]
+            for line in text.splitlines()
+            if line.startswith("input_mission_sha256=")
+        )
+        seen.append(stage)
+        next_stage = order[order.index(stage) + 1] if stage != order[-1] else "complete"
+        envelope = {
+            "schema": module.REGULAR_OUTPUT_SCHEMA,
+            "workflow_id": "a" * 32,
+            "stage": stage,
+            "attempt_id": attempt,
+            "input_mission_sha256": input_sha,
+            "status": (
+                "PLAN_READY"
+                if stage == "plan"
+                else "COMPLETE"
+                if stage == "final-web-gate"
+                else "PASS"
+            ),
+            "output_text": f"{stage} output from read-only web surface",
+            "next_stage": next_stage,
+            "next_mission_text": (
+                "" if next_stage == "complete" else f"mission after {stage}"
+            ),
+            "ready_for_next": True,
+            "blocker": "",
+            "critical_finding_ids": [],
+            "critical_findings_sha256": module._finding_hash([]) if stage == "review" else "",
+        }
+        run_dir = mission.parent / "run"
+        run_dir.mkdir()
+        (run_dir / "output.md").write_text(
+            f"{module.REGULAR_OUTPUT_BEGIN}\n"
+            + json.dumps(envelope, ensure_ascii=False)
+            + f"\n{module.REGULAR_OUTPUT_END}\nTASK_OUTCOME: EXECUTED\n",
+            encoding="utf-8",
+        )
+        return {
+            "ok": True,
+            "run_dir": str(run_dir),
+            "output_path": str(run_dir / "output.md"),
+        }
+
+    result = module.run_workflow(
+        manifest(tmp_path),
+        oracle_execute=fake_execute,
+        local_gate_runner=lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, "ok", ""),
+    )
+
+    assert result["ok"] is True
+    assert result["status"] == "complete"
+    assert seen == order
+    for stage_dir in (tmp_path / "workflow" / "stages").iterdir():
+        if stage_dir.is_dir():
+            assert (stage_dir / "stage-result.json").is_file()
+            assert (stage_dir / "output.md").is_file()
+
+
+def test_regular_stage_materialization_rejects_duplicate_or_wrong_identity(tmp_path: Path) -> None:
+    module = load()
+    config = module.load_manifest(manifest(tmp_path))
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    output = run_dir / "output.md"
+    base = {
+        "schema": module.REGULAR_OUTPUT_SCHEMA,
+        "workflow_id": "a" * 32,
+        "stage": "plan",
+        "attempt_id": "b" * 32,
+        "input_mission_sha256": "c" * 64,
+        "status": "PLAN_READY",
+        "output_text": "plan",
+        "next_stage": "review",
+        "next_mission_text": "review",
+        "ready_for_next": True,
+        "blocker": "",
+        "critical_finding_ids": [],
+        "critical_findings_sha256": "",
+    }
+    wrong = {**base, "attempt_id": "d" * 32}
+    output.write_text(
+        f"{module.REGULAR_OUTPUT_BEGIN}\n{json.dumps(wrong)}\n{module.REGULAR_OUTPUT_END}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(module.WorkflowError, match="identity mismatch"):
+        module._materialize_regular_receipt(
+            config, tmp_path / "stage-result.json", "a" * 32, "plan", "b" * 32,
+            "c" * 64,
+            {"run_dir": str(run_dir), "output_path": str(output)},
+            run_dir=run_dir,
+        )
+
+    duplicate = json.dumps(base)[:-1] + ',"status":"PASS"}'
+    output.write_text(
+        f"{module.REGULAR_OUTPUT_BEGIN}\n{duplicate}\n{module.REGULAR_OUTPUT_END}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(module.WorkflowError, match="duplicate key"):
+        module._load_regular_envelope(output)
+
+
 def test_explicit_pro_stage_runs_writable_devspace_and_materializes_bound_receipt(tmp_path: Path) -> None:
     module = load()
     stages = []
@@ -1592,6 +1707,9 @@ def test_plan_mission_teaches_declared_packet_contract(tmp_path: Path) -> None:
     assert module.PRO_ATTACHMENT_SCHEMA in text
     assert "Canonical plan receipt status is PLAN_READY" in text
     assert "output_path and next_mission_path MUST be absolute paths" in text
+    assert "[HOST_STAGE_MATERIALIZATION_FALLBACK]" in text
+    assert module.REGULAR_OUTPUT_SCHEMA in text
+    assert "Do not both write the receipt/files and return this fallback envelope." in text
 
 
 def test_receipt_compatibly_resolves_project_relative_paths_with_hash_binding(tmp_path: Path) -> None:

@@ -5,7 +5,7 @@ diff --git a/dist/server.js b/dist/server.js
 -import { randomUUID } from "node:crypto";
 +import { createHash, randomUUID } from "node:crypto";
  import { readFileSync } from "node:fs";
--import { access, realpath } from "node:fs/promises";
+-import { access, realpath, stat } from "node:fs/promises";
 +import { access, open, realpath, stat } from "node:fs/promises";
  import { fileURLToPath } from "node:url";
  import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -79,34 +79,7 @@ diff --git a/dist/server.js b/dist/server.js
  function serverInstructions(config) {
      const showChangesInstruction = config.widgets === "changes"
          ? " If the turn successfully modifies files by creating, editing, overwriting, deleting, moving, or applying patches, call show_changes exactly once for that workspace after the final related file change and before your final response so the user can inspect the aggregate diff for that turn. Do not call it after every individual file change; do not skip it because individual file-change tools already returned diffs."
-@@ -695,11 +750,21 @@ function createMcpServer(config, workspaces, reviewCheckpoints, processSessions,
-         const startedAt = performance.now();
-         const workspace = workspaces.getWorkspace(workspaceId);
-         const readPath = workspaces.resolveReadPath(workspace, input.path);
--        const response = await readFileTool({ ...input, path: readPath.absolutePath }, {
--            cwd: workspace.root,
--            root: workspace.root,
--            readRoots: readPath.readRoots,
--        });
-+        let isDirectory = false;
-+        try {
-+            isDirectory = (await stat(readPath.absolutePath)).isDirectory();
-+        }
-+        catch { }
-+        const response = isDirectory
-+            ? await listDirectoryTool({ path: readPath.absolutePath }, {
-+                cwd: workspace.root,
-+                root: workspace.root,
-+            })
-+            : await readFileTool({ ...input, path: readPath.absolutePath }, {
-+                cwd: workspace.root,
-+                root: workspace.root,
-+                readRoots: readPath.readRoots,
-+            });
-         if (response.isError) {
-             logFailedToolResponse(config, {
-                 tool: toolNames.read,
-@@ -737,6 +802,69 @@ function createMcpServer(config, workspaces, reviewCheckpoints, processSessions,
+@@ -747,6 +802,69 @@ function createMcpServer(config, workspaces, reviewCheckpoints, processSessions,
              },
          };
      });

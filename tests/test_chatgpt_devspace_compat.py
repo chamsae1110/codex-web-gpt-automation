@@ -86,6 +86,39 @@ def test_oauth_refresh_replay_probe_is_isolated_and_fail_closed(tmp_path: Path) 
     assert failure.value.code == "DEVSPACE_OAUTH_REFRESH_REPLAY_CHECK_FAILED"
 
 
+def test_large_read_bridge_probe_is_utf8_bounded_and_fail_closed(tmp_path: Path) -> None:
+    compat = load_compat()
+    package = tmp_path / "devspace"
+    package.mkdir()
+    calls: list[tuple[list[str], dict]] = []
+    expected = {
+        "ok": True,
+        "reconstructed": True,
+        "utf8_boundary_safe": True,
+        "max_chunk_bytes": 24576,
+    }
+
+    def passing(argv, **kwargs):
+        calls.append((list(argv), dict(kwargs)))
+        return SimpleNamespace(returncode=0, stdout=json.dumps(expected), stderr="")
+
+    report = compat.check_large_read_bridge(package_root=package, runner=passing)
+    assert report["status"] == "chunk-reconstruction-verified"
+    assert calls[0][1]["cwd"] == str(package.resolve())
+    source = calls[0][0][-1]
+    assert "readUtf8Chunk" in source
+    assert '"\\uAC00".repeat(24000)' in source
+    assert "chunks.join" in source
+    assert "fs.rmSync" in source
+
+    def failing(argv, **kwargs):
+        return SimpleNamespace(returncode=1, stdout="", stderr="synthetic failure")
+
+    with pytest.raises(compat.DevSpaceCompatError) as failure:
+        compat.check_large_read_bridge(package_root=package, runner=failing)
+    assert failure.value.code == "DEVSPACE_LARGE_READ_BRIDGE_CHECK_FAILED"
+
+
 def test_exact_devspace_patch_is_hash_gated_idempotent_and_backed_up(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -140,6 +173,46 @@ def test_exact_devspace_patch_is_hash_gated_idempotent_and_backed_up(
     assert third["service_restart_required"] is False
     assert target.read_bytes() == b"after\n"
     assert (backup / "sample.txt").read_bytes() == b"before\n"
+
+
+def test_exact_devspace_patch_accepts_only_hash_bound_previous_patch_upgrade(
+    tmp_path: Path,
+) -> None:
+    compat = load_compat()
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "package.json").write_text(json.dumps({"version": "1.0.4"}), encoding="utf-8")
+    target = package / "sample.txt"
+    target.write_bytes(b"middle\n")
+    patches = tmp_path / "patches"
+    patches.mkdir()
+    (patches / "from-pristine.patch").write_text(
+        "diff --git a/sample.txt b/sample.txt\n--- a/sample.txt\n+++ b/sample.txt\n"
+        "@@ -1 +1 @@\n-before\n+after\n",
+        encoding="utf-8",
+    )
+    (patches / "from-middle.patch").write_text(
+        "diff --git a/sample.txt b/sample.txt\n--- a/sample.txt\n+++ b/sample.txt\n"
+        "@@ -1 +1 @@\n-middle\n+after\n",
+        encoding="utf-8",
+    )
+    compat.PATCHES = {
+        "sample.txt": {
+            "patch": "from-pristine.patch",
+            "pristine": digest(b"before\n"),
+            "patched": digest(b"after\n"),
+            "upgrades": {digest(b"middle\n"): "from-middle.patch"},
+        }
+    }
+    compat.patch_root = lambda: patches
+
+    result = compat.ensure_devspace_compatibility(
+        package_root=package, backup_root=tmp_path / "backup"
+    )
+
+    assert result["changed"] == ["sample.txt"]
+    assert target.read_bytes() == b"after\n"
+    assert (tmp_path / "backup" / "sample.txt").read_bytes() == b"middle\n"
 
 
 def test_restart_confirmation_rejects_old_or_foreign_listener(
@@ -342,7 +415,7 @@ def test_oauth_refresh_patch_is_hash_gated_bounded_and_revocation_aware() -> Non
     assert "this.refreshReplays.clear();" in patch
 
 
-def test_directory_read_patch_routes_directories_without_widening_read_access() -> None:
+def test_directory_read_patch_routes_directories_and_adds_bounded_read_chunk() -> None:
     compat = load_compat()
     patch = (
         MODULE_PATH.parent
@@ -354,7 +427,11 @@ def test_directory_read_patch_routes_directories_without_widening_read_access() 
     assert compat.PATCHES["dist/server.js"] == {
         "patch": "directory-read.patch",
         "pristine": "c49c1c607b42e040cdf0b15d5a4a93cfef9ddb8147d492a3cfa2a8c3889dab24",
-        "patched": "d5d9b08c482b282f3390f415d69d460f4ee844046962a4013f11612cbb6b52e0",
+        "patched": "75c68feb2ba9073bae277a25f663cd4ab369736ce62f2b4140197123df27a85e",
+        "upgrades": {
+            "d5d9b08c482b282f3390f415d69d460f4ee844046962a4013f11612cbb6b52e0":
+                "directory-read-to-chunk.patch",
+        },
     }
     assert "const readPath = workspaces.resolveReadPath(workspace, input.path);" in patch
     assert "isDirectory = (await stat(readPath.absolutePath)).isDirectory();" in patch
@@ -362,6 +439,20 @@ def test_directory_read_patch_routes_directories_without_widening_read_access() 
     assert "+                root: workspace.root," in patch
     assert ": await readFileTool({ ...input, path: readPath.absolutePath }, {" in patch
     assert "+                readRoots: readPath.readRoots," in patch
+    assert '+    readChunk: "read_chunk",' in patch
+    assert "+const MAX_READ_CHUNK_BYTES = 24 * 1024;" in patch
+    assert "+export async function readUtf8Chunk" in patch
+    assert "new TextDecoder(\"utf-8\", { fatal: true })" in patch
+    assert "nextOffsetBytes: offsetBytes + accepted" in patch
+    assert "annotations: { readOnlyHint: true }" in patch
+    migration = (
+        MODULE_PATH.parent
+        / "devspace-compat"
+        / compat.SUPPORTED_VERSION
+        / "directory-read-to-chunk.patch"
+    ).read_text(encoding="utf-8")
+    assert "-import { randomUUID } from \"node:crypto\";" in migration
+    assert '+    readChunk: "read_chunk",' in migration
 
 
 def test_directory_read_patch_unknown_upstream_hash_fails_closed(tmp_path: Path) -> None:

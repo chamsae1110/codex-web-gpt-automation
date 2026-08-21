@@ -15,6 +15,14 @@ from typing import Any, Callable, Iterable
 SCHEMA = "codex.chatgpt.oracle-comprehensive/v1"
 RECEIPT_SCHEMA = "codex.chatgpt.oracle-stage-result/v1"
 PRO_OUTPUT_SCHEMA = "codex.chatgpt.oracle-pro-stage-output/v1"
+REGULAR_OUTPUT_SCHEMA = "codex.chatgpt.oracle-regular-stage-output/v1"
+REGULAR_OUTPUT_BEGIN = "[ORACLE_STAGE_OUTPUT]"
+REGULAR_OUTPUT_END = "[/ORACLE_STAGE_OUTPUT]"
+REGULAR_OUTPUT_KEYS = {
+    "schema", "workflow_id", "stage", "attempt_id", "input_mission_sha256",
+    "status", "output_text", "next_stage", "next_mission_text", "ready_for_next",
+    "blocker", "critical_finding_ids", "critical_findings_sha256",
+}
 PRO_ATTACHMENT_SCHEMA = "codex.chatgpt.oracle-pro-attachments/v1"
 PRO_ATTACHMENT_BEGIN = "[PRO_ATTACHMENT_CONTRACT]"
 PRO_ATTACHMENT_END = "[/PRO_ATTACHMENT_CONTRACT]"
@@ -82,6 +90,24 @@ def _json(path: Path) -> dict[str, Any]:
     value = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(value, dict):
         raise WorkflowError(f"JSON object required: {path}")
+    return value
+
+
+def _json_object_no_duplicates(text: str, *, label: str) -> dict[str, Any]:
+    def pairs(values: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in values:
+            if key in result:
+                raise WorkflowError(f"{label} contains duplicate key: {key}")
+            result[key] = value
+        return result
+
+    try:
+        value = json.loads(text, object_pairs_hook=pairs)
+    except json.JSONDecodeError as exc:
+        raise WorkflowError(f"{label} must be strict JSON") from exc
+    if not isinstance(value, dict):
+        raise WorkflowError(f"{label} must be a JSON object")
     return value
 
 
@@ -381,6 +407,19 @@ def _stage_mission(
         "the host will validate bytes and hashes but will not rewrite its meaning. "
         "The supplied input_mission_sha256 binds the upstream source mission bytes before this HOST_STAGE_CONTRACT "
         "was appended; copy it exactly into the receipt and do not replace it with a hash of this augmented mission.md.\n"
+        "\n[HOST_STAGE_MATERIALIZATION_FALLBACK]\n"
+        "If and only if the registered DevSpace surface does not expose write/edit/bash, do not stop merely because "
+        "you cannot create output_path, next_mission_path, or stage-result.json. Return those three artifacts through "
+        "the host bridge instead. Emit exactly one [ORACLE_STAGE_OUTPUT] line, one strict JSON object, one "
+        "[/ORACLE_STAGE_OUTPUT] line, then TASK_OUTCOME: EXECUTED as the final nonempty line. The JSON exact keys are "
+        "schema, workflow_id, stage, attempt_id, input_mission_sha256, status, output_text, next_stage, "
+        "next_mission_text, ready_for_next, blocker, critical_finding_ids, critical_findings_sha256. schema must be "
+        f"{REGULAR_OUTPUT_SCHEMA}; copy the bound identity fields exactly. output_text is the complete output file; "
+        "next_mission_text is the complete next mission, or an empty string only for a terminal transition. "
+        "critical_finding_ids is a sorted unique string array and critical_findings_sha256 is its compact-JSON "
+        "SHA-256 for review, otherwise use [] and an empty string. Do not both write the receipt/files and return "
+        "this fallback envelope. The host preserves UTF-8 bytes, creates only its workflow-owned stage artifacts, "
+        "and runs the same receipt and transition validation.\n"
         "\n[DEVSPACE_WORKSPACE_ENTRY_CONTRACT]\n"
         "Use only exact_project_root as the project workspace. Reuse an already registered DevSpace workspace whose "
         "normalized root is exactly equal to it, or open that exact root. Windows separators and Unicode characters "
@@ -864,6 +903,102 @@ def _materialize_pro_receipt(
     }
     if recovery is not None:
         receipt["pro_output_recovery"] = recovery
+    _write(receipt_path, receipt)
+
+
+def _materialize_bound_text(path: Path, text: str) -> None:
+    data = text.encode("utf-8")
+    if path.exists():
+        if not path.is_file() or path.is_symlink() or path.read_bytes() != data:
+            raise WorkflowError(f"host materialization target already exists with different bytes: {path}")
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("xb") as handle:
+        handle.write(data)
+
+
+def _load_regular_envelope(output_path: Path) -> dict[str, Any]:
+    try:
+        text = output_path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise WorkflowError("regular Oracle output must be UTF-8") from exc
+    if text.count(REGULAR_OUTPUT_BEGIN) != 1 or text.count(REGULAR_OUTPUT_END) != 1:
+        raise WorkflowError("regular Oracle output has no unambiguous stage envelope")
+    start = text.index(REGULAR_OUTPUT_BEGIN) + len(REGULAR_OUTPUT_BEGIN)
+    end = text.index(REGULAR_OUTPUT_END, start)
+    envelope = _json_object_no_duplicates(text[start:end].strip(), label="regular stage envelope")
+    if set(envelope) != REGULAR_OUTPUT_KEYS:
+        raise WorkflowError("regular stage envelope must contain the exact closed key set")
+    return envelope
+
+
+def _materialize_regular_receipt(
+    config: dict[str, Any],
+    receipt_path: Path,
+    workflow_id: str,
+    stage: str,
+    attempt_id: str,
+    input_sha: str,
+    oracle_result: dict[str, Any],
+    *,
+    run_dir: Any = None,
+) -> None:
+    output_path = _oracle_output_path(oracle_result, run_dir)
+    if output_path is None or not output_path.resolve(strict=True).is_file():
+        raise WorkflowError("regular Oracle output is unavailable")
+    envelope = _load_regular_envelope(output_path)
+    if (
+        envelope.get("schema") != REGULAR_OUTPUT_SCHEMA
+        or envelope.get("workflow_id") != workflow_id
+        or envelope.get("stage") != stage
+        or envelope.get("attempt_id") != attempt_id
+        or envelope.get("input_mission_sha256") != input_sha
+    ):
+        raise WorkflowError("regular stage envelope identity mismatch")
+    output_text = envelope.get("output_text")
+    next_mission_text = envelope.get("next_mission_text")
+    finding_ids = envelope.get("critical_finding_ids")
+    finding_hash = envelope.get("critical_findings_sha256")
+    if (
+        not isinstance(output_text, str)
+        or not output_text.strip()
+        or not isinstance(next_mission_text, str)
+        or not isinstance(finding_ids, list)
+        or any(not isinstance(item, str) for item in finding_ids)
+        or not isinstance(finding_hash, str)
+    ):
+        raise WorkflowError("regular stage envelope artifact fields are invalid")
+    if finding_ids != sorted(set(finding_ids)):
+        raise WorkflowError("regular stage envelope critical findings are not sorted unique")
+    if stage == "review":
+        if finding_hash != _finding_hash(finding_ids):
+            raise WorkflowError("regular stage envelope critical findings hash mismatch")
+    elif finding_ids or finding_hash:
+        raise WorkflowError("non-review stage envelope cannot carry critical findings")
+    stage_dir = receipt_path.parent
+    materialized_output = stage_dir / "output.md"
+    _materialize_bound_text(materialized_output, output_text)
+    receipt: dict[str, Any] = {
+        "schema": RECEIPT_SCHEMA,
+        "workflow_id": workflow_id,
+        "stage": stage,
+        "attempt_id": attempt_id,
+        "input_mission_sha256": input_sha,
+        "status": envelope.get("status"),
+        "output_path": str(materialized_output),
+        "output_sha256": sha(materialized_output),
+        "next_stage": envelope.get("next_stage"),
+        "ready_for_next": envelope.get("ready_for_next"),
+        "blocker": envelope.get("blocker"),
+    }
+    if stage == "review":
+        receipt["critical_finding_ids"] = finding_ids
+        receipt["critical_findings_sha256"] = finding_hash
+    if next_mission_text:
+        next_mission = stage_dir / "next-mission.md"
+        _materialize_bound_text(next_mission, next_mission_text)
+        receipt["next_mission_path"] = str(next_mission)
+        receipt["next_mission_sha256"] = sha(next_mission)
     _write(receipt_path, receipt)
 
 
@@ -1650,6 +1785,24 @@ def _run_workflow_locked(
                 run,
                 run_dir=run.get("run_dir"),
             )
+        if stage != "pro" and run.get("ok") and not receipt_path.is_file():
+            try:
+                _materialize_regular_receipt(
+                    config,
+                    receipt_path,
+                    workflow_id,
+                    stage,
+                    attempt_id,
+                    input_sha,
+                    run,
+                    run_dir=run.get("run_dir"),
+                )
+            except WorkflowError as exc:
+                records.append({
+                    "stage": stage,
+                    "host_materialization": "unavailable",
+                    "error": str(exc),
+                })
         if run.get("ok"):
             _write_workflow_state(state_path, config, {
                 "schema": STATE_SCHEMA, "status": "awaiting_receipt", "workflow_id": workflow_id,

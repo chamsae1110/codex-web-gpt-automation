@@ -119,6 +119,13 @@ exact managed service once, and prove the registered app with a regular
 non-Pro read plus no-op command canary. Do not delete OAuth state or reconnect
 the app merely to exercise this repair.
 
+The same exact-version compatibility layer adds a read-only `read_chunk`
+tool for UTF-8 files whose first line exceeds the upstream 50KB reader limit.
+Read from byte offset 0, reuse each returned `nextOffsetBytes`, and stop only
+at `eof=true`; every chunk is capped at 24KiB and carries the same whole-file
+SHA-256 and total byte count. Its doctor reconstructs an isolated 60KB-plus
+single-line Unicode fixture, so this path does not depend on `bash`.
+
 ## Idempotent service/Funnel recovery
 
 After a DevSpace or Tailscale restart, restore only the already-approved public

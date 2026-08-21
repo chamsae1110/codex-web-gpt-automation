@@ -22,7 +22,10 @@ PATCHES = {
     "dist/server.js": {
         "patch": "directory-read.patch",
         "pristine": "c49c1c607b42e040cdf0b15d5a4a93cfef9ddb8147d492a3cfa2a8c3889dab24",
-        "patched": "d5d9b08c482b282f3390f415d69d460f4ee844046962a4013f11612cbb6b52e0",
+        "patched": "75c68feb2ba9073bae277a25f663cd4ab369736ce62f2b4140197123df27a85e",
+        "upgrades": {
+            "d5d9b08c482b282f3390f415d69d460f4ee844046962a4013f11612cbb6b52e0": "directory-read-to-chunk.patch",
+        },
     },
     "dist/workspaces.js": {
         "patch": "workspaces.patch",
@@ -242,6 +245,104 @@ try {
             {"root": str(root), "result": result},
         )
     return {**result, "root": str(root), "status": "bounded-replay-verified"}
+
+
+def check_large_read_bridge(
+    *,
+    package_root: Path,
+    runner: Any = subprocess.run,
+) -> dict[str, Any]:
+    """Prove a long single UTF-8 line can be reconstructed without shell access."""
+    root = package_root.expanduser().resolve(strict=True)
+    node = shutil.which("node")
+    if not node:
+        raise DevSpaceCompatError("DEVSPACE_NODE_MISSING", "Node.js is required for DevSpace")
+    source = r"""
+import assert from "node:assert/strict";
+import crypto from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { readUtf8Chunk } from "./dist/server.js";
+const state = fs.mkdtempSync(path.join(os.tmpdir(), "codex-devspace-read-chunk-"));
+const target = path.join(state, "single-line.json");
+const expected = JSON.stringify({payload: "\uAC00".repeat(24000)});
+try {
+  fs.writeFileSync(target, expected, "utf8");
+  const chunks = [];
+  let offset = 0;
+  let identity;
+  for (let calls = 0; calls < 16; calls += 1) {
+    const result = await readUtf8Chunk(target, offset, 24 * 1024);
+    assert.equal(result.offsetBytes, offset);
+    assert.ok(result.bytesReturned <= 24 * 1024);
+    assert.ok(result.nextOffsetBytes >= offset);
+    assert.equal(result.totalBytes, Buffer.byteLength(expected, "utf8"));
+    identity ??= result.sha256;
+    assert.equal(result.sha256, identity);
+    chunks.push(result.content);
+    offset = result.nextOffsetBytes;
+    if (result.eof) break;
+    assert.ok(result.bytesReturned > 0);
+  }
+  assert.equal(chunks.join(""), expected);
+  assert.equal(identity, crypto.createHash("sha256").update(expected, "utf8").digest("hex"));
+  console.log(JSON.stringify({
+    ok: true,
+    reconstructed: true,
+    utf8_boundary_safe: true,
+    max_chunk_bytes: 24576,
+  }));
+} finally {
+  fs.rmSync(state, {recursive: true, force: true});
+}
+process.exit(0);
+"""
+    try:
+        completed = runner(
+            [node, "--input-type=module", "-e", source],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            timeout=30,
+            **_git_kwargs(),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise DevSpaceCompatError(
+            "DEVSPACE_LARGE_READ_BRIDGE_CHECK_TIMEOUT",
+            "DevSpace large single-line read bridge check timed out",
+            {"root": str(root), "timeout_seconds": 30},
+        ) from exc
+    if completed.returncode != 0:
+        raise DevSpaceCompatError(
+            "DEVSPACE_LARGE_READ_BRIDGE_CHECK_FAILED",
+            "DevSpace large single-line read bridge check failed",
+            {"root": str(root), "stderr": (completed.stderr or "").strip()[-1200:]},
+        )
+    try:
+        result = json.loads((completed.stdout or "").strip())
+    except json.JSONDecodeError as exc:
+        raise DevSpaceCompatError(
+            "DEVSPACE_LARGE_READ_BRIDGE_CHECK_INVALID",
+            "DevSpace large read bridge check did not return valid JSON",
+            {"root": str(root)},
+        ) from exc
+    expected = {
+        "ok": True,
+        "reconstructed": True,
+        "utf8_boundary_safe": True,
+        "max_chunk_bytes": 24576,
+    }
+    if result != expected:
+        raise DevSpaceCompatError(
+            "DEVSPACE_LARGE_READ_BRIDGE_CHECK_INCOMPLETE",
+            "DevSpace large read bridge check did not prove every boundary",
+            {"root": str(root), "result": result},
+        )
+    return {**result, "root": str(root), "status": "chunk-reconstruction-verified"}
 
 
 def patch_root() -> Path:
@@ -482,6 +583,7 @@ def ensure_devspace_compatibility(
     changed: list[str] = []
     already: list[str] = []
     oauth_checks: list[dict[str, Any]] = []
+    large_read_checks: list[dict[str, Any]] = []
     for root in roots:
         if package_version(root) != SUPPORTED_VERSION:
             raise DevSpaceCompatError(
@@ -496,21 +598,23 @@ def ensure_devspace_compatibility(
             if current == contract["patched"]:
                 already.append(item)
                 continue
-            if current != contract["pristine"]:
+            upgrades = contract.get("upgrades") if isinstance(contract.get("upgrades"), dict) else {}
+            upgrade_patch = upgrades.get(current)
+            if current != contract["pristine"] and not upgrade_patch:
                 raise DevSpaceCompatError(
                     "DEVSPACE_FILE_HASH_MISMATCH",
                     "DevSpace compatibility refuses an unknown third-party file",
                     {
                         "path": str(target),
                         "actual": current,
-                        "expected": [contract["pristine"], contract["patched"]],
+                        "expected": [contract["pristine"], contract["patched"], *sorted(upgrades)],
                     },
                 )
             backup_path = backup / Path(relative)
             backup_path.parent.mkdir(parents=True, exist_ok=True)
             if not backup_path.exists():
                 shutil.copy2(target, backup_path)
-            _apply_patch(root, patch_root() / str(contract["patch"]))
+            _apply_patch(root, patch_root() / str(upgrade_patch or contract["patch"]))
             actual = sha256_file(target)
             if actual != contract["patched"]:
                 raise DevSpaceCompatError(
@@ -521,6 +625,8 @@ def ensure_devspace_compatibility(
             changed.append(item)
         if "dist/oauth-provider.js" in PATCHES:
             oauth_checks.append(check_oauth_refresh_replay(package_root=root))
+        if "dist/server.js" in PATCHES:
+            large_read_checks.append(check_large_read_bridge(package_root=root))
     marker = restart_marker_path()
     if changed:
         marker = _write_restart_marker(roots)
@@ -531,6 +637,7 @@ def ensure_devspace_compatibility(
         "changed": changed,
         "already_patched": already,
         "oauth_refresh_replay_checks": oauth_checks,
+        "large_read_bridge_checks": large_read_checks,
         "service_restart_required": marker.is_file(),
         "restart_marker": str(marker),
     }

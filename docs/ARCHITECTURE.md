@@ -76,6 +76,11 @@ terminate a run, release its lock, mark it failed, or authorize a replacement.
   final verifier. Each writer receives a distinct pre-created Git worktree;
   host-validated disjoint project-relative ownership and actual-delta auditing
   prevent concurrent overlap before the combined result reaches canonical.
+  When the web app withholds mutating tools, closed host-materialization
+  envelopes preserve the same identity and ownership checks without
+  mislabeling a write tool as read-only. A separate bounded `read_chunk`
+  surface reconstructs UTF-8 files whose first line exceeds the upstream
+  50KB line-oriented reader limit.
   Local Codex retains deterministic control and release duties.
 
 ## Installation lifecycle
