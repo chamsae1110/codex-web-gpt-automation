@@ -45,6 +45,14 @@ PRE_SUBMIT_CANCEL_CONFIRMATION = "user-confirmed-pre-submit-workflow-cancel"
 PRE_SUBMIT_DEVSPACE_BRIDGE_TIMEOUT = (
     "version resolution failed: DevSpace large single-line read bridge check timed out"
 )
+PRE_SUBMIT_DEVSPACE_SERVICE_RESTART = (
+    "version resolution failed: DEVSPACE_SERVICE_RESTART_REQUIRED: "
+    "DevSpace was safely patched before submission and must be restarted once"
+)
+PRE_SUBMIT_CANCEL_ERRORS = {
+    PRE_SUBMIT_DEVSPACE_BRIDGE_TIMEOUT: "pre-submit-devspace-bridge-timeout",
+    PRE_SUBMIT_DEVSPACE_SERVICE_RESTART: "pre-submit-devspace-service-restart-required",
+}
 TERMINAL_SCOPE_STATUSES = {"complete", "canceled"}
 USER_STOPPABLE_OUTCOMES = {"blocked", "not_executed", "pending", "unknown"}
 STANDARD_PROFILE = "standard"
@@ -497,6 +505,11 @@ def _user_stop_evidence_mode(run_state: dict[str, Any], run_dir: Path, confirmat
     stdout_path = run_dir / "stdout.log"
     stderr_path = run_dir / "stderr.log"
     output_path = run_dir / "output.md"
+    stderr_text = (
+        stderr_path.read_text(encoding="utf-8", errors="strict").strip()
+        if stderr_path.is_file() and not stderr_path.is_symlink()
+        else ""
+    )
     if (
         run_state.get("schema") != RUNNER.STATE.STATE_SCHEMA
         or run_state.get("status") != "failed"
@@ -510,13 +523,10 @@ def _user_stop_evidence_mode(run_state: dict[str, Any], run_dir: Path, confirmat
         or not stdout_path.is_file()
         or stdout_path.is_symlink()
         or stdout_path.stat().st_size != 0
-        or not stderr_path.is_file()
-        or stderr_path.is_symlink()
-        or stderr_path.read_text(encoding="utf-8", errors="strict").strip()
-        != PRE_SUBMIT_DEVSPACE_BRIDGE_TIMEOUT
+        or stderr_text not in PRE_SUBMIT_CANCEL_ERRORS
     ):
-        raise WorkflowError("Oracle run is not the bounded pre-submit DevSpace bridge failure")
-    return "pre-submit-devspace-bridge-timeout"
+        raise WorkflowError("Oracle run is not a bounded pre-submit DevSpace compatibility failure")
+    return PRE_SUBMIT_CANCEL_ERRORS[stderr_text]
 
 
 def settle_user_stopped_workflow(

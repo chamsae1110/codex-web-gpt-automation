@@ -2166,7 +2166,9 @@ def _settlement_args(fixture: dict[str, object]) -> dict[str, object]:
     }
 
 
-def _make_pre_submit_bridge_timeout(module, fixture: dict[str, object]) -> None:
+def _make_pre_submit_bridge_timeout(
+    module, fixture: dict[str, object], *, error: str | None = None
+) -> None:
     run_dir = Path(fixture["run_dir"])
     state = module._json(fixture["run_state_path"])
     state.update({
@@ -2180,7 +2182,7 @@ def _make_pre_submit_bridge_timeout(module, fixture: dict[str, object]) -> None:
     module._write(fixture["run_state_path"], state)
     (run_dir / "stdout.log").write_bytes(b"")
     (run_dir / "stderr.log").write_text(
-        module.PRE_SUBMIT_DEVSPACE_BRIDGE_TIMEOUT + "\n", encoding="utf-8"
+        (error or module.PRE_SUBMIT_DEVSPACE_BRIDGE_TIMEOUT) + "\n", encoding="utf-8"
     )
     fixture["expected_run_state_sha256"] = module.sha(fixture["run_state_path"])
     fixture["confirmation"] = module.PRE_SUBMIT_CANCEL_CONFIRMATION
@@ -2259,6 +2261,22 @@ def test_pre_submit_bridge_timeout_can_be_explicitly_canceled_without_run_mutati
     receipt = module._json(Path(result["settlement_path"]))
     assert receipt["authority"] == module.PRE_SUBMIT_CANCEL_CONFIRMATION
     assert receipt["evidence_mode"] == "pre-submit-devspace-bridge-timeout"
+
+
+def test_pre_submit_service_restart_requirement_can_be_canceled_after_restart(
+    tmp_path: Path,
+) -> None:
+    module = load()
+    fixture = _user_stop_fixture(module, tmp_path)
+    _make_pre_submit_bridge_timeout(
+        module, fixture, error=module.PRE_SUBMIT_DEVSPACE_SERVICE_RESTART
+    )
+
+    result = module.settle_user_stopped_workflow(**_settlement_args(fixture))
+
+    receipt = module._json(Path(result["settlement_path"]))
+    assert result["scope_released"] is True
+    assert receipt["evidence_mode"] == "pre-submit-devspace-service-restart-required"
 
 
 @pytest.mark.parametrize("mutation", ["stderr", "stdout", "output", "conversation"])

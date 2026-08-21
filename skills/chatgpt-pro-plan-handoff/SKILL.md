@@ -162,6 +162,10 @@ explicit token `user-confirmed-pre-submit-workflow-cancel`. It additionally
 requires empty stdout, no output, no conversation URL, and exact pre-submit
 state before it can write `CANCELED` and release the scope. Never use this token
 for another error or a possibly submitted run.
+The exact `DEVSPACE_SERVICE_RESTART_REQUIRED` pre-submit error uses the same
+token only after the managed setup procedure has restarted DevSpace once and
+verified the preserved roots and endpoints. Settlement itself never restarts
+the service.
 
 Existing v1-v4 agbrowse comprehensive state and v3 parallel implementation are
 legacy recovery-only. Their files remain installed for exact recovery but are

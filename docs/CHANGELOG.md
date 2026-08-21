@@ -12,6 +12,10 @@
   `CANCELED`로 정산하고 scope를 해제할 수 있습니다. stdout/output/
   conversation 흔적이나 다른 오류는 계속 fail-closed이며 Oracle run state는
   변경하지 않습니다.
+- 동일한 정산 계약은 패치 적용 후 서비스 재시작이 필요하다는
+  정확한 `DEVSPACE_SERVICE_RESTART_REQUIRED` pre-submit 오류도 구분하여
+  결속합니다. 서비스 재시작은 별도 managed setup 절차로 수행하며
+  정산 명령은 서비스나 prompt를 조작하지 않습니다.
 
 ## 1.15.6 - comprehensive 사용자 중지 정산
 
