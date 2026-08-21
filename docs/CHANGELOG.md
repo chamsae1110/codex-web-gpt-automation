@@ -1,5 +1,12 @@
 # 기술 변경 기록
 
+## 1.15.10 - DevSpace 테스트 restart marker 격리
+
+- DevSpace compatibility 테스트의 restart-marker state를 각 테스트의 격리된
+  임시 디렉터리로 강제했습니다. synthetic package patch가
+  `%USERPROFILE%\.codex\state\devspace-compat\1.0.4\restart-required.json`을
+  남겨 이후 실제 Oracle run을 제출 전에 잘못 차단할 수 없습니다.
+
 ## 1.15.9 - Oracle 재귀 자기관찰 차단
 
 - regular direct Oracle와 comprehensive stage prompt에 exact run ID/slug를

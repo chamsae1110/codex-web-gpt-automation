@@ -12,6 +12,12 @@ import pytest
 MODULE_PATH = Path(__file__).resolve().parents[1] / "bin" / "chatgpt_devspace_compat.py"
 
 
+@pytest.fixture(autouse=True)
+def isolate_compat_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Never let a compatibility test write the user's restart marker."""
+    monkeypatch.setenv("CODEX_DEVSPACE_COMPAT_STATE_ROOT", str(tmp_path / "compat-state"))
+
+
 def load_compat():
     name = "chatgpt_devspace_compat_test"
     spec = importlib.util.spec_from_file_location(name, MODULE_PATH)
@@ -24,6 +30,13 @@ def load_compat():
 
 def digest(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
+
+
+def test_compat_tests_use_an_isolated_restart_marker(tmp_path: Path) -> None:
+    compat = load_compat()
+
+    assert compat.compat_state_root() == (tmp_path / "compat-state").resolve()
+    assert compat.restart_marker_path().parent == (tmp_path / "compat-state").resolve()
 
 
 def test_native_runtime_probe_loads_exact_binding_and_fails_actionably(tmp_path: Path) -> None:
