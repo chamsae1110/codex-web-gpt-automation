@@ -72,6 +72,10 @@ and—when `task_outcome_contract` is `v1`—a final
 `TASK_OUTCOME: EXECUTED` marker. `TASK_OUTCOME: NOT_EXECUTED` and
 `TASK_OUTCOME: BLOCKED` preserve terminal transport evidence but return
 attention-required; transport success alone never claims project execution.
+Every regular DevSpace prompt is also bound to its exact current run ID and
+slug. The web worker must not inspect, wait for, poll, invoke, or recover that
+Oracle controller identity or its state/output/transcript/observer, and must
+not launch a nested Oracle run. It performs the requested mission directly.
 Prompts require citations and Markdown reference definitions before the marker.
 For provider-rendered compatibility, only one exact marker followed solely by
 single-line HTTP(S) Markdown reference definitions is also classifiable; any
@@ -132,6 +136,19 @@ size, and SHA-256 for every file), the upload-timeout marker, matching
 stdout/transcript, no stderr, and exact no-live-tab/no-saved-URL recovery hashes.
 It remains ineligible without the same explicit user token or if any artifact
 has changed.
+
+A terminal BLOCKED answer is classified as
+`post-submit-recursive-self-observation` only when it contains the exact own
+run ID and slug together with own `running`, `task_outcome: pending`, output
+absence, and `continue-observing-same-exact-session` evidence. General BLOCKED
+answers and simple identity mentions keep their existing classification.
+Comprehensive mode terminalizes this bounded signature and releases only its
+workflow scope without retrying. A fresh direct run remains forbidden until a
+maintenance owner invokes `settle-recursive-self-observation` with the exact
+state/output/transcript SHA-256 values and confirmation token
+`user-authorized-fresh-run-after-recursive-self-observation`. That command
+writes one append-only receipt; it does not edit historical run artifacts or
+submit a prompt.
 
 Direct same-project runs hold one cross-process mutex for the entire Oracle
 process lifetime. A Multi parent owns that project mutex while authorized

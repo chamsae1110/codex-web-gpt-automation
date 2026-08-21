@@ -1,5 +1,19 @@
 # 기술 변경 기록
 
+## 1.15.9 - Oracle 재귀 자기관찰 차단
+
+- regular direct Oracle와 comprehensive stage prompt에 exact run ID/slug를
+  결속한 no-self-observation/no-nested-Oracle guard를 추가했습니다. 웹 단계는
+  자신의 Oracle state/output/transcript/recovery/observer를 읽거나 기다리지
+  않고 요청된 미션을 직접 수행해야 합니다.
+- terminal `BLOCKED`가 exact 자기 run ID와 slug, `running`, `pending`, output
+  부재, `continue-observing-same-exact-session`을 모두 포함할 때만
+  `post-submit-recursive-self-observation`으로 분류합니다. 일반 BLOCKED와 단순
+  식별자 언급은 기존 분류를 유지합니다.
+- comprehensive stage의 해당 결함은 자동 재시도 없이 terminal BLOCKED로
+  종결하여 scope를 해제합니다. fresh run은 exact state/output/transcript 해시와
+  명시적 사용자 권한을 append-only receipt로 결속한 뒤에만 허용됩니다.
+
 ## 1.15.8 - Ultra review FAIL 종결 수리
 
 - hash-bound review receipt가 `FAIL`, `ready_for_next=false`, `next_stage=null`,

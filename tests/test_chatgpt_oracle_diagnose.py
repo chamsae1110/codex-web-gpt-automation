@@ -5,6 +5,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 MODULE_PATH = Path(__file__).resolve().parents[1] / "bin" / "chatgpt_oracle_diagnose.py"
 
 
@@ -47,6 +49,7 @@ def write_run(
         "terminal_harvested": terminal_harvested,
         "task_outcome": task_outcome,
         "artifacts": {"output": str(output_path), "stdout": str(stdout_path), "stderr": str(stderr_path)},
+        "oracle": {"slug": f"oracle-project-{run_id[:10]}"},
     }), encoding="utf-8")
     return run_dir
 
@@ -261,6 +264,102 @@ def test_terminal_blocked_oauth_503_is_not_misreported_as_complete(tmp_path: Pat
     assert verdict["bucket"] == "terminal-task-not-executed"
     assert verdict["signature"] == "registered-app-oauth-token-request-503"
     assert verdict["anomalies"] == ["terminal-harvested-browser-observer-stale"]
+
+
+def test_terminal_recursive_self_observation_has_bounded_signature(tmp_path: Path) -> None:
+    module = load()
+    state_root = tmp_path / "oracle-state"
+    run_id = "r" * 12
+    slug = f"oracle-project-{run_id[:10]}"
+    output = (
+        f"run ID: {run_id}\nexact slug: {slug}\nstatus: running\n"
+        "task_outcome: pending\noutput.md absent\n"
+        "continue-observing-same-exact-session\nTASK_OUTCOME: BLOCKED\n"
+    )
+    write_run(
+        state_root,
+        run_id,
+        status="attention_required",
+        output=output,
+        session_authority="terminal",
+        terminal_harvested=True,
+        task_outcome="blocked",
+    )
+
+    report = module.diagnose(state_root)
+
+    assert report["unresolved_runs"][0]["signature"] == "post-submit-recursive-self-observation"
+
+
+def test_general_terminal_blocked_or_simple_identity_mention_stays_generic(tmp_path: Path) -> None:
+    module = load()
+    state_root = tmp_path / "oracle-state"
+    run_id = "s" * 12
+    slug = f"oracle-project-{run_id[:10]}"
+    write_run(
+        state_root,
+        run_id,
+        status="attention_required",
+        output=f"run ID: {run_id}\nslug: {slug}\nconcrete project blocker\nTASK_OUTCOME: BLOCKED\n",
+        session_authority="terminal",
+        terminal_harvested=True,
+        task_outcome="blocked",
+    )
+
+    report = module.diagnose(state_root)
+
+    assert report["unresolved_runs"][0]["signature"] == "durable-output-reports-blocked"
+
+
+@pytest.mark.parametrize(
+    "missing_line",
+    [
+        "status: running",
+        "task_outcome: pending",
+        "output.md absent",
+        "continue-observing-same-exact-session",
+    ],
+)
+def test_recursive_signature_requires_every_bounded_self_observation_line(
+    tmp_path: Path, missing_line: str
+) -> None:
+    module = load()
+    state_root = tmp_path / "oracle-state"
+    run_id = "t" * 12
+    slug = f"oracle-project-{run_id[:10]}"
+    lines = [
+        f"run ID: {run_id}", f"exact slug: {slug}", "status: running",
+        "task_outcome: pending", "output.md absent",
+        "continue-observing-same-exact-session", "TASK_OUTCOME: BLOCKED",
+    ]
+    output = "\n".join(line for line in lines if line != missing_line) + "\n"
+    write_run(
+        state_root, run_id, status="attention_required", output=output,
+        session_authority="terminal", terminal_harvested=True, task_outcome="blocked",
+    )
+
+    report = module.diagnose(state_root)
+
+    assert report["unresolved_runs"][0]["signature"] == "durable-output-reports-blocked"
+
+
+def test_recursive_signature_rejects_a_different_slug(tmp_path: Path) -> None:
+    module = load()
+    state_root = tmp_path / "oracle-state"
+    run_id = "u" * 12
+    output = (
+        f"run ID: {run_id}\nexact slug: oracle-project-someoneelse\nstatus: running\n"
+        "task_outcome: pending\noutput.md absent\n"
+        "continue-observing-same-exact-session\nTASK_OUTCOME: BLOCKED\n"
+    )
+    write_run(
+        state_root, run_id, status="attention_required", output=output,
+        session_authority="terminal", terminal_harvested=True, task_outcome="blocked",
+    )
+
+    report = module.diagnose(state_root)
+
+    assert report["unresolved_runs"][0]["signature"] == "durable-output-reports-blocked"
 
 
 def test_live_run_keeps_ownership_and_is_not_reported_as_failure(tmp_path: Path) -> None:

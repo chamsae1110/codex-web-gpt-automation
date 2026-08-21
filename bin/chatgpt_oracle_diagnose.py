@@ -172,7 +172,9 @@ def classify_run(
         return {"bucket": ACTIVE, "signature": "explicitly-abandoned"}
     if outcome in {"not_executed", "blocked"} and has_output:
         evidence_text = "\n".join((stdout_text, transcript_text, output_text))
-        if "OAuth token request failed" in evidence_text and "503" in evidence_text:
+        if STATE.recursive_self_observation_evidence(state, output_text) is not None:
+            signature = "post-submit-recursive-self-observation"
+        elif "OAuth token request failed" in evidence_text and "503" in evidence_text:
             signature = "registered-app-oauth-token-request-503"
         else:
             signature = (

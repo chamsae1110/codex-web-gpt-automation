@@ -39,8 +39,10 @@ def write_run(
         output_path.write_text(output, encoding="utf-8")
     stdout_path = run_dir / "stdout.log"
     stderr_path = run_dir / "stderr.log"
+    transcript_path = run_dir / "transcript.md"
     stdout_path.write_text(stdout, encoding="utf-8")
     stderr_path.write_text("", encoding="utf-8")
+    transcript_path.write_text(output or stdout, encoding="utf-8")
     (run_dir / "state.json").write_text(json.dumps({
         "schema": "codex.chatgpt.oracle-run-state/v1",
         "status": status,
@@ -48,7 +50,8 @@ def write_run(
         "project_root": str(project_root),
         "session_authority": session_authority,
         "terminal_harvested": terminal_harvested,
-        "artifacts": {"output": str(output_path), "stdout": str(stdout_path), "stderr": str(stderr_path)},
+        "task_outcome": "blocked" if output and "TASK_OUTCOME: BLOCKED" in output else "",
+        "artifacts": {"output": str(output_path), "transcript": str(transcript_path), "stdout": str(stdout_path), "stderr": str(stderr_path)},
         "oracle": {"slug": "oracle-project-abc", "conversation_url": "https://chatgpt.com/c/exact"},
     }), encoding="utf-8")
     return run_dir
@@ -212,6 +215,54 @@ def test_active_run_is_not_marked_safe_for_a_fresh_run(tmp_path: Path) -> None:
 
     assert packet["lifecycle"] == "running"
     assert packet["safe_for_fresh_run"] is False
+
+
+def test_recursive_self_observation_needs_append_only_user_authority(tmp_path: Path) -> None:
+    module = load()
+    run_id = "recursive1234"
+    slug = "oracle-project-abc"
+    output = (
+        f"run ID: {run_id}\nexact slug: {slug}\nstatus: running\n"
+        "task_outcome: pending\noutput.md absent\n"
+        "continue-observing-same-exact-session\nTASK_OUTCOME: BLOCKED\n"
+    )
+    run_dir = write_run(
+        tmp_path,
+        run_id,
+        status="attention_required",
+        output=output,
+        session_authority="terminal",
+        terminal_harvested=True,
+    )
+    state_path = run_dir / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["oracle"]["slug"] = slug
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    before = module.build_packet(run_dir)
+    assert before["signature"] == "post-submit-recursive-self-observation"
+    assert before["safe_for_fresh_run"] is False
+
+    receipt_path = run_dir / "settlements" / "recursive-self-observation-fresh-run.json"
+    receipt_path.parent.mkdir()
+    receipt_path.write_text(json.dumps({
+        "schema": module.STATE.RECURSIVE_SELF_OBSERVATION_SETTLEMENT_SCHEMA,
+        "confirmation": module.STATE.USER_AUTHORIZED_FRESH_AFTER_RECURSIVE_SELF_OBSERVATION,
+        "reason": "user authorized continued progress",
+        "run_id": run_id,
+        "project_root": state["project_root"],
+        "slug": slug,
+        "signature": "post-submit-recursive-self-observation",
+        "state_sha256": module.STATE.sha256_file(state_path),
+        "output_sha256": module.STATE.sha256_file(run_dir / "output.md"),
+        "transcript_sha256": module.STATE.sha256_file(run_dir / "transcript.md"),
+        "auto_retry": False,
+        "submission_action": "none",
+        "authorized_at": "2026-08-21T00:00:00Z",
+    }), encoding="utf-8")
+
+    after = module.build_packet(run_dir)
+    assert after["safe_for_fresh_run"] is True
+    assert after["fresh_run_authority"]["sha256"] == module.STATE.sha256_file(receipt_path)
 
 
 def test_packet_build_requires_the_exact_persisted_run(tmp_path: Path) -> None:

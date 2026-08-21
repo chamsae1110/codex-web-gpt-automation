@@ -3887,3 +3887,110 @@ def test_exact_recovery_bypasses_live_submit_mutex_and_harvests_same_slug(tmp_pa
     assert recovered["result"]["oracle"]["conversation_url"] == (
         "https://chatgpt.com/c/exact-stale-observer"
     )
+
+
+def test_recursive_self_observation_settlement_is_append_only_and_hash_bound(tmp_path: Path) -> None:
+    runner = load_runner()
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    run_id = "recursive1234"
+    slug = "oracle-project-recursive1"
+    run_dir = tmp_path / "state" / "projects" / "key" / "runs" / run_id
+    run_dir.mkdir(parents=True)
+    output = run_dir / "output.md"
+    transcript = run_dir / "transcript.md"
+    stdout = run_dir / "stdout.log"
+    stderr = run_dir / "stderr.log"
+    exact = (
+        f"run ID: {run_id}\nexact slug: {slug}\nstatus: running\n"
+        "task_outcome: pending\noutput.md absent\n"
+        "continue-observing-same-exact-session\nTASK_OUTCOME: BLOCKED\n"
+    )
+    output.write_text(exact, encoding="utf-8")
+    transcript.write_text(exact, encoding="utf-8")
+    stdout.write_text("", encoding="utf-8")
+    stderr.write_text("", encoding="utf-8")
+    state_path = run_dir / "state.json"
+    runner.STATE.write_json_atomic(state_path, {
+        "schema": "codex.chatgpt.oracle-run-state/v1",
+        "status": "attention_required",
+        "run_id": run_id,
+        "project_root": str(project_root),
+        "session_authority": "terminal",
+        "terminal_harvested": True,
+        "transport_status": "complete",
+        "task_outcome": "blocked",
+        "oracle": {"slug": slug},
+        "artifacts": {
+            "output": str(output), "transcript": str(transcript),
+            "stdout": str(stdout), "stderr": str(stderr),
+        },
+    })
+    hashes = {
+        "expected_state_sha256": runner.STATE.sha256_file(state_path),
+        "expected_output_sha256": runner.STATE.sha256_file(output),
+        "expected_transcript_sha256": runner.STATE.sha256_file(transcript),
+    }
+    before_state = state_path.read_bytes()
+    dry = runner.settle_recursive_self_observation_fresh_run(
+        run_dir,
+        confirmation=runner.STATE.USER_AUTHORIZED_FRESH_AFTER_RECURSIVE_SELF_OBSERVATION,
+        reason="user authorized continued progress after the bounded terminal failure",
+        dry_run=True,
+        **hashes,
+    )
+    assert dry["status"] == "dry-run"
+    assert not Path(dry["settlement_path"]).exists()
+
+    settled = runner.settle_recursive_self_observation_fresh_run(
+        run_dir,
+        confirmation=runner.STATE.USER_AUTHORIZED_FRESH_AFTER_RECURSIVE_SELF_OBSERVATION,
+        reason="user authorized continued progress after the bounded terminal failure",
+        **hashes,
+    )
+    proof = runner.STATE.proven_recursive_self_observation_fresh_run_authority(state_path)
+
+    assert settled["safe_for_fresh_run"] is True
+    assert settled["scope_released"] is True
+    assert settled["auto_retry"] is False
+    assert settled["submission_action"] == "none"
+    assert proof is not None
+    assert state_path.read_bytes() == before_state
+    assert proof["state_sha256"] == hashes["expected_state_sha256"]
+    repeated = runner.settle_recursive_self_observation_fresh_run(
+        run_dir,
+        confirmation=runner.STATE.USER_AUTHORIZED_FRESH_AFTER_RECURSIVE_SELF_OBSERVATION,
+        reason="user authorized continued progress after the bounded terminal failure",
+        **hashes,
+    )
+    assert repeated["settlement"]["sha256"] == proof["sha256"]
+
+
+def test_recursive_self_observation_settlement_rejects_generic_blocked_output(tmp_path: Path) -> None:
+    runner = load_runner()
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    run_dir = tmp_path / "state" / "projects" / "key" / "runs" / "generic1234"
+    run_dir.mkdir(parents=True)
+    output = run_dir / "output.md"
+    transcript = run_dir / "transcript.md"
+    output.write_text("ordinary blocker\nTASK_OUTCOME: BLOCKED\n", encoding="utf-8")
+    transcript.write_text("ordinary blocker\n", encoding="utf-8")
+    state_path = run_dir / "state.json"
+    runner.STATE.write_json_atomic(state_path, {
+        "schema": "codex.chatgpt.oracle-run-state/v1", "status": "attention_required",
+        "run_id": "generic1234", "project_root": str(project_root),
+        "session_authority": "terminal", "terminal_harvested": True,
+        "task_outcome": "blocked", "oracle": {"slug": "oracle-project-generic123"},
+        "artifacts": {"output": str(output), "transcript": str(transcript)},
+    })
+    with pytest.raises(runner.OracleRunError) as exc:
+        runner.settle_recursive_self_observation_fresh_run(
+            run_dir,
+            confirmation=runner.STATE.USER_AUTHORIZED_FRESH_AFTER_RECURSIVE_SELF_OBSERVATION,
+            reason="continue",
+            expected_state_sha256=runner.STATE.sha256_file(state_path),
+            expected_output_sha256=runner.STATE.sha256_file(output),
+            expected_transcript_sha256=runner.STATE.sha256_file(transcript),
+        )
+    assert exc.value.code == "RECURSIVE_SELF_OBSERVATION_EVIDENCE_REQUIRED"

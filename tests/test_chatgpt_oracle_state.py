@@ -95,7 +95,10 @@ def test_prompt_is_plain_app_plus_absolute_mission_instruction(tmp_path: Path) -
     mission = tmp_path / "mission.md"
     mission.write_text("work", encoding="utf-8")
     config = state.load_manifest(manifest(tmp_path, mission.resolve()))
-    prompt = state.composer_prompt(config)
+    layout = state.create_layout(config, run_id="exact-run-12345678")
+    prompt = state.composer_prompt(
+        config, run_id=layout.run_id, slug=layout.slug
+    )
     assert prompt.startswith(
         f"@DevSpace 먼저 정확한 프로젝트 루트 {tmp_path.resolve()}를 checkout 모드로 여세요."
     )
@@ -104,6 +107,9 @@ def test_prompt_is_plain_app_plus_absolute_mission_instruction(tmp_path: Path) -
     assert prompt.index(str(tmp_path.resolve())) < prompt.index(str(mission.resolve()))
     assert "동일한 정확한 루트만 한 번 재시도" in prompt
     assert "셸 경계 우회로 대체하지 마세요" in prompt
+    assert f"run {layout.run_id} or slug {layout.slug}" in prompt
+    assert "Do not launch a nested Oracle run" in prompt
+    assert "state.json, output.md, transcript.md, recovery" in prompt
     assert "\n" not in prompt
 
 

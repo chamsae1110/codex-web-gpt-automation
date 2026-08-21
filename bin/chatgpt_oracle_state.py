@@ -117,6 +117,12 @@ ORACLE_MODEL_SELECTOR_BUTTON_PRE_SUBMIT_ERROR = (
 ORACLE_STANDALONE_PRO_NO_SUBMISSION_VERSIONS = {"0.17.1"}
 USER_CONFIRMED_NO_SUBMISSION = "user-confirmed-no-submission"
 USER_CONFIRMED_EXECUTION_ENDED = "user-confirmed-task-ended"
+USER_AUTHORIZED_FRESH_AFTER_RECURSIVE_SELF_OBSERVATION = (
+    "user-authorized-fresh-run-after-recursive-self-observation"
+)
+RECURSIVE_SELF_OBSERVATION_SETTLEMENT_SCHEMA = (
+    "codex.chatgpt.oracle-recursive-self-observation-settlement/v1"
+)
 ORACLE_RECOVERY_STATE_RE = re.compile(r"(?im)^\s*State:\s*[a-z][a-z0-9_-]*\s*$")
 ORACLE_PROFILE_COPY_EBUSY_RE = re.compile(
     r"(?im)^(?:ERROR:\s*|User error \(browser-automation\):\s*)?"
@@ -577,7 +583,31 @@ def load_manifest(path: Path, *, platform_name: str | None = None) -> OracleConf
     )
 
 
-def composer_prompt(config: OracleConfig, mission_path: Path | None = None) -> str:
+def oracle_slug(project_root: Path, run_id: str) -> str:
+    project_words = (re.findall(r"[a-z0-9]+", project_root.name.casefold()) or ["project"])[:3]
+    project_token = "-".join(word[:10] for word in project_words)
+    run_token = run_id.rsplit("-", 1)[-1][:10]
+    return f"oracle-{project_token}-{run_token}"
+
+
+def self_observation_guard(run_id: str, slug: str) -> str:
+    if not run_id or not slug:
+        return ""
+    return (
+        " Do not inspect, read, wait for, poll, invoke, recover, or report on the Oracle controller "
+        f"run {run_id} or slug {slug}, including its state.json, output.md, transcript.md, recovery, "
+        "observer, or process status. Do not launch a nested Oracle run. Perform the requested mission "
+        "directly; if a required project resource is unavailable, report that concrete blocker once."
+    )
+
+
+def composer_prompt(
+    config: OracleConfig,
+    mission_path: Path | None = None,
+    *,
+    run_id: str = "",
+    slug: str = "",
+) -> str:
     if is_attachment_transport(config.transport):
         identity_material = "\0".join((
             str(config.project_root).casefold(),
@@ -602,6 +632,7 @@ def composer_prompt(config: OracleConfig, mission_path: Path | None = None) -> s
             "Put every citation, footnote, and Markdown reference definition before the outcome marker. "
             "End the final response with exactly one of TASK_OUTCOME: EXECUTED, TASK_OUTCOME: NOT_EXECUTED, or "
             "TASK_OUTCOME: BLOCKED as the final nonempty line; append nothing after it."
+            + self_observation_guard(run_id, slug)
         )
     if is_pro_readonly_transport(config.transport):
         return (
@@ -613,6 +644,7 @@ def composer_prompt(config: OracleConfig, mission_path: Path | None = None) -> s
             "Put every citation, footnote, and Markdown reference definition before the outcome marker. "
             "End the final response with exactly one of TASK_OUTCOME: EXECUTED, TASK_OUTCOME: NOT_EXECUTED, or "
             "TASK_OUTCOME: BLOCKED as the final nonempty line; append nothing after it."
+            + self_observation_guard(run_id, slug)
         )
     # Keep the Windows npx.cmd prompt in one argument line. A literal newline
     # truncates the prompt after the app mention before Oracle receives it.
@@ -628,18 +660,16 @@ def composer_prompt(config: OracleConfig, mission_path: Path | None = None) -> s
             if config.task_outcome_contract == "v1"
             else ""
         )
+        + self_observation_guard(run_id, slug)
     )
 
 
 def create_layout(config: OracleConfig, *, run_id: str | None = None) -> RunLayout:
     actual = run_id or f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:12]}"
-    project_words = (re.findall(r"[a-z0-9]+", config.project_root.name.casefold()) or ["project"])[:3]
-    project_token = "-".join(word[:10] for word in project_words)
     # Oracle accepts 3-5 words and normalizes every word to its first ten
     # characters. Generate that exact locator up front so recovery never
     # stores an alias that Oracle cannot resolve later.
-    run_token = actual.rsplit("-", 1)[-1][:10]
-    slug = f"oracle-{project_token}-{run_token}"
+    slug = oracle_slug(config.project_root, actual)
     run_dir = config.run_root / actual
     return RunLayout(
         actual,
@@ -904,6 +934,95 @@ def output_is_nonempty(path: Path) -> bool:
         return bool(path.read_bytes().strip())
     except OSError:
         return False
+
+
+def recursive_self_observation_evidence(
+    state: dict[str, Any], output_text: str
+) -> dict[str, str] | None:
+    """Recognize only a terminal answer that recursively reports its own live run."""
+    run_id = str(state.get("run_id") or "").strip()
+    oracle = state.get("oracle") if isinstance(state.get("oracle"), dict) else {}
+    slug = str(oracle.get("slug") or "").strip()
+    text = str(output_text or "")
+    folded = text.casefold()
+    if (
+        not run_id
+        or not slug
+        or run_id.casefold() not in folded
+        or slug.casefold() not in folded
+        or state.get("terminal_harvested") is not True
+        or str(state.get("session_authority") or "") != "terminal"
+        or str(state.get("task_outcome") or "") != "blocked"
+    ):
+        return None
+    required_groups = (
+        ("running", "status=running", "status: running"),
+        ("task_outcome: pending", "task_outcome=pending", "task outcome: pending"),
+        ("output.md` 미생성", "output.md 미생성", "output absent", "output.md absent", "output 없음"),
+        ("continue-observing-same-exact-session",),
+    )
+    if any(not any(needle in folded for needle in group) for group in required_groups):
+        return None
+    return {
+        "run_id": run_id,
+        "slug": slug,
+        "signature": "post-submit-recursive-self-observation",
+    }
+
+
+def proven_recursive_self_observation_fresh_run_authority(
+    state_path: Path,
+) -> dict[str, Any] | None:
+    """Revalidate the append-only authority receipt without changing historical run state."""
+    directory = state_path.parent.resolve(strict=True)
+    receipt_path = directory / "settlements" / "recursive-self-observation-fresh-run.json"
+    if not receipt_path.is_file() or receipt_path.is_symlink():
+        return None
+    def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        value: dict[str, Any] = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError(f"duplicate settlement key: {key}")
+            value[key] = item
+        return value
+    try:
+        receipt_bytes = receipt_path.read_bytes()
+        receipt = json.loads(
+            receipt_bytes.decode("utf-8", errors="strict"),
+            object_pairs_hook=reject_duplicate_keys,
+        )
+        state = load_state(state_path)
+        artifacts = state.get("artifacts") if isinstance(state.get("artifacts"), dict) else {}
+        output_path = Path(str(artifacts.get("output") or directory / "output.md")).resolve(strict=True)
+        transcript_path = Path(
+            str(artifacts.get("transcript") or directory / "transcript.md")
+        ).resolve(strict=True)
+        output_text = output_path.read_text(encoding="utf-8", errors="strict")
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, OracleStateError, ValueError):
+        return None
+    oracle = state.get("oracle") if isinstance(state.get("oracle"), dict) else {}
+    if (
+        not isinstance(receipt, dict)
+        or receipt.get("schema") != RECURSIVE_SELF_OBSERVATION_SETTLEMENT_SCHEMA
+        or receipt.get("confirmation")
+        != USER_AUTHORIZED_FRESH_AFTER_RECURSIVE_SELF_OBSERVATION
+        or not str(receipt.get("reason") or "").strip()
+        or receipt.get("run_id") != state.get("run_id")
+        or receipt.get("project_root") != state.get("project_root")
+        or receipt.get("slug") != oracle.get("slug")
+        or receipt.get("signature") != "post-submit-recursive-self-observation"
+        or output_path != (directory / "output.md").resolve()
+        or transcript_path != (directory / "transcript.md").resolve()
+        or receipt_path.resolve(strict=True).parent.parent != directory
+        or receipt.get("state_sha256") != sha256_file(state_path)
+        or receipt.get("output_sha256") != sha256_file(output_path)
+        or receipt.get("transcript_sha256") != sha256_file(transcript_path)
+        or recursive_self_observation_evidence(state, output_text) is None
+        or receipt.get("auto_retry") is not False
+        or receipt.get("submission_action") != "none"
+    ):
+        return None
+    return {**receipt, "path": str(receipt_path), "sha256": hashlib.sha256(receipt_bytes).hexdigest()}
 
 
 def _state_has_conversation_url(state: dict[str, Any]) -> bool:

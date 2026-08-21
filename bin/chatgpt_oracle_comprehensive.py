@@ -415,13 +415,19 @@ def _write_workflow_state(path: Path, config: dict[str, Any], value: dict[str, A
         "workflow_state_path": str(path),
         "review_policy": dict(config["_review_policy"]),
     }
-    if scope_status == "blocked" and payload.get("terminal_status") == "REVIEW_FAILED":
+    if (
+        scope_status == "blocked"
+        and payload.get("terminal") is True
+        and payload.get("scope_released") is True
+        and str(payload.get("terminal_status") or "")
+    ):
         scope_payload.update({
             "terminal": True,
-            "terminal_status": "REVIEW_FAILED",
+            "terminal_status": payload.get("terminal_status"),
             "scope_released": True,
-            "review_receipt_sha256": payload.get("review_receipt_sha256"),
         })
+        if payload.get("review_receipt_sha256"):
+            scope_payload["review_receipt_sha256"] = payload.get("review_receipt_sha256")
     _write(_scope_path(config), scope_payload)
 
 
@@ -899,6 +905,13 @@ def _stage_mission(
         "during a stage. If the exact root remains unavailable, stop this stage with a concise external workspace "
         "blocker instead of changing scope. Keep progress narration compact; tool activity and the durable receipt "
         "are the authority.\n"
+        "\n[ORACLE_SELF_OBSERVATION_GUARD]\n"
+        f"exact_oracle_run_id={attempt_id}\n"
+        f"exact_oracle_slug={RUNNER.STATE.oracle_slug(config['project_root'], attempt_id)}\n"
+        "Do not inspect, read, wait for, poll, invoke, recover, or report on this exact Oracle run or slug, "
+        "including its state.json, output.md, transcript.md, recovery, observer, or process status. Do not launch "
+        "a nested Oracle run. Perform this stage directly; if a required project resource is unavailable, return "
+        "one concrete blocker without observing the host controller.\n"
     )
     if stage == "plan":
         pro_selection_instruction = (
@@ -1845,6 +1858,53 @@ def _terminal_review_state(
     }
 
 
+def _terminal_recursive_self_observation_state(
+    config: dict[str, Any],
+    workflow_id: str,
+    run_dir: Path,
+    records: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Terminalize only the exact bounded provider self-observation signature."""
+    try:
+        state_path = run_dir / "state.json"
+        run_state = RUNNER.STATE.load_state(state_path)
+        artifacts = (
+            run_state.get("artifacts")
+            if isinstance(run_state.get("artifacts"), dict)
+            else {}
+        )
+        output_path = Path(
+            str(artifacts.get("output") or run_dir / "output.md")
+        ).resolve(strict=True)
+        output_text = output_path.read_text(encoding="utf-8", errors="strict")
+        evidence = RUNNER.STATE.recursive_self_observation_evidence(
+            run_state, output_text
+        )
+    except (OSError, UnicodeDecodeError, RUNNER.STATE.OracleStateError):
+        return None
+    if evidence is None:
+        return None
+    return {
+        "schema": STATE_SCHEMA,
+        "status": "blocked",
+        "terminal": True,
+        "terminal_status": "ORACLE_RECURSIVE_SELF_OBSERVATION",
+        "scope_released": True,
+        "workflow_id": workflow_id,
+        "manifest_sha256": config["manifest_sha256"],
+        "records": records,
+        "oracle_run_id": run_state.get("run_id"),
+        "oracle_run_dir": str(run_dir),
+        "oracle_output_sha256": sha(output_path),
+        "incident_signature": evidence["signature"],
+        "safe_for_fresh_run": False,
+        "auto_retry": False,
+        "submission_action": "none",
+        "blocker": "Oracle stage recursively observed its own controller run instead of executing the mission",
+        "next_stage": None,
+    }
+
+
 def _recover_exact_oracle_stage(
     stored: dict[str, Any],
     *,
@@ -2308,6 +2368,16 @@ def _run_workflow_locked(
             return {"ok": False, **_json(state_path)}
         if not run.get("ok"):
             failed_run_dir = Path(str(run.get("run_dir") or "")).resolve()
+            recursive_terminal = (
+                _terminal_recursive_self_observation_state(
+                    config, workflow_id, failed_run_dir, records
+                )
+                if failed_run_dir.is_dir()
+                else None
+            )
+            if recursive_terminal is not None:
+                _write_workflow_state(state_path, config, recursive_terminal)
+                return {"ok": False, **recursive_terminal}
             pre_submit_retries = int(_json(state_path).get("pre_submit_retries") or 0)
             if (
                 _pre_submit_retry_count(

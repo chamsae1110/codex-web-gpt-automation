@@ -97,6 +97,69 @@ def test_standard_workflow_cannot_skip_plan_with_initial_pro(tmp_path: Path) -> 
         module.load_manifest(path)
 
 
+def test_regular_stage_mission_binds_no_self_observation_guard(tmp_path: Path) -> None:
+    module = load()
+    captured: dict[str, str] = {}
+
+    def preview(oracle_manifest: Path, *, dry_run: bool):
+        payload = json.loads(oracle_manifest.read_text(encoding="utf-8"))
+        captured["mission"] = Path(payload["mission_path"]).read_text(encoding="utf-8")
+        captured["run_id"] = payload["run_id"]
+        return {"ok": True}
+
+    result = module.run_workflow(manifest(tmp_path), dry_run=True, oracle_execute=preview)
+    expected_slug = module.RUNNER.STATE.oracle_slug(tmp_path.resolve(), captured["run_id"])
+
+    assert result["ok"] is True
+    assert f"exact_oracle_run_id={captured['run_id']}" in captured["mission"]
+    assert f"exact_oracle_slug={expected_slug}" in captured["mission"]
+    assert "Do not launch a nested Oracle run" in captured["mission"]
+    assert "state.json, output.md, transcript.md, recovery" in captured["mission"]
+
+
+def test_recursive_self_observation_terminalizes_stage_and_releases_scope(tmp_path: Path) -> None:
+    module = load()
+    config = module.load_manifest(manifest(tmp_path))
+    config["_review_policy"] = module._review_policy_from_history(config)
+    run_id = "recursive1234"
+    slug = module.RUNNER.STATE.oracle_slug(config["project_root"], run_id)
+    run_dir = tmp_path / "oracle-run"
+    run_dir.mkdir()
+    output = run_dir / "output.md"
+    output.write_text(
+        f"run ID: {run_id}\nexact slug: {slug}\nstatus: running\n"
+        "task_outcome: pending\noutput.md absent\n"
+        "continue-observing-same-exact-session\nTASK_OUTCOME: BLOCKED\n",
+        encoding="utf-8",
+    )
+    module.RUNNER.STATE.write_json_atomic(run_dir / "state.json", {
+        "schema": "codex.chatgpt.oracle-run-state/v1",
+        "status": "attention_required",
+        "run_id": run_id,
+        "project_root": str(config["project_root"]),
+        "session_authority": "terminal",
+        "terminal_harvested": True,
+        "task_outcome": "blocked",
+        "oracle": {"slug": slug},
+        "artifacts": {"output": str(output)},
+    })
+    terminal = module._terminal_recursive_self_observation_state(
+        config, config["workflow_id"], run_dir, [{"stage": "plan", "ok": False}]
+    )
+    assert terminal is not None
+    assert terminal["terminal_status"] == "ORACLE_RECURSIVE_SELF_OBSERVATION"
+    assert terminal["scope_released"] is True
+    assert terminal["safe_for_fresh_run"] is False
+    assert terminal["auto_retry"] is False
+
+    state_path = module._state_path(config, config["workflow_id"])
+    module._write_workflow_state(state_path, config, terminal)
+    scope = json.loads(module._scope_path(config).read_text(encoding="utf-8"))
+    assert scope["status"] == "blocked"
+    assert scope["terminal_status"] == "ORACLE_RECURSIVE_SELF_OBSERVATION"
+    assert scope["scope_released"] is True
+
+
 def test_manifest_accepts_configured_workspace_app_before_workflow_creation(tmp_path: Path) -> None:
     module = load()
     path = manifest(tmp_path)

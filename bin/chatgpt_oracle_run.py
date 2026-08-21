@@ -12,6 +12,7 @@ import subprocess
 import sys
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
@@ -821,7 +822,12 @@ def execute_run(
     transport_mission_path = layout.run_dir / "mission.md"
     # The app reads the project mission. The copied bytes below are host-only
     # immutable evidence and are never exposed as the workspace handoff path.
-    prompt = STATE.composer_prompt(config, config.mission_path)
+    prompt = STATE.composer_prompt(
+        config,
+        config.mission_path,
+        run_id=layout.run_id,
+        slug=layout.slug,
+    )
     argv = build_oracle_argv(config, layout, prompt)
     if dry_run:
         return dry_run_payload(config, layout, argv, prompt)
@@ -1816,6 +1822,162 @@ def settle_user_confirmed_no_submission(
     }
 
 
+def settle_recursive_self_observation_fresh_run(
+    run_dir: Path,
+    *,
+    confirmation: str,
+    reason: str,
+    expected_state_sha256: str,
+    expected_output_sha256: str,
+    expected_transcript_sha256: str,
+    dry_run: bool = False,
+    platform_name: str | None = None,
+) -> dict[str, Any]:
+    """Append user authority for one proven terminal self-observation failure."""
+    if (
+        confirmation.strip().casefold()
+        != STATE.USER_AUTHORIZED_FRESH_AFTER_RECURSIVE_SELF_OBSERVATION
+    ):
+        raise OracleRunError(
+            "RECURSIVE_SELF_OBSERVATION_CONFIRMATION_REQUIRED",
+            "confirmation does not authorize a fresh run after recursive self-observation",
+        )
+    normalized_reason = reason.strip()
+    if not normalized_reason:
+        raise OracleRunError(
+            "RECURSIVE_SELF_OBSERVATION_REASON_REQUIRED",
+            "an explicit user-authority reason is required",
+        )
+    directory = run_dir.expanduser().resolve(strict=True)
+    state_path = directory / "state.json"
+    state = STATE.load_state(state_path)
+    artifacts = state.get("artifacts") if isinstance(state.get("artifacts"), dict) else {}
+    output_path = Path(str(artifacts.get("output") or directory / "output.md")).resolve(strict=True)
+    transcript_path = Path(
+        str(artifacts.get("transcript") or directory / "transcript.md")
+    ).resolve(strict=True)
+    if (
+        output_path != (directory / "output.md").resolve()
+        or transcript_path != (directory / "transcript.md").resolve()
+        or output_path.is_symlink()
+        or transcript_path.is_symlink()
+    ):
+        raise OracleRunError(
+            "RECURSIVE_SELF_OBSERVATION_ARTIFACT_UNSAFE",
+            "output and transcript must be regular non-symlink run artifacts",
+        )
+    actual_hashes = {
+        "state_sha256": STATE.sha256_file(state_path),
+        "output_sha256": STATE.sha256_file(output_path),
+        "transcript_sha256": STATE.sha256_file(transcript_path),
+    }
+    expected_hashes = {
+        "state_sha256": expected_state_sha256.strip().casefold(),
+        "output_sha256": expected_output_sha256.strip().casefold(),
+        "transcript_sha256": expected_transcript_sha256.strip().casefold(),
+    }
+    if any(actual_hashes[key] != expected_hashes[key] for key in actual_hashes):
+        raise OracleRunError(
+            "RECURSIVE_SELF_OBSERVATION_HASH_MISMATCH",
+            "exact terminal run artifacts changed before authority settlement",
+            {"expected": expected_hashes, "actual": actual_hashes},
+        )
+    output_text = output_path.read_text(encoding="utf-8", errors="strict")
+    evidence = STATE.recursive_self_observation_evidence(state, output_text)
+    if evidence is None:
+        raise OracleRunError(
+            "RECURSIVE_SELF_OBSERVATION_EVIDENCE_REQUIRED",
+            "exact terminal output does not satisfy the bounded self-observation signature",
+        )
+    active_pids = [pid for pid in run_owned_process_ids(directory, state) if process_is_alive(pid)]
+    if active_pids:
+        raise OracleRunError(
+            "RECURSIVE_SELF_OBSERVATION_PROCESS_ACTIVE",
+            "run-owned Oracle or recovery process is still active",
+            {"active_pids": active_pids},
+        )
+    project_root = Path(str(state.get("project_root") or "")).expanduser().resolve(strict=True)
+    owners = STATE.unresolved_project_sessions(
+        directory.parent,
+        project_root,
+        exclude_run_id=str(state.get("run_id") or ""),
+    )
+    if owners:
+        raise OracleRunError(
+            "RECURSIVE_SELF_OBSERVATION_OWNER_ACTIVE",
+            "another exact project session still owns submission authority",
+            {"owners": owners},
+        )
+    existing = STATE.proven_recursive_self_observation_fresh_run_authority(state_path)
+    if existing is not None:
+        return {
+            "ok": True,
+            "status": "recursive_self_observation_fresh_run_authorized",
+            "safe_for_fresh_run": True,
+            "scope_released": True,
+            "auto_retry": False,
+            "submission_action": "none",
+            "run_dir": str(directory),
+            "settlement": existing,
+        }
+    oracle = state.get("oracle") if isinstance(state.get("oracle"), dict) else {}
+    receipt = {
+        "schema": STATE.RECURSIVE_SELF_OBSERVATION_SETTLEMENT_SCHEMA,
+        "confirmation": STATE.USER_AUTHORIZED_FRESH_AFTER_RECURSIVE_SELF_OBSERVATION,
+        "reason": normalized_reason,
+        "run_id": state.get("run_id"),
+        "project_root": str(project_root),
+        "slug": oracle.get("slug"),
+        "signature": evidence["signature"],
+        **actual_hashes,
+        "auto_retry": False,
+        "submission_action": "none",
+        "authorized_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+    receipt_path = directory / "settlements" / "recursive-self-observation-fresh-run.json"
+    preview = {
+        "ok": True,
+        "status": "dry-run" if dry_run else "recursive_self_observation_fresh_run_authorized",
+        "safe_for_fresh_run": True,
+        "scope_released": True,
+        "auto_retry": False,
+        "submission_action": "none",
+        "run_dir": str(directory),
+        "settlement_path": str(receipt_path),
+        "settlement_payload": receipt,
+    }
+    if dry_run:
+        return preview
+    if receipt_path.parent.exists() and (
+        receipt_path.parent.is_symlink()
+        or receipt_path.parent.resolve().parent != directory
+    ):
+        raise OracleRunError(
+            "RECURSIVE_SELF_OBSERVATION_SETTLEMENT_PATH_UNSAFE",
+            "append-only settlement directory is outside the exact run",
+        )
+    receipt_path.parent.mkdir(parents=True, exist_ok=True)
+    encoded = (json.dumps(receipt, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    try:
+        with receipt_path.open("xb") as handle:
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except FileExistsError as exc:
+        raise OracleRunError(
+            "RECURSIVE_SELF_OBSERVATION_SETTLEMENT_EXISTS",
+            "append-only settlement path already exists but did not validate",
+            {"path": str(receipt_path)},
+        ) from exc
+    proven = STATE.proven_recursive_self_observation_fresh_run_authority(state_path)
+    if proven is None:
+        raise OracleRunError(
+            "RECURSIVE_SELF_OBSERVATION_SETTLEMENT_INVALID",
+            "written append-only settlement failed revalidation",
+        )
+    return {**preview, "settlement": proven, "settlement_sha256": proven["sha256"]}
+
+
 def recover_run(
     run_dir: Path,
     *,
@@ -1955,6 +2117,18 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="PATH=SHA256",
         required=True,
     )
+    recursive_parser = commands.add_parser("settle-recursive-self-observation")
+    recursive_parser.add_argument("--run-dir", type=Path, required=True)
+    recursive_parser.add_argument("--expected-state-sha256", required=True)
+    recursive_parser.add_argument("--expected-output-sha256", required=True)
+    recursive_parser.add_argument("--expected-transcript-sha256", required=True)
+    recursive_parser.add_argument(
+        "--confirmation",
+        choices=(STATE.USER_AUTHORIZED_FRESH_AFTER_RECURSIVE_SELF_OBSERVATION,),
+        required=True,
+    )
+    recursive_parser.add_argument("--reason", required=True)
+    recursive_parser.add_argument("--dry-run", action="store_true")
     return parser
 
 
@@ -1991,7 +2165,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 confirmation=args.confirmation,
                 reason=args.reason,
             )
-        else:
+        elif args.command == "settle-executed-timeout":
             evidence: list[tuple[Path, str]] = []
             for value in args.execution_evidence:
                 path_text, separator, digest = value.rpartition("=")
@@ -2007,6 +2181,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 confirmation=args.confirmation,
                 reason=args.reason,
                 execution_evidence=evidence,
+            )
+        else:
+            payload = settle_recursive_self_observation_fresh_run(
+                args.run_dir,
+                confirmation=args.confirmation,
+                reason=args.reason,
+                expected_state_sha256=args.expected_state_sha256,
+                expected_output_sha256=args.expected_output_sha256,
+                expected_transcript_sha256=args.expected_transcript_sha256,
+                dry_run=args.dry_run,
             )
     except STATE.OracleStateError as exc:
         payload = exc.envelope()

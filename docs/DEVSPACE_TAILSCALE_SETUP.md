@@ -108,6 +108,15 @@ mission. Repair of that external binding requires the one manual reconnect
 already described above, followed by one regular non-Pro probe; Pro remains
 blocked until that exact registered-app probe succeeds.
 
+If a terminal web answer reports the exact Oracle run's own live status instead
+of performing the mission, diagnosis requires the full bounded
+`post-submit-recursive-self-observation` signature: own run ID and slug,
+running/pending state, absent output, the exact continue-observing audit phrase,
+and terminal BLOCKED. The comprehensive controller releases its workflow scope
+without automatic retry. Direct fresh-run authority requires the append-only,
+three-artifact hash-bound `settle-recursive-self-observation` receipt; a general
+BLOCKED answer or a simple run-ID mention never qualifies.
+
 When a previously healthy long-running session fails only as its access token
 expires, the managed DevSpace 1.0.4 compatibility layer also checks a bounded
 server-side refresh replay grace. It returns the same rotated pair only for an

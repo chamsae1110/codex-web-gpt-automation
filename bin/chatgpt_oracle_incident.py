@@ -86,6 +86,7 @@ def build_packet(run_dir: Path, *, reporter_role: str = REPORTER_ROLE) -> dict[s
         stdout_text=DIAGNOSE._read_text(directory / "stdout.log"),
         has_output=DIAGNOSE._output_is_nonempty(output_path),
         transcript_text=DIAGNOSE._read_text(directory / "transcript.md"),
+        output_text=DIAGNOSE._read_text(output_path),
         user_confirmed_no_submission=(
             STATE.proven_user_confirmed_no_submission(state_path) is not None
         ),
@@ -101,6 +102,14 @@ def build_packet(run_dir: Path, *, reporter_role: str = REPORTER_ROLE) -> dict[s
         directory.parent,
         project_root,
         exclude_run_id=str(state.get("run_id") or ""),
+    )
+    recursive_authority = STATE.proven_recursive_self_observation_fresh_run_authority(
+        state_path
+    )
+    recursive_fresh_safe = (
+        str(verdict["signature"]) == "post-submit-recursive-self-observation"
+        and recursive_authority is not None
+        and not owners
     )
     return {
         "schema": SCHEMA,
@@ -119,9 +128,11 @@ def build_packet(run_dir: Path, *, reporter_role: str = REPORTER_ROLE) -> dict[s
         # Only a proven pre-submit failure is safe to retry: nothing reached the
         # composer, so a fresh run cannot duplicate a live web submission.
         "safe_for_fresh_run": (
-            bucket in {DIAGNOSE.PRE_SUBMIT_HOST, DIAGNOSE.PRE_SUBMIT_UI} and not owners
+            (bucket in {DIAGNOSE.PRE_SUBMIT_HOST, DIAGNOSE.PRE_SUBMIT_UI} and not owners)
+            or recursive_fresh_safe
         ),
         "unresolved_owners": owners,
+        "fresh_run_authority": recursive_authority,
         "remediation": DIAGNOSE.REMEDIATION.get(bucket, ""),
         "evidence_paths": sorted(
             str(path)
