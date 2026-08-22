@@ -70,6 +70,11 @@ def make_parent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     meta_path.parent.mkdir(parents=True)
     meta_path.write_text(json.dumps(meta), encoding="utf-8")
     assert runner.STATE.capture_browser_identity_receipt(layout.state_path) is not None
+    meta["browser"]["runtime"]["promptSubmitted"] = True
+    meta["browser"]["archive"] = {
+        "mode": "auto", "attempted": True, "archived": True, "conversationUrl": url,
+    }
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
     runner.STATE.update_state(
         layout.state_path, status="complete", session_authority="terminal", terminal_harvested=True,
         transport_status="complete", task_outcome="executed", artifact_sha256=hashlib.sha256(layout.output_path.read_bytes()).hexdigest(),

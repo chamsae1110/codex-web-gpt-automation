@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -402,6 +404,27 @@ def test_browser_identity_receipt_binds_exact_task_run_profile_port_target_and_u
     assert captured["payload"]["cdp_port"] == 43101
     assert captured["payload"]["target_id"] == "target-exact"
     assert captured["payload"]["conversation_url"] == "https://chatgpt.com/c/exact-conversation"
+    assert re.fullmatch(r"[a-f0-9]{64}", captured["payload"]["oracle_runtime_identity_sha256"])
+    assert state.proven_browser_identity_receipt(layout.state_path) is not None
+
+    terminal_meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    terminal_meta["browser"]["runtime"]["promptSubmitted"] = True
+    terminal_meta["browser"]["archive"] = {
+        "mode": "auto",
+        "attempted": True,
+        "archived": True,
+        "conversationUrl": "https://chatgpt.com/c/exact-conversation",
+    }
+    meta_path.write_text(json.dumps(terminal_meta), encoding="utf-8")
+    assert hashlib.sha256(meta_path.read_bytes()).hexdigest() != captured["payload"]["oracle_meta_sha256"]
+    assert state.proven_browser_identity_receipt(layout.state_path) is not None
+
+    terminal_meta["browser"]["runtime"]["chromeTargetId"] = "target-other"
+    meta_path.write_text(json.dumps(terminal_meta), encoding="utf-8")
+    assert state.proven_browser_identity_receipt(layout.state_path) is None
+
+    terminal_meta["browser"]["runtime"]["chromeTargetId"] = "target-exact"
+    meta_path.write_text(json.dumps(terminal_meta), encoding="utf-8")
     assert state.proven_browser_identity_receipt(layout.state_path) is not None
 
     receipt = state.browser_identity_receipt_path(layout.run_dir)

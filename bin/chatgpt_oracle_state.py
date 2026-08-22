@@ -979,9 +979,20 @@ def proven_browser_identity_receipt(state_path: Path) -> dict[str, Any] | None:
         "target_id": runtime.get("chromeTargetId"),
         "conversation_url": runtime.get("tabUrl"),
     }
+    observed_identity_sha256 = hashlib.sha256(
+        json.dumps(observed, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    recorded_meta_sha256 = str(receipt.get("oracle_meta_sha256") or "")
+    recorded_identity_sha256 = str(receipt.get("oracle_runtime_identity_sha256") or "")
+    # Oracle legitimately appends prompt/archive/completion fields after this
+    # receipt is sealed.  Keep the original whole-file hash as capture-time
+    # provenance, but authorize only from the immutable runtime identity tuple.
+    # Existing v1 receipts lack the canonical tuple hash, so exact field
+    # equality remains their bounded compatibility proof.
     if (
-        receipt.get("oracle_meta_sha256") != hashlib.sha256(meta_bytes).hexdigest()
+        re.fullmatch(r"[a-f0-9]{64}", recorded_meta_sha256) is None
         or any(receipt.get(key) != value for key, value in observed.items())
+        or (recorded_identity_sha256 and recorded_identity_sha256 != observed_identity_sha256)
     ):
         return None
     return {"path": str(path), "sha256": actual, "payload": receipt}
@@ -1042,6 +1053,21 @@ def capture_browser_identity_receipt(state_path: Path) -> dict[str, Any] | None:
         "target_id": target_id,
         "conversation_url": url,
         "oracle_meta_sha256": hashlib.sha256(meta_bytes).hexdigest(),
+        "oracle_runtime_identity_sha256": hashlib.sha256(
+            json.dumps(
+                {
+                    "chrome_pid": chrome_pid,
+                    "browser_parent_pid": parent_pid,
+                    "profile_path": str(profile.resolve()),
+                    "cdp_port": cdp_port,
+                    "target_id": target_id,
+                    "conversation_url": url,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest(),
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
     receipt_path = browser_identity_receipt_path(directory)

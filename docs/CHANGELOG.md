@@ -1,5 +1,17 @@
 # 기술 변경 기록
 
+## 1.18.2 - 종결 Pro 후속 대화 신원 검증 수정
+
+- Oracle이 실행 종료 과정에서 `meta.json`에 archive와 prompt 상태를 추가해도
+  task-bound `pro-devspace-readonly` 부모의 후속 라운드가 잘못
+  `FOLLOWUP_PARENT_IDENTITY_INVALID`로 거부되지 않게 했습니다.
+- 영수증의 `oracle_meta_sha256`은 캡처 시점 전체 메타데이터의 감사 증거로
+  보존하되, 권한 검증은 task/run/mission/slug와 Chrome PID·부모 PID·격리
+  profile·동적 CDP port·target·conversation URL의 불변 결속을 사용합니다.
+- 종료 후 비신원 메타데이터 변경은 허용하지만, 브라우저 target·profile·port·
+  대화 또는 영수증 자체가 달라지면 계속 실패 폐쇄됩니다. 기존 v1.18.1
+  append-only browser receipt도 같은 불변 튜플로 호환 검증합니다.
+
 ## 1.18.1 - Pro 읽기 전용 정책 복원
 
 - 모든 신규 `GPT-5.6 Sol / Pro` DevSpace 실행을 읽기 전용 설계·자문·검토
