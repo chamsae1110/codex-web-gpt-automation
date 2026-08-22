@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import locale as locale_module
 import os
 import shutil
 import subprocess
@@ -18,7 +19,7 @@ import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 
 RECEIPT_SCHEMA = "codexpro.install-receipt/v3"
@@ -503,6 +504,27 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def localized_optional_prompt(optional: Mapping[str, Any], environment: Mapping[str, str] | None = None) -> str:
+    values = environment if environment is not None else os.environ
+    explicit_language = str(values.get("CODEX_ONBOARDING_LANG") or "").strip()
+    system_locale = ""
+    if environment is None and not explicit_language:
+        try:
+            system_locale = str(locale_module.getlocale()[0] or "")
+        except (ValueError, TypeError):
+            system_locale = ""
+    locale = (
+        explicit_language
+        if explicit_language
+        else " ".join([
+            system_locale,
+            *(str(values.get(name) or "") for name in ("LC_ALL", "LC_MESSAGES", "LANG")),
+        ])
+    ).casefold()
+    prompt_key = "prompt_ko" if "ko" in locale or "korean" in locale else "prompt_en"
+    return str(optional.get(prompt_key) or optional.get("prompt") or "Install optional Local Multi-GPT too? [y/N]")
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
@@ -516,7 +538,8 @@ def main(argv: list[str] | None = None) -> int:
                 if prior is not None:
                     requested = bool(prior)
                 elif not args.dry_run and sys.stdin.isatty():
-                    prompt = json.loads((args.repo_root / "install-manifest.json").read_text(encoding="utf-8"))["optional_components"]["local_multi_gpt"]["prompt"]
+                    optional = json.loads((args.repo_root / "install-manifest.json").read_text(encoding="utf-8"))["optional_components"]["local_multi_gpt"]
+                    prompt = localized_optional_prompt(optional)
                     requested = input(prompt + " ").strip().lower() in {"y", "yes", "예", "네"}
                 else:
                     requested = False

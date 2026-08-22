@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -50,6 +51,7 @@ def test_plan_orders_the_complete_first_install_without_secrets(tmp_path: Path) 
     [
         ("tailscale", "https://example.com/mcp", "TAILSCALE_STABLE_TS_NET_URL_REQUIRED"),
         ("cloudflare", "https://random.trycloudflare.com/mcp", "CLOUDFLARE_NAMED_TUNNEL_REQUIRED"),
+        ("ngrok", "https://random.ngrok-free.app/mcp", "NGROK_STATIC_DOMAIN_REQUIRED"),
         ("custom", "http://example.com/mcp", "PUBLIC_HTTPS_MCP_URL_REQUIRED"),
         ("custom", "https://example.com/not-mcp", "PUBLIC_MCP_URL_MUST_END_IN_MCP"),
         ("custom", "https://user:secret@example.com/mcp", "PUBLIC_MCP_URL_MUST_NOT_CONTAIN_CREDENTIALS_OR_QUERY"),
@@ -249,6 +251,70 @@ def _wizard_environment(tmp_path: Path, *, ready: bool) -> dict[str, object]:
     }
 
 
+def _confirm_ready_manual_stages(
+    environment: dict[str, object],
+    stages: tuple[str, ...] = (
+        "02_stable_endpoint",
+        "04_reboot_service",
+        "06_oracle_login",
+        "07_chatgpt_app",
+    ),
+) -> None:
+    state = module.load_state(codex_home=environment["codex_home"])
+    roots = state["allowed_roots"]
+    Path(environment["devspace_home"]).joinpath("config.json").write_text(
+        json.dumps({"allowedRoots": roots}), encoding="utf-8"
+    )
+    bootstrap = Path(environment["codex_home"]) / "config" / "codexpro-devspace-bootstrap.json"
+    bootstrap.write_text(json.dumps({"roots": roots}), encoding="utf-8")
+    for stage_id in stages:
+        result = module.confirm_stage(
+            stage_id,
+            codex_home=environment["codex_home"],
+            devspace_home=environment["devspace_home"],
+            **environment["probes"],
+        )
+        assert result["accepted"] is True, result
+
+
+def _bound_final_gate_run(
+    environment: dict[str, object],
+    listing: list[str],
+) -> Path:
+    codex_home = Path(environment["codex_home"])
+    project = Path(environment["project"])
+    run_dir = codex_home / "state" / "chatgpt-oracle" / "projects" / "test" / "runs" / ("f" * 32)
+    run_dir.mkdir(parents=True, exist_ok=True)
+    output = run_dir / "output.md"
+    output.write_text(
+        f"App codex opened workspace ws_onboarding_test and listed: {', '.join(listing)}\n"
+        "TASK_OUTCOME: EXECUTED\n",
+        encoding="utf-8",
+    )
+    output_sha256 = hashlib.sha256(output.read_bytes()).hexdigest()
+    state = {
+        "schema": "codex.chatgpt.oracle-run-state/v1",
+        "run_id": "f" * 32,
+        "project_root": str(project.resolve()),
+        "transport": "devspace",
+        "app_name": "codex",
+        "profile": {"model": "gpt-5.6", "thinking_time": "extra-high"},
+        "status": "complete",
+        "transport_status": "complete",
+        "session_authority": "terminal",
+        "terminal_harvested": True,
+        "task_outcome": "executed",
+        "artifact_sha256": output_sha256,
+        "oracle": {
+            "slug": "oracle-onboarding-final",
+            "conversation_url": "https://chatgpt.com/c/onboarding-final-test",
+        },
+        "artifacts": {"output": str(output.resolve())},
+    }
+    (run_dir / "state.json").write_text(json.dumps(state), encoding="utf-8")
+    return run_dir
+
+
 def test_start_persists_resumable_state_without_secrets(tmp_path: Path) -> None:
     environment = _wizard_environment(tmp_path, ready=False)
     state = module.start_onboarding(
@@ -274,6 +340,76 @@ def test_non_tailscale_start_requires_an_explicit_stable_url(tmp_path: Path) -> 
             roots=[str(environment["project"])],
             codex_home=environment["codex_home"],
         )
+
+
+def test_start_merges_existing_devspace_roots_without_dropping_them(tmp_path: Path) -> None:
+    environment = _wizard_environment(tmp_path, ready=False)
+    existing = tmp_path / "existing-project"
+    requested = tmp_path / "new-project"
+    existing.mkdir()
+    requested.mkdir()
+    Path(environment["devspace_home"]).joinpath("config.json").write_text(
+        json.dumps({"allowedRoots": [str(existing)]}), encoding="utf-8"
+    )
+
+    state = module.start_onboarding(
+        provider="custom",
+        registration_url="https://mcp.example.com/mcp",
+        roots=[str(requested)],
+        codex_home=environment["codex_home"],
+        devspace_home=environment["devspace_home"],
+    )
+
+    assert state["requested_roots"] == [str(requested.resolve())]
+    assert state["allowed_roots"] == [str(existing.resolve()), str(requested.resolve())]
+
+
+def test_start_rejects_invalid_existing_devspace_json(tmp_path: Path) -> None:
+    environment = _wizard_environment(tmp_path, ready=False)
+    Path(environment["devspace_home"]).joinpath("config.json").write_text("{broken", encoding="utf-8")
+
+    with pytest.raises(module.OnboardingError, match="DEVSPACE_CONFIG_INVALID"):
+        module.start_onboarding(
+            provider="custom",
+            registration_url="https://mcp.example.com/mcp",
+            roots=[str(environment["project"])],
+            codex_home=environment["codex_home"],
+            devspace_home=environment["devspace_home"],
+        )
+
+
+def test_local_multi_gpt_opt_in_is_persisted_and_fail_closed_until_doctor_passes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    environment = _wizard_environment(tmp_path, ready=False)
+    state = module.start_onboarding(
+        provider="custom",
+        registration_url="https://mcp.example.com/mcp",
+        roots=[str(environment["project"])],
+        codex_home=environment["codex_home"],
+        devspace_home=environment["devspace_home"],
+        enable_local_multi_gpt=True,
+    )
+    assert state["enable_local_multi_gpt"] is True
+    assert "--enable-local-multi-gpt" in "\n".join(module.stage_instructions("01_install", state, "en"))
+
+    evaluated = module.evaluate_stages(
+        state,
+        codex_home=environment["codex_home"],
+        devspace_home=environment["devspace_home"],
+        **environment["probes"],
+    )
+    assert evaluated["checks"]["local_multi_gpt_ready"] is False
+    assert evaluated["stages"]["01_install"]["verified"] is False
+
+    monkeypatch.setattr(module, "_local_multi_gpt_ready", lambda _home: True)
+    evaluated = module.evaluate_stages(
+        state,
+        codex_home=environment["codex_home"],
+        devspace_home=environment["devspace_home"],
+        **environment["probes"],
+    )
+    assert evaluated["checks"]["local_multi_gpt_ready"] is True
 
 
 def test_next_returns_one_stage_and_never_skips_ahead(tmp_path: Path) -> None:
@@ -324,6 +460,7 @@ def test_final_gate_requires_recorded_non_pro_exact_root_read(tmp_path: Path) ->
         roots=[str(environment["project"])],
         codex_home=environment["codex_home"],
     )
+    _confirm_ready_manual_stages(environment)
     before = module.next_step(
         codex_home=environment["codex_home"],
         devspace_home=environment["devspace_home"],
@@ -332,11 +469,13 @@ def test_final_gate_requires_recorded_non_pro_exact_root_read(tmp_path: Path) ->
     assert before["current_stage"] == "08_final_gate"
     assert before["completion_state"] == "awaiting_verification"
 
+    run_dir = _bound_final_gate_run(environment, ["AGENTS.md"])
     module.record_final_gate(
         read_ok=True,
         root=str(environment["project"]),
         evidence="regular oracle listed the exact root",
         listing=["AGENTS.md"],
+        run_dir=run_dir,
         codex_home=environment["codex_home"],
     )
     after = module.next_step(
@@ -382,6 +521,10 @@ def test_chatgpt_stage_exposes_both_ui_paths_and_triage(tmp_path: Path) -> None:
         registration_url="https://mcp.example.com/mcp",
         roots=[str(environment["project"])],
         codex_home=environment["codex_home"],
+    )
+    _confirm_ready_manual_stages(
+        environment,
+        stages=("02_stable_endpoint", "04_reboot_service", "06_oracle_login"),
     )
     step = module.next_step(
         codex_home=environment["codex_home"],
@@ -434,6 +577,28 @@ def test_every_stage_has_readable_instructions_in_both_languages(tmp_path: Path,
         assert "찾을 수 없습니다" not in instructions[0]
 
 
+@pytest.mark.parametrize("provider", ["cloudflare", "ngrok", "custom"])
+def test_non_tailscale_instructions_never_route_through_tailscale_helper(
+    tmp_path: Path, provider: str
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    state = module.start_onboarding(
+        provider=provider,
+        registration_url="https://mcp.example.com/mcp",
+        roots=[str(project)],
+        codex_home=tmp_path / ".codex",
+        devspace_home=tmp_path / ".devspace",
+    )
+    rendered = "\n".join(
+        line
+        for stage in module.STAGE_IDS
+        for line in module.stage_instructions(stage, state, "en")
+    )
+    assert "devspace_tailscale_setup.py" not in rendered
+    assert "OS login service" in rendered
+
+
 @pytest.mark.parametrize(("language", "needle"), [("ko", "현재 상태"), ("en", "Current state")])
 def test_render_step_is_human_readable_per_language(tmp_path: Path, language: str, needle: str) -> None:
     environment = _wizard_environment(tmp_path, ready=False)
@@ -483,6 +648,7 @@ def test_final_gate_rejects_empty_or_too_short_evidence_without_completion(
         roots=[str(environment["project"])],
         codex_home=environment["codex_home"],
     )
+    _confirm_ready_manual_stages(environment)
 
     with pytest.raises(module.OnboardingError, match="FINAL_GATE_EVIDENCE_INSUFFICIENT"):
         module.record_final_gate(
@@ -529,12 +695,16 @@ def test_valid_final_gate_record_completes_onboarding_and_stores_listing_sample(
         roots=[str(environment["project"])],
         codex_home=environment["codex_home"],
     )
+    _confirm_ready_manual_stages(environment)
+    listing = ["README.md", "bin", "tests"]
+    run_dir = _bound_final_gate_run(environment, listing)
 
     recorded = module.record_final_gate(
         read_ok=True,
         root=str(environment["project"]),
         evidence="The exact project directory was listed.",
-        listing=["README.md", "bin", "tests"],
+        listing=listing,
+        run_dir=run_dir,
         codex_home=environment["codex_home"],
     )
     assert recorded["listing_sample"] == ["README.md", "bin", "tests"]
@@ -556,13 +726,16 @@ def test_final_gate_listing_sample_is_capped_at_ten_entries(tmp_path: Path) -> N
         roots=[str(environment["project"])],
         codex_home=environment["codex_home"],
     )
+    _confirm_ready_manual_stages(environment)
     listing = [f"entry-{index}" for index in range(15)]
+    run_dir = _bound_final_gate_run(environment, listing)
 
     recorded = module.record_final_gate(
         read_ok=True,
         root=str(environment["project"]),
         evidence="The exact project directory was listed.",
         listing=listing,
+        run_dir=run_dir,
         codex_home=environment["codex_home"],
     )
 
@@ -599,6 +772,7 @@ def test_final_gate_failure_can_be_recorded_without_minimum_evidence(tmp_path: P
         roots=[str(environment["project"])],
         codex_home=environment["codex_home"],
     )
+    _confirm_ready_manual_stages(environment)
 
     recorded = module.record_final_gate(
         read_ok=False,
@@ -643,7 +817,7 @@ def test_confirm_stage_rejects_out_of_order_confirmation(tmp_path: Path) -> None
     assert reloaded["stages"]["07_chatgpt_app"]["status"] == "pending"
 
 
-def test_confirm_stage_in_order_missing_evidence_has_no_blocking_stage(tmp_path: Path) -> None:
+def test_confirm_stage_accepts_explicit_stable_endpoint_plan_approval(tmp_path: Path) -> None:
     environment = _wizard_environment(tmp_path, ready=False)
     module.start_onboarding(
         provider="custom",
@@ -652,15 +826,115 @@ def test_confirm_stage_in_order_missing_evidence_has_no_blocking_stage(tmp_path:
         codex_home=environment["codex_home"],
     )
 
-    rejected = module.confirm_stage(
+    accepted = module.confirm_stage(
         "02_stable_endpoint",
         codex_home=environment["codex_home"],
         devspace_home=environment["devspace_home"],
         **environment["probes"],
     )
-    assert rejected["accepted"] is False
-    assert rejected["reason"] == "STAGE_CONFIRMATION_NOT_PROVEN_BY_EVIDENCE"
-    assert rejected["blocking_stage"] is None
+    assert accepted["accepted"] is True
+    assert accepted["reason"] is None
+    assert accepted["blocking_stage"] is None
+
+
+def test_local_network_policy_requires_explicit_consent_before_agent_mutation(tmp_path: Path) -> None:
+    environment = _wizard_environment(tmp_path, ready=True)
+    module.start_onboarding(
+        provider="custom",
+        registration_url="https://mcp.example.com/mcp",
+        roots=[str(environment["project"])],
+        codex_home=environment["codex_home"],
+    )
+    _confirm_ready_manual_stages(
+        environment,
+        stages=("02_stable_endpoint", "04_reboot_service", "06_oracle_login"),
+    )
+    state = module.load_state(codex_home=environment["codex_home"])
+    before = module.stage_instructions("06b_local_network_access", state, "en")
+    assert any("consent" in line.casefold() for line in before)
+    assert not any("chrome_local_network.py enable" in line for line in before)
+
+    result = module.consent_stage(
+        "06b_local_network_access",
+        codex_home=environment["codex_home"],
+        devspace_home=environment["devspace_home"],
+        **environment["probes"],
+    )
+    assert result["accepted"] is True
+    state = module.load_state(codex_home=environment["codex_home"])
+    after = module.stage_instructions("06b_local_network_access", state, "en")
+    assert any("chrome_local_network.py enable" in line for line in after)
+
+
+@pytest.mark.parametrize(("language", "completion"), [("ko", "전체 설치"), ("en", "Full install")])
+def test_clean_room_wizard_walks_every_user_boundary_to_hash_bound_completion(
+    tmp_path: Path, language: str, completion: str
+) -> None:
+    environment = _wizard_environment(tmp_path, ready=True)
+    policy = {"enabled": False}
+    probes = {
+        **environment["probes"],
+        "local_network_policy_probe": lambda: dict(policy),
+    }
+    module.start_onboarding(
+        provider="custom",
+        registration_url="https://mcp.example.com/mcp",
+        roots=[str(environment["project"])],
+        codex_home=environment["codex_home"],
+        devspace_home=environment["devspace_home"],
+    )
+
+    assert module.next_step(
+        codex_home=environment["codex_home"], devspace_home=environment["devspace_home"],
+        language=language, **probes
+    )["current_stage"] == "02_stable_endpoint"
+    for stage_id in ("02_stable_endpoint", "04_reboot_service", "06_oracle_login"):
+        assert module.confirm_stage(
+            stage_id,
+            codex_home=environment["codex_home"],
+            devspace_home=environment["devspace_home"],
+            language=language,
+            **probes,
+        )["accepted"] is True
+    pending = module.next_step(
+        codex_home=environment["codex_home"], devspace_home=environment["devspace_home"],
+        language=language, **probes
+    )
+    assert pending["current_stage"] == "06b_local_network_access"
+    assert module.consent_stage(
+        "06b_local_network_access",
+        codex_home=environment["codex_home"],
+        devspace_home=environment["devspace_home"],
+        **probes,
+    )["accepted"] is True
+    policy["enabled"] = True
+    assert module.confirm_stage(
+        "07_chatgpt_app",
+        codex_home=environment["codex_home"],
+        devspace_home=environment["devspace_home"],
+        language=language,
+        **probes,
+    )["accepted"] is True
+    assert module.next_step(
+        codex_home=environment["codex_home"], devspace_home=environment["devspace_home"],
+        language=language, **probes
+    )["current_stage"] == "08_final_gate"
+
+    run_dir = _bound_final_gate_run(environment, ["README.md"])
+    module.record_final_gate(
+        read_ok=True,
+        root=str(environment["project"]),
+        evidence="The exact project directory was listed and connector identity verified.",
+        listing=["README.md"],
+        run_dir=run_dir,
+        codex_home=environment["codex_home"],
+    )
+    done = module.next_step(
+        codex_home=environment["codex_home"], devspace_home=environment["devspace_home"],
+        language=language, **probes
+    )
+    assert done["done"] is True
+    assert completion in done["completion_label"]
 
 
 @pytest.mark.parametrize(
@@ -751,6 +1025,7 @@ def test_next_rejects_tampered_final_gate_evidence_on_disk(
         roots=[str(environment["project"])],
         codex_home=environment["codex_home"],
     )
+    _confirm_ready_manual_stages(environment)
     state_file = module.state_path(codex_home=environment["codex_home"])
     state = json.loads(state_file.read_text(encoding="utf-8"))
     state["stages"]["08_final_gate"]["evidence"] = tampered_record(environment, tmp_path)
@@ -774,11 +1049,14 @@ def test_honest_recorded_final_gate_still_completes_after_read_time_validation(t
         roots=[str(environment["project"])],
         codex_home=environment["codex_home"],
     )
+    _confirm_ready_manual_stages(environment)
+    run_dir = _bound_final_gate_run(environment, ["README.md"])
     module.record_final_gate(
         read_ok=True,
         root=str(environment["project"]),
         evidence="The exact project directory was listed.",
         listing=["README.md"],
+        run_dir=run_dir,
         codex_home=environment["codex_home"],
     )
 
@@ -800,11 +1078,14 @@ def test_final_gate_receipt_distinguishes_honest_and_tampered_evidence(tmp_path:
         roots=[str(environment["project"])],
         codex_home=environment["codex_home"],
     )
+    _confirm_ready_manual_stages(environment)
+    run_dir = _bound_final_gate_run(environment, ["README.md"])
     module.record_final_gate(
         read_ok=True,
         root=str(environment["project"]),
         evidence="The exact project directory was listed.",
         listing=["README.md"],
+        run_dir=run_dir,
         codex_home=environment["codex_home"],
     )
     honest = module.load_state(codex_home=environment["codex_home"])
@@ -815,6 +1096,35 @@ def test_final_gate_receipt_distinguishes_honest_and_tampered_evidence(tmp_path:
         environment["project"], listing_sample=[]
     )
     assert module._final_gate_receipt(environment["codex_home"], honest) is None
+
+
+def test_final_gate_hash_binding_rejects_output_tamper_after_recording(tmp_path: Path) -> None:
+    environment = _wizard_environment(tmp_path, ready=True)
+    module.start_onboarding(
+        provider="custom",
+        registration_url="https://mcp.example.com/mcp",
+        roots=[str(environment["project"])],
+        codex_home=environment["codex_home"],
+    )
+    _confirm_ready_manual_stages(environment)
+    run_dir = _bound_final_gate_run(environment, ["README.md"])
+    module.record_final_gate(
+        read_ok=True,
+        root=str(environment["project"]),
+        evidence="The exact project directory was listed.",
+        listing=["README.md"],
+        run_dir=run_dir,
+        codex_home=environment["codex_home"],
+    )
+    (run_dir / "output.md").write_text("tampered\nTASK_OUTCOME: EXECUTED\n", encoding="utf-8")
+
+    step = module.next_step(
+        codex_home=environment["codex_home"],
+        devspace_home=environment["devspace_home"],
+        **environment["probes"],
+    )
+    assert step["done"] is False
+    assert step["current_stage"] == "08_final_gate"
 
 
 def test_load_state_reports_wrong_schema_as_corrupt(tmp_path: Path) -> None:

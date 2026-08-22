@@ -81,7 +81,7 @@ if($latestReceipt.Count){try{$priorReceipt=Get-Content -LiteralPath $latestRecei
 if($EnableLocalMultiGpt){$InstallLocalMultiGpt=$true}
 elseif($DisableLocalMultiGpt){$InstallLocalMultiGpt=$false}
 elseif($null -ne $priorLocalMultiGpt){$InstallLocalMultiGpt=[bool]$priorLocalMultiGpt}
-elseif(!$WhatIfPreference -and !$env:CI -and !$env:PYTEST_CURRENT_TEST -and [Environment]::UserInteractive -and -not [Console]::IsInputRedirected){$answer=Read-Host ([string]$Manifest.optional_components.local_multi_gpt.prompt);$InstallLocalMultiGpt=$answer -match '^(?i:y|yes|예|네)$'}
+elseif(!$WhatIfPreference -and !$env:CI -and !$env:PYTEST_CURRENT_TEST -and [Environment]::UserInteractive -and -not [Console]::IsInputRedirected){$localeText="$(if($env:CODEX_ONBOARDING_LANG){$env:CODEX_ONBOARDING_LANG}) $(if($env:LC_ALL){$env:LC_ALL}) $(if($env:LANG){$env:LANG}) $([Globalization.CultureInfo]::CurrentUICulture.Name)";$prompt=if($localeText -match '(?i)(^|[^a-z])(ko|korean)'){$Manifest.optional_components.local_multi_gpt.prompt_ko}else{$Manifest.optional_components.local_multi_gpt.prompt_en};if(-not $prompt){$prompt=$Manifest.optional_components.local_multi_gpt.prompt};$answer=Read-Host ([string]$prompt);$InstallLocalMultiGpt=$answer -match '^(?i:y|yes|예|네)$'}
 else{$InstallLocalMultiGpt=[bool]$Manifest.optional_components.local_multi_gpt.default_install}
 $Patterns=@($Manifest.include);if($InstallLocalMultiGpt){$Patterns+=@($Manifest.optional_components.local_multi_gpt.include)}
 $Files=@(Get-ManifestFiles $RepoRoot $Patterns)

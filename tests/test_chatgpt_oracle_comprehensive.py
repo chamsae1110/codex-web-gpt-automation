@@ -51,6 +51,21 @@ def ultra_economy_manifest(tmp_path: Path) -> Path:
     return path
 
 
+@pytest.mark.parametrize("profile", ["standard", "ultra-economy"])
+def test_regular_comprehensive_write_stages_reject_non_gpt56_model(
+    tmp_path: Path,
+    profile: str,
+) -> None:
+    module = load()
+    path = ultra_economy_manifest(tmp_path) if profile == "ultra-economy" else manifest(tmp_path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["model"] = "gpt-5.6-sol"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(module.WorkflowError, match="COMPREHENSIVE_REGULAR_MODEL_REQUIRED"):
+        module.load_manifest(path)
+
+
 def test_ultra_economy_manifest_rejects_handshake_self_declaration(tmp_path: Path) -> None:
     module = load()
     path = ultra_economy_manifest(tmp_path)
@@ -84,7 +99,7 @@ def test_ultra_economy_dry_run_starts_with_explicit_pro_design(tmp_path: Path, m
     assert result["workflow_profile"] == "ultra-economy"
     assert seen["model"] == "gpt-5.6-sol"
     assert seen["thinking_time"] == "heavy"
-    assert seen["transport"] == "pro-devspace"
+    assert seen["transport"] == "pro-devspace-readonly"
 
 
 def test_standard_workflow_cannot_skip_plan_with_initial_pro(tmp_path: Path) -> None:
@@ -95,6 +110,40 @@ def test_standard_workflow_cannot_skip_plan_with_initial_pro(tmp_path: Path) -> 
     path.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(module.WorkflowError, match="standard workflow initial_stage must be plan"):
         module.load_manifest(path)
+
+
+def test_same_project_different_codex_tasks_get_distinct_workflow_scopes(tmp_path: Path, monkeypatch) -> None:
+    module = load()
+    path = manifest(tmp_path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    task_a = "11111111-1111-4111-8111-111111111111"
+    task_b = "22222222-2222-4222-8222-222222222222"
+    payload["source_thread_id"] = task_a
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("CODEX_THREAD_ID", task_a)
+    config_a = module.load_manifest(path)
+    payload["source_thread_id"] = task_b
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("CODEX_THREAD_ID", task_b)
+    config_b = module.load_manifest(path)
+
+    assert module._scope_path(config_a) != module._scope_path(config_b)
+    assert config_a["source_thread_id"] == task_a
+    assert config_b["source_thread_id"] == task_b
+
+
+def test_comprehensive_rejects_foreign_task_before_creating_workflow_state(tmp_path: Path, monkeypatch) -> None:
+    module = load()
+    path = manifest(tmp_path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["source_thread_id"] = "11111111-1111-4111-8111-111111111111"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("CODEX_THREAD_ID", "22222222-2222-4222-8222-222222222222")
+
+    with pytest.raises(module.WorkflowError, match="SOURCE_THREAD_ID_MISMATCH"):
+        module.run_workflow(path, dry_run=True, oracle_execute=lambda *_args, **_kwargs: pytest.fail("must not execute"))
+
+    assert not (tmp_path / "workflow").exists()
 
 
 def test_regular_stage_mission_binds_no_self_observation_guard(tmp_path: Path) -> None:
@@ -336,7 +385,7 @@ def test_regular_stage_materialization_rejects_duplicate_or_wrong_identity(tmp_p
         module._load_regular_envelope(output)
 
 
-def test_explicit_pro_stage_runs_writable_devspace_and_materializes_bound_receipt(tmp_path: Path) -> None:
+def test_explicit_pro_stage_runs_readonly_devspace_and_materializes_bound_receipt(tmp_path: Path) -> None:
     module = load()
     stages = []
     workflow_manifest = manifest(tmp_path)
@@ -365,7 +414,9 @@ def test_explicit_pro_stage_runs_writable_devspace_and_materializes_bound_receip
         stage = next(item for item in ("plan", "pro", "review", "implementation", "final-web-gate") if f"stage={item}\n" in text)
         stages.append(stage)
         if stage == "pro":
-            assert payload["transport"] == "pro-devspace"
+            assert "[PRO_READ_ONLY_AUTHORITY]" in text
+            assert "separate regular GPT-5.6 extra-high DevSpace implementation stage" in text
+            assert payload["transport"] == "pro-devspace-readonly"
             assert payload["task_outcome_contract"] == "v1"
             assert payload["model"] == "gpt-5.6-sol"
             assert payload["app_name"] == "DevSpace"
@@ -381,6 +432,10 @@ def test_explicit_pro_stage_runs_writable_devspace_and_materializes_bound_receip
                 "ready_for_next": True, "blocker": "",
             }), encoding="utf-8")
             return {"ok": True, "run_dir": str(mission.parent / "run"), "output_path": str(oracle_output)}
+        if stage == "implementation":
+            assert payload["transport"] == "devspace"
+            assert payload["model"] == "gpt-5.6"
+            assert payload["thinking_time"] == "extra-high"
         next_stage = {
             "plan": "pro", "review": "implementation",
             "implementation": "final-web-gate", "final-web-gate": "complete",
@@ -1737,7 +1792,7 @@ def test_pro_attachment_contract_rejects_outside_project_and_symlink(tmp_path: P
         module._declared_pro_attachments(config, source)
 
 
-def test_regular_manifest_never_attaches_pro_packets_and_default_pro_uses_devspace(tmp_path: Path) -> None:
+def test_regular_manifest_never_attaches_pro_packets_and_default_pro_uses_readonly_devspace(tmp_path: Path) -> None:
     module = load()
     config = module.load_manifest(manifest(tmp_path))
     config["_parallel_parent_id"] = "b" * 64
@@ -1753,7 +1808,7 @@ def test_regular_manifest_never_attaches_pro_packets_and_default_pro_uses_devspa
     default_pro = json.loads(module._oracle_manifest(
         config, mission, tmp_path / "legacy-pro", "d" * 32, stage="pro"
     ).read_text(encoding="utf-8"))
-    assert default_pro["transport"] == "pro-devspace"
+    assert default_pro["transport"] == "pro-devspace-readonly"
     assert default_pro["task_outcome_contract"] == "v1"
     assert default_pro["app_name"] == config["app_name"]
     assert "attachments" not in default_pro
@@ -2173,6 +2228,11 @@ def _user_stop_fixture(module, tmp_path: Path) -> dict[str, object]:
         "terminal_harvested": True,
         "task_outcome": "blocked",
         "exit_code": 0,
+        "originating_task": {
+            "schema": "codex.chatgpt.oracle-task-owner/v1",
+            "source_thread_id": config["source_thread_id"],
+            "binding": "task-bound",
+        },
     })
     module._write(workflow_path, {
         "schema": module.STATE_SCHEMA,
@@ -2186,6 +2246,7 @@ def _user_stop_fixture(module, tmp_path: Path) -> dict[str, object]:
         "oracle_run_dir": str(run_dir),
         "records": [{"stage": "plan", "run_dir": str(run_dir), "ok": False}],
         "blocker": "exact recovery retained",
+        "source_thread_id": config["source_thread_id"],
     })
     module._write(scope_path, {
         "schema": module.SCOPE_SCHEMA,
@@ -2194,6 +2255,7 @@ def _user_stop_fixture(module, tmp_path: Path) -> dict[str, object]:
         "project_root": str(config["project_root"]),
         "workflow_parent": str(config["workflow_dir"].parent),
         "review_policy": config["_review_policy"],
+        "source_thread_id": config["source_thread_id"],
     })
     return {
         "config": config,
@@ -2287,6 +2349,25 @@ def test_user_stop_settlement_dry_run_then_cancels_and_releases_scope(tmp_path: 
     claimed = module._json(fixture["scope_state_path"])
     assert claimed["status"] == "active"
     assert claimed["active_workflow_id"] == "d" * 32
+
+
+def test_foreign_task_cannot_cancel_or_release_another_tasks_workflow(tmp_path: Path, monkeypatch) -> None:
+    module = load()
+    fixture = _user_stop_fixture(module, tmp_path)
+    workflow_before = Path(fixture["workflow_state_path"]).read_bytes()
+    scope_before = Path(fixture["scope_state_path"]).read_bytes()
+    owner = str(fixture["config"]["source_thread_id"])
+    foreign = "ffffffff-ffff-4fff-8fff-ffffffffffff"
+    assert owner != foreign
+    monkeypatch.setenv("CODEX_THREAD_ID", foreign)
+
+    with pytest.raises(module.WorkflowError, match="FOREIGN_TASK_SESSION"):
+        module.settle_user_stopped_workflow(**_settlement_args(fixture))
+
+    assert Path(fixture["workflow_state_path"]).read_bytes() == workflow_before
+    assert Path(fixture["scope_state_path"]).read_bytes() == scope_before
+    state_root = module.RUNNER.STATE.oracle_state_root()
+    assert not list((state_root / "workflow-user-stop-settlements").rglob("*.json"))
 
 
 def test_user_stop_settlement_is_idempotent_and_recovers_partial_scope_write(tmp_path: Path) -> None:

@@ -1,5 +1,37 @@
 # 기술 변경 기록
 
+## 1.18.1 - Pro 읽기 전용 정책 복원
+
+- 모든 신규 `GPT-5.6 Sol / Pro` DevSpace 실행을 읽기 전용 설계·자문·검토
+  단계로 제한합니다. Pro는 프로젝트 파일을 생성·수정·삭제하거나 명령을
+  실행하지 않습니다.
+- 쓰기 또는 명령 실행이 필요한 작업은 별도의 일반 `GPT-5.6` 최고 비-Pro
+  사고 단계(`extra-high`)가 exact-root DevSpace에서 수행합니다.
+- 이미 저장된 과거 `pro-devspace` 읽기·쓰기 실행은 exact recovery 시 원래
+  권한 의미를 보존하며, 새 실행만 `pro-devspace-readonly`로 생성됩니다.
+- 명시적 `pro-attachment`는 불변·외부 증거를 위한 별도 읽기 전용 경로로
+  유지하며 DevSpace 실패의 자동 fallback으로 사용하지 않습니다.
+- Oracle 소유권을 프로젝트 폴더가 아니라 Codex task와 exact run에 결속합니다.
+  같은 project root의 서로 다른 task는 별도 mutex, slug, 브라우저 프로필,
+  동적 CDP port와 대화를 소유해 동시에 실행할 수 있고, 같은 task의 미해결
+  실행만 중복 제출을 막습니다. 다른 task의 실행은 `FOREIGN_TASK_SESSION`으로
+  표시하되 recover/harvest/stop하지 않습니다.
+- 제출 직후 conversation URL과 Chrome/controller PID, profile, CDP port,
+  target identity를 append-only browser receipt에 기록해 프로세스 종료 뒤에도
+  어느 task/run의 대화인지 재검증할 수 있게 했습니다.
+- task-bound terminal `pro-devspace-readonly` 대화에는 내부 전용 `followup`
+  명령으로만 후속 라운드를 보낼 수 있습니다. 각 라운드는 같은 ChatGPT
+  conversation을 증명하면서 새 Oracle run/slug와 append-only 예약·결과 영수증에
+  mission/state/output/transcript hash를 남깁니다. raw follow-up 옵션, foreign/legacy
+  owner, 대화 변경, 중복 round는 계속 실패 폐쇄됩니다.
+- 최초 설치 마법사는 기존 DevSpace root를 병합 보존하고 손상 config를 거부하며,
+  Local Multi-GPT 선택을 실제 doctor와 결속하고, Chrome Local Network 변경 전
+  명시적 동의를 요구합니다. ngrok 임시 주소를 차단하고 provider별 재부팅 안내를
+  분리했으며, 설치 질문과 단계 안내를 환경에 따라 한국어/영어로 표시합니다.
+- 최종 설치 gate는 임의 설명이 아니라 exact 일반 비-Pro Oracle run, root/app,
+  GPT-5.6 extra-high, conversation URL, terminal outcome, output/listing SHA를
+  재검증합니다. 한국어와 영어 전체 설치 가이드를 함께 제공합니다.
+
 ## 1.18.0 - WebJjonku Oracle 0.18 후속 실행 timeout 호환성
 
 - 일반 comprehensive 자동화는 계속 검증된 Oracle 0.17.1만 허용하고,

@@ -5,10 +5,12 @@ cannot create new work. Its runner remains installed only to resume or settle
 an exact persisted v3 parent and its owned children.
 
 New parallel reasoning uses independent Oracle Web Multi sessions. New
-implementation ownership remains inside the Oracle comprehensive workflow,
-with regular stages and explicitly selected qualified Pro using exact-root
-read/write DevSpace, while explicit `pro-attachment` is limited to immutable,
-external, or DevSpace-unreadable evidence.
+implementation ownership remains inside the Oracle comprehensive workflow.
+New explicitly selected qualified Pro uses exact-root read-only DevSpace for
+design, advice, or review; regular `GPT-5.6` `extra-high` stages own file
+mutations and commands. Explicit `pro-attachment` remains a separate read-only
+immutable-evidence route. Persisted legacy `pro-devspace` write records retain
+their exact original recovery semantics.
 
 See [GLOBAL_CHATGPT_ROUTING.md](GLOBAL_CHATGPT_ROUTING.md).
 

@@ -1,6 +1,6 @@
 {
   "schema": "codexpro.install-manifest/v1",
-  "version": "1.18.0",
+  "version": "1.18.1",
   "include": [
     "bin/chatgpt_agbrowse_bridge.py",
     "bin/chatgpt_agbrowse_composer.py",
@@ -115,6 +115,7 @@
     "scripts/start_devspace_bootstrap.ps1",
     "scripts/run_harness_canary.py",
     "docs/FIRST_INSTALL.md",
+    "docs/FIRST_INSTALL.en.md",
     "docs/INSTALL_AGENT.md",
     "docs/ULTRA_ECONOMY_MODE.md",
     "docs/ULTRA_GPT_MODE.md",
@@ -141,6 +142,8 @@
     "local_multi_gpt": {
       "default_install": false,
       "prompt": "Local Multi-GPT도 설치할까요? [y/N]",
+      "prompt_ko": "Local Multi-GPT도 설치할까요? [y/N]",
+      "prompt_en": "Install optional Local Multi-GPT too? [y/N]",
       "include": [
         "mcp_servers/multi-gpt/server.mjs",
         "skills/multi-gpt/SKILL.md"
@@ -153,8 +156,9 @@
   "routing": {
     "new_work_engine": "oracle",
     "regular_workspace_transport": "devspace",
-    "pro_transport": "oracle-devspace-readwrite-explicit",
-    "pro_attachment_transport": "oracle-attachment-only-explicit",
+    "pro_transport": "oracle-devspace-readonly-explicit",
+    "historical_pro_devspace": "persisted-run-recovery-only",
+    "pro_attachment_transport": "oracle-attachment-readonly-explicit",
     "agbrowse": "persisted-run-recovery-only",
     "codexpro": "persisted-run-recovery-only"
   },

@@ -41,8 +41,9 @@ python onboard.py status --provider <p> --public-url <url> --root <r>
 
 `next`는 현재 단계 하나만 출력합니다. 자동으로 실행할 일과 사용자가 browser/TTY에서
 직접 할 일을 구분하며, 완료 단계를 다시 실행하거나 다음 단계로 건너뛰지 않습니다.
-사용자 소유 단계는 `confirm <stage-id>`로 확인합니다. 단, 확인만으로 통과하지
-않습니다. 마법사가 실제 검사를 다시 수행하며 실패하면 진행을 거부합니다. 앞선 단계가
+사용자 소유 단계는 `confirm <stage-id>`로 확인합니다. `02_stable_endpoint`는 사용자가
+고정 주소와 전체 root 계획을 승인했다는 명시적 기록이며, 나머지 단계는 마법사가
+비밀이 아닌 실제 검사를 다시 수행해 함께 통과해야 합니다. 실패하면 진행을 거부합니다. 앞선 단계가
 아직 미검증이면 `accepted: false`, `STAGE_OUT_OF_ORDER_EARLIER_STAGE_PENDING`와
 막힌 단계 ID를 돌려줍니다. 앞서 확인하지 말고 `next`가 가리키는 단계를 따릅니다.
 
@@ -83,6 +84,11 @@ Tailscale 로그인, DevSpace Owner 암호 입력, Oracle ChatGPT 로그인, Cha
 설정을 바꾸거나 앱을 만들고 지우지 않으며, 권한·도구를 고르거나 Owner 암호를
 입력하지 않습니다.
 
+Chrome의 Local Network 권한은 `06b_local_network_access`에서 먼저
+`python onboard.py consent 06b_local_network_access`로 범위를 확인한 뒤에만
+`chatgpt.com` origin에 한정해 자동 적용합니다. 사용자의 일상 Chrome 설정이나 다른
+사이트 권한은 건드리지 않습니다.
+
 앱 등록 단계에서 마법사는 앱 이름과 정확한 `https://<고정호스트>/mcp` URL을
 출력합니다. 계정 UI가 다르므로 둘 다 확인합니다.
 
@@ -112,13 +118,18 @@ Plus/Pro에서도 보통 등록할 수 있으므로 요금제는 마지막 가�
 있습니다.
 
 ```powershell
-python onboard.py record-final-gate --root <프로젝트 폴더> `
+python onboard.py record-final-gate --run-dir <Oracle run 디렉터리> `
+  --root <프로젝트 폴더> `
   --evidence "읽은 경로와 결과 요약" `
   --listing <항목1> `
   --listing <항목2>
 ```
 
-증거 요약이 너무 짧거나 목록이 없으면 `FINAL_GATE_EVIDENCE_INSUFFICIENT`로 거부합니다.
+마법사는 run이 `%USERPROFILE%\.codex\state` 아래에 있는지, exact root/app 이름,
+일반 `GPT-5.6` extra-high, terminal EXECUTED, conversation URL, output SHA-256과
+`TASK_OUTCOME: EXECUTED` 최종 행까지 재검증합니다. 임의의 설명문이나 다른 커넥터의
+목록을 증거로 넣을 수 없습니다. 증거 요약이 너무 짧거나 목록이 없으면
+`FINAL_GATE_EVIDENCE_INSUFFICIENT`로 거부합니다.
 일반 비-Pro Oracle 이외의 transport는
 `FINAL_GATE_TRANSPORT_MUST_BE_REGULAR_NON_PRO_ORACLE`로 거부합니다.
 
@@ -148,7 +159,8 @@ python install.py
 python doctor.py
 ```
 
-첫 대화형 설치에서는 `Local Multi-GPT도 설치할까요? [y/N]`를 묻습니다.
+첫 대화형 설치에서는 환경 언어에 따라 `Local Multi-GPT도 설치할까요? [y/N]` 또는
+`Install optional Local Multi-GPT too? [y/N]`를 묻습니다.
 곁다리 기능이므로 기본값은 아니오입니다. 필요한 경우에만 Windows에서는
 `.\install.ps1 -EnableLocalMultiGpt`, 공통 Python lifecycle에서는
 `python install.py --enable-local-multi-gpt`를 사용합니다. 선택하면 스킬,
@@ -170,7 +182,7 @@ python "$env:USERPROFILE\.codex\bin\codex_global_agents_setup.py" --doctor
 
 주 에이전트는 GPT-5.6 Sol high, 일반 서브에이전트 기본값은 GPT-5.6 Terra
 medium입니다. 생성 작업의 하드 상한은 3개이고 정책상 기본 동시 작업자는
-2명입니다. `scout`는 Luna medium/read-only, `implementer`는 명시된 파일만
+2명입니다. `scout`는 Luna max/read-only, `implementer`는 명시된 파일만
 맡는 Terra high, `verifier`는 Terra high/read-only입니다. 불안정한
 `multi_agent_v2`는 켜지 않습니다. 적용 후 Codex를 재시작해야 새 작업이 전역
 설정과 역할 목록을 다시 읽습니다.
@@ -218,8 +230,11 @@ python skills/chatgpt-workspace-setup/scripts/devspace_tailscale_setup.py setup 
   --dry-run
 ```
 
-기존 DevSpace 설정이 있으면 현재 `allowedRoots`와 새 루트를 합친 전체 목록이
-표시됩니다. 목록을 확인한 뒤에만 `--apply`를 사용합니다.
+마법사 `start` 자체도 기존 `%USERPROFILE%\.devspace\config.json`의 `allowedRoots`와
+새 루트를 합쳐 보존합니다. 기존 JSON이 손상되었거나 root 목록이 유효하지 않으면
+조용히 덮어쓰지 않고 실패 폐쇄합니다. Tailscale 미리보기에서도 현재
+`allowedRoots`와 새 루트를 합친 전체 목록이 표시됩니다. 목록을 확인한 뒤에만
+`--apply`를 사용합니다.
 
 ```powershell
 python skills/chatgpt-workspace-setup/scripts/devspace_tailscale_setup.py setup `
@@ -353,8 +368,10 @@ python skills/chatgpt-workspace-setup/scripts/devspace_tailscale_setup.py post-r
 
 설치 후 일반 웹 작업은 최고 지원 비-Pro 추론 강도를 사용합니다. Pro는 횟수 제한이
 있으므로 사용자가 명시적으로 요청한 경우에만 선택하며 자동 승격하지 않습니다. 명시
-선택된 Pro는 저장소 안전 규칙 아래 exact root에서 미션이 허용한 쓰기와 명령 실행을
-사용할 수 있습니다.
+선택된 신규 Pro는 exact root에서 설계·자문·검토만 하는 읽기 전용 DevSpace를 사용합니다.
+파일 생성·수정·삭제와 명령 실행은 최고 지원 비-Pro `GPT-5.6` `extra-high` regular
+DevSpace 단계가 맡습니다. 저장된 legacy `pro-devspace` 쓰기 실행은 정확한 복구에서만
+원래 권한을 유지합니다.
 
 Oracle이 같은 이름을 사용하도록 로컬 공개 설정을 기록합니다.
 

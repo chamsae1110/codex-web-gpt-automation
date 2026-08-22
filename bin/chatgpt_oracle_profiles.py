@@ -22,6 +22,7 @@ REGULAR_THINKING_TIME = {
     "High": "extended",
     "Medium": "standard",
 }
+WRITE_CAPABLE_REGULAR_MODES = frozenset(("direct", "edit", "orchestrator"))
 _CONFIG_SPEC = importlib.util.spec_from_file_location(
     "chatgpt_oracle_profiles_workspace_config",
     Path(__file__).resolve().parent / "chatgpt_workspace_config.py",
@@ -34,8 +35,11 @@ DEVSPACE_APP_NAME = WORKSPACE_CONFIG.DEFAULT_APP_NAME
 # Current ChatGPT exposes Pro as the maximum effort for GPT-5.6 Sol, not as a
 # separate model row.  Oracle 0.17.1 verifies that Pro effort independently.
 PRO_MODEL = "gpt-5.6-sol"
-PRO_COMPOSER_PROMPT = "Read the attached prompt/instructions and all attached files, then complete the task."
-PRO_DEVSPACE_COMPOSER_PREFIX = "Read and execute the mission file"
+PRO_COMPOSER_PROMPT = (
+    "Read the attached prompt/instructions and all attached files, then provide read-only analysis only. "
+    "Do not create, edit, delete, or rename files; do not run commands or change settings, accounts, or external state."
+)
+PRO_DEVSPACE_COMPOSER_PREFIX = "Read and analyze the read-only mission file"
 
 
 class OracleProfileError(ValueError):
@@ -130,14 +134,14 @@ def composer_handoff(mission_path: str | Path, app_name: str | None = None) -> s
 
 
 def pro_devspace_composer_handoff(mission_path: str | Path, app_name: str | None = None) -> str:
-    """The qualified Pro DevSpace handoff, with mission-scoped write authority."""
+    """The qualified Pro DevSpace handoff, restricted to read-only advisory work."""
     mission = _absolute_mission_path(mission_path)
     return (
         f"@{WORKSPACE_CONFIG.normalize_app_name(app_name or WORKSPACE_CONFIG.configured_app_name())} {PRO_DEVSPACE_COMPOSER_PREFIX}: {mission}. "
         "Use only the exact project root recorded there; read the mission and applicable AGENTS.md fully first. "
-        "You may inspect, create, edit, and remove mission-owned files and run commands inside that exact root as "
-        "required by the mission. Obey all repository safety rules. Do not change accounts, app settings, or external "
-        "state unless the mission explicitly authorizes that action."
+        "Inspect and reason over project evidence without creating, editing, deleting, or renaming files and without "
+        "running commands or changing settings, accounts, or external state. If the requested task requires writes or "
+        "commands, return an implementation-ready handoff for a separate regular GPT-5.6 extra-high DevSpace stage."
     )
 
 
@@ -223,7 +227,7 @@ def build_launch_contract(
                 "Pro DevSpace runs must not attach files",
             )
         result.update({
-            "route": "oracle-pro-devspace",
+            "route": "oracle-pro-devspace-readonly",
             "app_policy": "prompt-mention-only",
             "attachment_policy": "forbidden",
             "app_name": resolved_app_name,
@@ -231,6 +235,8 @@ def build_launch_contract(
             "model_strategy": "select",
             "reasoning_level": "Pro",
             "thinking_time": "heavy",
+            "action_authority": "read-only",
+            "write_handoff": "regular-gpt-5.6-extra-high-devspace",
             "mission_path": str(mission),
             "composer_prompt": pro_devspace_composer_handoff(mission, resolved_app_name),
         })
@@ -241,6 +247,17 @@ def build_launch_contract(
             "non-Pro Oracle modes use DevSpace and must not attach files",
         )
     reasoning = _resolve_reasoning(reasoning_level)
+    if profile.mode in WRITE_CAPABLE_REGULAR_MODES and reasoning != "Very High":
+        raise OracleProfileError(
+            "WRITE_REQUIRES_HIGHEST_NON_PRO",
+            "write-capable work must use GPT-5.6 at the highest supported non-Pro reasoning tier",
+            {
+                "mode": profile.mode,
+                "requested": reasoning,
+                "required": "Very High",
+                "thinking_time": "extra-high",
+            },
+        )
     result.update({
         "route": "oracle-devspace",
         "app_policy": "prompt-mention-only",
@@ -250,6 +267,7 @@ def build_launch_contract(
         # effort. Keep this in the mode contract so dispatch cannot silently
         # turn a requested High run into Extra High or Pro.
         "thinking_time": REGULAR_THINKING_TIME[reasoning],
+        "action_authority": "mission-scoped-write" if profile.mode in WRITE_CAPABLE_REGULAR_MODES else "mission-scoped",
         "mission_path": str(mission),
         "composer_prompt": composer_handoff(mission, resolved_app_name),
     })

@@ -67,3 +67,25 @@ def test_portable_receipt_rejects_external_backup(tmp_path: Path) -> None:
         assert "backup must be owned" in str(exc)
     else:
         raise AssertionError("forged receipt was accepted")
+
+
+def test_optional_component_prompt_follows_korean_and_english_locale() -> None:
+    module = load("portable_lifecycle_locale_test", ROOT / "bin" / "codexpro_lifecycle.py")
+    optional = json.loads((ROOT / "install-manifest.json").read_text(encoding="utf-8"))["optional_components"]["local_multi_gpt"]
+
+    assert module.localized_optional_prompt(optional, {"LANG": "ko_KR.UTF-8"}) == optional["prompt_ko"]
+    assert module.localized_optional_prompt(optional, {"LANG": "en_US.UTF-8"}) == optional["prompt_en"]
+    assert module.localized_optional_prompt(optional, {"CODEX_ONBOARDING_LANG": "ko"}) == optional["prompt_ko"]
+
+
+def test_optional_component_prompt_uses_system_ui_locale(monkeypatch) -> None:
+    module = load("portable_lifecycle_system_locale_test", ROOT / "bin" / "codexpro_lifecycle.py")
+    optional = json.loads((ROOT / "install-manifest.json").read_text(encoding="utf-8"))["optional_components"]["local_multi_gpt"]
+    for name in ("CODEX_ONBOARDING_LANG", "LC_ALL", "LC_MESSAGES", "LANG"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(module.locale_module, "getlocale", lambda: ("ko_KR", "UTF-8"))
+
+    assert module.localized_optional_prompt(optional) == optional["prompt_ko"]
+
+    monkeypatch.setenv("CODEX_ONBOARDING_LANG", "en")
+    assert module.localized_optional_prompt(optional) == optional["prompt_en"]

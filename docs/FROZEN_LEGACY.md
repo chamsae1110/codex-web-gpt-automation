@@ -9,10 +9,12 @@
 
 - 신규 제출 경로는 Oracle뿐입니다. 일반·계획·검토·수정·지휘·심층
   리서치·종합모드·Web Multi는 Oracle + 수동 등록 DevSpace 앱을 쓰고,
-  명시적으로 요청된 Pro도 같은 수동 등록 DevSpace 앱을 `pro-devspace`로
-  사용합니다. Pro는 exact root 안에서 미션이 허용한 읽기·쓰기·명령을
-  수행합니다. `pro-attachment`는 DevSpace가 읽을 수 없는 불변 증거에만
-  쓰는 별도 명시 경로이며 자동 fallback이 아닙니다.
+  명시적으로 요청된 신규 Pro도 같은 수동 등록 DevSpace 앱을 `pro-devspace-readonly`로
+  사용하지만 설계·자문·검토 전용 읽기 권한만 가집니다. 파일 생성·수정·삭제와
+  명령 실행은 최고 지원 비-Pro `GPT-5.6` `extra-high` regular DevSpace 단계가
+  수행합니다. 명시적 `pro-attachment`는 불변·외부 증거를 위한 별도 읽기 전용
+  경로이며 자동 fallback이 아닙니다. 저장된 legacy `pro-devspace` 쓰기 실행은
+  정확한 복구에서만 원래 transport와 권한을 유지합니다.
 - Oracle 실패는 다른 백엔드로 전환할 권한을 만들지 않습니다.
   agbrowse·CodexPro·in-app Browser·`@chrome`·Playwright/CDP·Proxima는
   fallback이 아닙니다.

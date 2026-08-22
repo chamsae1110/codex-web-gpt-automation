@@ -240,6 +240,19 @@ def load_manifest(path: Path) -> dict[str, Any]:
     except ValueError as exc:
         raise MultiError(str(exc)) from exc
     model = str(value.get("model") or "gpt-5.6").strip()
+    explicit_source_thread_id = str(value.get("source_thread_id") or "").strip().casefold() or None
+    runtime_source_thread_id = STATE.current_source_thread_id()
+    if (
+        explicit_source_thread_id is not None
+        and runtime_source_thread_id is not None
+        and explicit_source_thread_id != runtime_source_thread_id
+    ):
+        raise MultiError(
+            "SOURCE_THREAD_ID_MISMATCH: Multi manifest belongs to a different Codex task"
+        )
+    source_thread_id = explicit_source_thread_id or runtime_source_thread_id
+    if source_thread_id is not None and STATE.SOURCE_THREAD_ID_RE.fullmatch(source_thread_id) is None:
+        raise MultiError("source_thread_id must be one Codex task UUID")
     if strict:
         if model != "gpt-5.6":
             raise MultiError("strict Multi v2 permits only the regular gpt-5.6 model")
@@ -263,6 +276,7 @@ def load_manifest(path: Path) -> dict[str, Any]:
         "max_concurrency": concurrency,
         "app_name": app_name,
         "model": model,
+        "source_thread_id": source_thread_id,
         "copy_profile": Path(
             str(value.get("copy_profile") or (Path.home() / ".oracle" / "browser-profile"))
         ).expanduser().resolve(),
@@ -337,6 +351,7 @@ def _child_manifest(config: dict[str, Any], lane: dict[str, Any], parent_id: str
         "source_mission_path": str(lane["mission_path"]),
         "source_mission_sha256": hashlib.sha256(lane["mission_path"].read_bytes()).hexdigest(),
         "access": lane.get("access", "read-only"),
+        "source_thread_id": config.get("source_thread_id"),
         "owned_paths": list(lane.get("owned_paths") or []),
     })
     _write_json(
@@ -355,6 +370,7 @@ def _child_manifest(config: dict[str, Any], lane: dict[str, Any], parent_id: str
             "archive": "auto",
             "parallel_parent_id": parent_id,
             "web_multi_child_provenance_path": str(provenance),
+            "source_thread_id": config.get("source_thread_id"),
         },
     )
     return manifest
@@ -966,13 +982,18 @@ def run_multi(
     ]
     # The parent owns normal same-project exclusion. Children use the separate
     # parent-scoped launch mutex and may wait concurrently after submission.
-    lock = nullcontext() if parent_lock_held else STATE.project_submit_mutex(config["project_root"], timeout_seconds=30)
+    lock = nullcontext() if parent_lock_held else STATE.project_submit_mutex(
+        config["project_root"],
+        timeout_seconds=30,
+        source_thread_id=config.get("source_thread_id"),
+    )
     with lock:
         if config.get("strict"):
             ledger = {
                 "schema": STRICT_RESULT_SCHEMA,
                 "status": "preflighting",
                 "parent_id": parent_id,
+                "source_thread_id": config.get("source_thread_id"),
                 "manifest_sha256": config["manifest_sha256"],
                 "waves": waves,
                 "lanes": [{"id": lane["id"], "status": "planned"} for lane in config["solvers"]],
@@ -1014,6 +1035,7 @@ def run_multi(
                 "schema": STRICT_RESULT_SCHEMA,
                 "status": "writers_attention_required",
                 "parent_id": parent_id,
+                "source_thread_id": config.get("source_thread_id"),
                 "manifest_sha256": config["manifest_sha256"],
                 "strict_baselines": config.get("_strict_baselines"),
                 "lanes": lanes,
@@ -1022,7 +1044,13 @@ def run_multi(
             _write_json(result_path, result)
             return {"ok": False, **result}
         if not successful:
-            result = {"schema": RESULT_SCHEMA, "status": "failed", "parent_id": parent_id, "lanes": lanes}
+            result = {
+                "schema": RESULT_SCHEMA,
+                "status": "failed",
+                "parent_id": parent_id,
+                "source_thread_id": config.get("source_thread_id"),
+                "lanes": lanes,
+            }
             _write_json(result_path, result)
             return {"ok": False, **result}
         if config.get("strict"):
@@ -1070,6 +1098,7 @@ def run_multi(
         "schema": STRICT_RESULT_SCHEMA if config.get("strict") else RESULT_SCHEMA,
         "status": status,
         "parent_id": parent_id,
+        "source_thread_id": config.get("source_thread_id"),
         "manifest_sha256": config["manifest_sha256"],
         "strict_baselines": config.get("_strict_baselines") if config.get("strict") else None,
         "waves": waves if config.get("strict") else None,

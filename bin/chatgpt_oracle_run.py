@@ -12,6 +12,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Sequence
@@ -90,7 +91,14 @@ class OracleRunError(RuntimeError):
         return {"ok": False, "error": {"code": self.code, "message": str(self), "evidence": self.evidence}}
 
 
-def build_oracle_argv(config, layout, prompt: str) -> list[str]:
+def build_oracle_argv(
+    config,
+    layout,
+    prompt: str,
+    *,
+    cdp_port: int | None = None,
+    followup_parent_slug: str | None = None,
+) -> list[str]:
     lifecycle_args = [] if "--browser-hide-window" in config.oracle_args else ["--browser-hide-window"]
     # This is the browser observer's window, not a run termination deadline.
     # If it expires, the exact slug retains ownership and the harness continues
@@ -120,7 +128,9 @@ def build_oracle_argv(config, layout, prompt: str) -> list[str]:
         "--browser-archive", config.archive,
         *lifecycle_args,
         *answer_timeout_args,
+        *(["--browser-port", str(cdp_port)] if cdp_port is not None else []),
         *config.oracle_args,
+        *(["--followup", followup_parent_slug] if followup_parent_slug is not None else []),
         "--slug", layout.slug,
         "--prompt", prompt,
         "--write-output", str(layout.output_path),
@@ -214,6 +224,7 @@ def wait_for_oracle_process(
     on_status_audit: Callable[[int], None] | None = None,
     terminal_harvest_probe: Callable[[], bool] | None = None,
     terminate_owned_process: Callable[[Any], None] | None = None,
+    runtime_identity_probe: Callable[[], Any] | None = None,
     terminal_probe_interval_seconds: float = 1.0,
 ) -> int:
     """Wait for one exact Oracle process; time alone never ends the wait."""
@@ -236,6 +247,8 @@ def wait_for_oracle_process(
         def watch_terminal_harvest() -> None:
             while not watcher_stop.is_set():
                 try:
+                    if runtime_identity_probe is not None:
+                        runtime_identity_probe()
                     if terminal_harvest_probe():
                         terminate_owned_process(process)
                         return
@@ -549,6 +562,54 @@ def exact_recovery_binding_unavailable(*paths: Path) -> bool:
     return all(marker in value for marker in RECOVERY_BINDING_UNAVAILABLE_MARKERS)
 
 
+def require_current_task_owns_run(
+    state: dict[str, Any],
+    *,
+    source_thread_id: str | None = None,
+    legacy_code: str = "LEGACY_TASK_OWNER_UNBOUND",
+) -> None:
+    """Refuse adoption of another task's run or a legacy-unbound run."""
+    owner = STATE.source_thread_id_from_state(state)
+    caller = str(source_thread_id or "").strip().casefold() or STATE.current_source_thread_id()
+    if owner is None:
+        # Historical states are deliberately unbound.  Do not guess their
+        # origin from project, process, CDP port, or a rollout filename.
+        # Recovery/harvest/stop/follow-up need an explicit handoff instead.
+        # A no-task local maintenance process carries no authority at all; it
+        # cannot bind a run to a task and performs no cross-task adoption.  In
+        # every Codex task (CODEX_THREAD_ID present), fail closed.
+        if caller:
+            raise OracleRunError(
+                legacy_code,
+                "the exact Oracle run has no persisted task owner; adoption requires an explicit bounded handoff",
+                {"run_id": state.get("run_id"), "slug": (state.get("oracle") or {}).get("slug")},
+            )
+        return
+    if caller != owner:
+        raise OracleRunError(
+            "FOREIGN_TASK_SESSION",
+            "the exact Oracle run belongs to a different Codex task; attach, recover, harvest, and stop are forbidden",
+            {
+                "owner_source_thread_id": owner,
+                "caller_source_thread_id": caller,
+                "run_id": state.get("run_id"),
+                "slug": (state.get("oracle") or {}).get("slug"),
+            },
+        )
+
+
+def require_bound_browser_identity(state_path: Path, state: dict[str, Any]) -> None:
+    if STATE.source_thread_id_from_state(state) is None:
+        return
+    receipt = STATE.proven_browser_identity_receipt(state_path)
+    if receipt is None:
+        raise OracleRunError(
+            "BROWSER_IDENTITY_RECEIPT_REQUIRED",
+            "bound task recovery requires the exact persisted Chrome identity receipt",
+            {"run_id": state.get("run_id"), "slug": (state.get("oracle") or {}).get("slug")},
+        )
+
+
 def post_submit_response_timed_out(*paths: Path) -> bool:
     """Return true only for Oracle's explicit post-send assistant timeout.
 
@@ -841,8 +902,26 @@ def execute_run(
         DEVSPACE_PREFLIGHT.ensure_exact_root_qualified
     ),
     exact_recovery_factory: Callable[..., dict[str, Any]] | None = None,
+    _cdp_port: int | None = None,
+    _followup_parent_slug: str | None = None,
 ) -> dict[str, Any]:
-    config = STATE.load_manifest(manifest_path, platform_name=platform_name)
+    config = STATE.load_manifest(
+        manifest_path,
+        platform_name=platform_name,
+        bind_runtime_task=True,
+    )
+    if str(config.transport or "").strip().casefold() == "pro-devspace":
+        raise OracleRunError(
+            "PRO_WRITABLE_TRANSPORT_FROZEN",
+            "new writable Pro DevSpace runs are disabled; use pro-devspace-readonly for Pro advice or a regular GPT-5.6 extra-high DevSpace run for writes",
+            {
+                "transport": config.transport,
+                "pro_transport": "pro-devspace-readonly",
+                "write_transport": "devspace",
+                "write_model": "gpt-5.6",
+                "write_thinking_time": "extra-high",
+            },
+        )
     validate_oracle_attachment_sizes(config)
     layout = STATE.create_layout(config, run_id=config.requested_run_id)
     transport_mission_path = layout.run_dir / "mission.md"
@@ -854,7 +933,16 @@ def execute_run(
         run_id=layout.run_id,
         slug=layout.slug,
     )
-    argv = build_oracle_argv(config, layout, prompt)
+    cdp_port = _cdp_port if _cdp_port is not None else STATE.reserve_loopback_cdp_port()
+    if not isinstance(cdp_port, int) or not 1024 <= cdp_port <= 65535:
+        raise OracleRunError("CDP_PORT_INVALID", "internal Oracle CDP port must be a valid loopback port")
+    argv = build_oracle_argv(
+        config,
+        layout,
+        prompt,
+        cdp_port=cdp_port,
+        followup_parent_slug=_followup_parent_slug,
+    )
     if dry_run:
         return dry_run_payload(config, layout, argv, prompt)
 
@@ -887,7 +975,16 @@ def execute_run(
             )
     layout.run_dir.mkdir(parents=True, exist_ok=False)
     transport_mission_path.write_bytes(mission_bytes)
-    STATE.write_json_atomic(layout.state_path, STATE.state_payload(config, layout, status="prepared", resolved_version="unresolved"))
+    STATE.write_json_atomic(
+        layout.state_path,
+        STATE.state_payload(
+            config,
+            layout,
+            status="prepared",
+            resolved_version="unresolved",
+            cdp_port=cdp_port,
+        ),
+    )
     layout.stdout_path.touch()
     layout.stderr_path.touch()
     oracle_env = STATE.browser_temp_environment(layout.browser_temp_path, platform_name=platform_name)
@@ -942,12 +1039,18 @@ def execute_run(
                 if config.parallel_parent_id
                 else config.project_root
             )
-            with STATE.project_submit_mutex(mutex_root, timeout_seconds=config.submit_mutex_timeout_seconds, platform_name=platform_name):
+            with STATE.project_submit_mutex(
+                mutex_root,
+                timeout_seconds=config.submit_mutex_timeout_seconds,
+                platform_name=platform_name,
+                source_thread_id=config.source_thread_id,
+            ):
                 owners = STATE.unresolved_project_sessions(
                     config.run_root,
                     config.project_root,
                     parallel_parent_id=config.parallel_parent_id,
                     exclude_run_id=layout.run_id,
+                    source_thread_id=config.source_thread_id,
                 )
                 if owners:
                     raise OracleRunError(
@@ -1006,6 +1109,15 @@ def execute_run(
                         "decision": "wait-for-first-audit-threshold",
                     },
                 )
+                # This receipt exists before a submitted browser can be
+                # observed.  A later exact metadata probe appends the Chrome
+                # PID/profile/port/target/conversation tuple only if every
+                # field matches this run's sealed ownership tuple.
+                STATE.persist_ownership_receipt(
+                    layout.state_path,
+                    oracle_process_pid=oracle_process_pid,
+                )
+                STATE.capture_browser_identity_receipt(layout.state_path)
                 audit_callback = lambda count: record_exact_run_status_audit(
                     layout,
                     process=process,
@@ -1022,6 +1134,7 @@ def execute_run(
                         terminate_owned_process=lambda owned: terminate_owned_oracle_process_tree(
                             owned, platform_name=platform_name
                         ),
+                        runtime_identity_probe=lambda: STATE.capture_browser_identity_receipt(layout.state_path),
                     )
             if config.parallel_parent_id:
                 exit_code = wait_for_oracle_process(
@@ -1032,6 +1145,7 @@ def execute_run(
                     terminate_owned_process=lambda owned: terminate_owned_oracle_process_tree(
                         owned, platform_name=platform_name
                     ),
+                    runtime_identity_probe=lambda: STATE.capture_browser_identity_receipt(layout.state_path),
                 )
     except Exception as exc:
         code = f"{exc.code}: " if isinstance(exc, OracleRunError) else ""
@@ -1042,6 +1156,7 @@ def execute_run(
             STATE.cleanup_owned_browser_temp(layout.browser_temp_path)
         return {"ok": False, "run_dir": str(layout.run_dir), "result": STATE.update_state(layout.state_path, status="failed")}
     STATE.write_transcript(layout)
+    STATE.capture_browser_identity_receipt(layout.state_path)
     # Exact recovery is allowed to finish under its own run-scoped mutex while
     # this original observer still owns the submission mutex.  If recovery won
     # that race, the stale observer must not overwrite durable terminal state
@@ -1158,11 +1273,16 @@ def execute_run(
     if not transport_complete and (response_timeout or delivery_timeout):
         recovery = exact_recovery_factory or recover_run
         try:
+            recovery_kwargs = {
+                "action": "live",
+                "platform_name": platform_name,
+                "settle_timeout_seconds": status_audit_seconds,
+            }
+            if config.source_thread_id is not None:
+                recovery_kwargs["source_thread_id"] = config.source_thread_id
             recovered = recovery(
                 layout.run_dir,
-                action="live",
-                platform_name=platform_name,
-                settle_timeout_seconds=status_audit_seconds,
+                **recovery_kwargs,
             )
         except Exception as exc:
             append_error(layout.stderr_path, f"automatic exact-session live recovery failed: {exc}")
@@ -1250,6 +1370,7 @@ def _recover_run_locked(
             "action": "none",
             "result": pre_submit_failure,
         }
+    require_bound_browser_identity(directory / "state.json", state)
     historical_authority = historical_session_authority(directory, state)
     historical_url = historical_conversation_url(directory, state)
     terminal_evidence_revoked = (
@@ -1818,6 +1939,8 @@ def settle_user_confirmed_no_submission(
     directory = run_dir.expanduser().resolve(strict=True)
     state_path = directory / "state.json"
     stored = STATE.load_state(state_path)
+    require_current_task_owns_run(stored)
+    source_thread_id = STATE.source_thread_id_from_state(stored)
     project_root = Path(str(stored.get("project_root") or "")).expanduser().resolve(strict=True)
     parallel_parent_id = str(stored.get("parallel_parent_id") or "").strip().casefold()
     if parallel_parent_id and STATE.PARENT_ID_RE.fullmatch(parallel_parent_id) is None:
@@ -1831,7 +1954,12 @@ def settle_user_confirmed_no_submission(
         if parallel_parent_id
         else project_root
     )
-    with STATE.project_submit_mutex(mutex_root, timeout_seconds=30, platform_name=platform_name):
+    with STATE.project_submit_mutex(
+        mutex_root,
+        timeout_seconds=30,
+        platform_name=platform_name,
+        source_thread_id=source_thread_id,
+    ):
         settled = STATE.settle_user_confirmed_no_submission(
             state_path,
             confirmation=confirmation,
@@ -1841,6 +1969,7 @@ def settle_user_confirmed_no_submission(
             directory.parent,
             project_root,
             exclude_run_id=str(settled.get("run_id") or ""),
+            source_thread_id=source_thread_id,
         )
     return {
         "ok": True,
@@ -1881,6 +2010,8 @@ def settle_recursive_self_observation_fresh_run(
     directory = run_dir.expanduser().resolve(strict=True)
     state_path = directory / "state.json"
     state = STATE.load_state(state_path)
+    require_current_task_owns_run(state)
+    source_thread_id = STATE.source_thread_id_from_state(state)
     artifacts = state.get("artifacts") if isinstance(state.get("artifacts"), dict) else {}
     output_path = Path(str(artifacts.get("output") or directory / "output.md")).resolve(strict=True)
     transcript_path = Path(
@@ -1931,6 +2062,7 @@ def settle_recursive_self_observation_fresh_run(
         directory.parent,
         project_root,
         exclude_run_id=str(state.get("run_id") or ""),
+        source_thread_id=source_thread_id,
     )
     if owners:
         raise OracleRunError(
@@ -2019,9 +2151,11 @@ def recover_run(
     settle_timeout_seconds: float = 0,
     settle_interval_seconds: float = 15,
     sleep: Callable[[float], None] = time.sleep,
+    source_thread_id: str | None = None,
 ) -> dict[str, Any]:
     directory = run_dir.expanduser().resolve(strict=True)
     stored = STATE.load_state(directory / "state.json")
+    require_current_task_owns_run(stored, source_thread_id=source_thread_id)
     project_root = Path(str(stored.get("project_root") or "")).expanduser().resolve(strict=True)
     parallel_parent_id = str(stored.get("parallel_parent_id") or "").strip().casefold()
     if parallel_parent_id and STATE.PARENT_ID_RE.fullmatch(parallel_parent_id) is None:
@@ -2084,12 +2218,365 @@ def recover_run(
                 sleep(settle_interval_seconds)
 
 
+FOLLOWUP_ROUND_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+
+
+def _require_followup_parent(parent_run_dir: Path) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], str, dict[str, str]]:
+    """Validate the one narrow parent contract for an in-conversation Pro round.
+
+    This is deliberately stricter than ordinary recovery.  A follow-up is not
+    a replacement run: it can exist only for a bound, terminal, read-only Pro
+    run whose pre-send task and browser identity receipts still validate.
+    """
+    state_path = parent_run_dir / "state.json"
+    state = STATE.load_state(state_path)
+    require_current_task_owns_run(state, legacy_code="FOLLOWUP_PARENT_LEGACY_UNBOUND")
+    owner = STATE.source_thread_id_from_state(state)
+    if not (
+        state.get("status") == "complete"
+        and state.get("session_authority") == "terminal"
+        and state.get("terminal_harvested") is True
+        and str(state.get("task_outcome") or "") == "executed"
+    ):
+        raise OracleRunError(
+            "FOLLOWUP_PARENT_NOT_EXECUTED",
+            "follow-up requires one terminal EXECUTED parent run",
+            {"status": state.get("status"), "task_outcome": state.get("task_outcome")},
+        )
+    profile = state.get("profile") if isinstance(state.get("profile"), dict) else {}
+    if (
+        str(state.get("transport") or "") != "pro-devspace-readonly"
+        or str(profile.get("model") or "").casefold() != "gpt-5.6-sol"
+        or str(profile.get("model_strategy") or "") != "select"
+        or str(profile.get("thinking_time") or "") != "heavy"
+    ):
+        raise OracleRunError(
+            "FOLLOWUP_PARENT_PROFILE_FORBIDDEN",
+            "follow-up is limited to terminal GPT-5.6 Sol/Pro pro-devspace-readonly parents",
+        )
+    ownership = STATE.proven_ownership_receipt(state_path)
+    browser = STATE.proven_browser_identity_receipt(state_path)
+    if ownership is None or browser is None:
+        raise OracleRunError(
+            "FOLLOWUP_PARENT_IDENTITY_INVALID",
+            "follow-up requires valid immutable ownership and browser identity receipts",
+        )
+    oracle = state.get("oracle") if isinstance(state.get("oracle"), dict) else {}
+    conversation_url = str(oracle.get("conversation_url") or "").strip()
+    browser_url = str((browser.get("payload") or {}).get("conversation_url") or "").strip()
+    if STATE.CHATGPT_CONVERSATION_URL_RE.fullmatch(conversation_url) is None or conversation_url != browser_url:
+        raise OracleRunError(
+            "FOLLOWUP_PARENT_CONVERSATION_INVALID",
+            "follow-up requires one exact persisted ChatGPT conversation URL",
+        )
+    mission = state.get("mission") if isinstance(state.get("mission"), dict) else {}
+    expected_mission_sha256 = str(mission.get("sha256") or "")
+    artifacts = state.get("artifacts") if isinstance(state.get("artifacts"), dict) else {}
+    checks: dict[str, str] = {}
+    for name, candidate, expected in (
+        ("output", artifacts.get("output"), str(state.get("artifact_sha256") or "")),
+        ("transcript", artifacts.get("transcript"), ""),
+        ("mission", mission.get("transport_path"), expected_mission_sha256),
+        ("project_mission", mission.get("path"), expected_mission_sha256),
+    ):
+        try:
+            path = STATE.exact_regular_file(candidate, label=f"followup_{name}")
+            digest = STATE.sha256_file(path)
+        except STATE.OracleStateError as exc:
+            raise OracleRunError("FOLLOWUP_PARENT_ARTIFACT_INVALID", str(exc), {"artifact": name}) from exc
+        if not path.read_bytes() or (expected and digest != expected):
+            raise OracleRunError(
+                "FOLLOWUP_PARENT_ARTIFACT_INVALID",
+                "follow-up parent artifacts are absent, empty, or hash-mismatched",
+                {"artifact": name, "expected_sha256": expected or None, "actual_sha256": digest},
+            )
+        checks[name] = digest
+    return state, ownership, browser, conversation_url, checks
+
+
+def _followup_manifest_payload(
+    parent: dict[str, Any],
+    *,
+    mission_path: Path,
+    run_id: str,
+) -> dict[str, Any]:
+    profile = parent.get("profile") if isinstance(parent.get("profile"), dict) else {}
+    policy = parent.get("episode_policy") if isinstance(parent.get("episode_policy"), dict) else {}
+    payload: dict[str, Any] = {
+        "schema": STATE.SCHEMA,
+        "project_root": parent.get("project_root"),
+        "mission_path": str(mission_path),
+        "app_name": parent.get("app_name"),
+        "mode": parent.get("mode"),
+        "transport": "pro-devspace-readonly",
+        "run_root": str(Path(str(parent.get("mission", {}).get("transport_path") or "")).parent.parent),
+        "oracle_command": (parent.get("oracle") or {}).get("command"),
+        "submit_mutex_timeout_seconds": 30,
+        "episode_policy": policy,
+        "model": "gpt-5.6-sol",
+        "model_strategy": "select",
+        "thinking_time": "heavy",
+        "research": str(profile.get("research") or "off"),
+        "archive": str(profile.get("archive") or "auto"),
+        "task_outcome_contract": "v1",
+        "run_id": run_id,
+        "source_thread_id": STATE.source_thread_id_from_state(parent),
+    }
+    # The transport mission is in the parent run directory.  Its grandparent
+    # is the configured host-only run root; derive it only from that sealed
+    # host artifact rather than a caller-controlled path.
+    return payload
+
+
+def _write_followup_round_receipt(path: Path, payload: dict[str, Any]) -> str:
+    encoded = (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    try:
+        with path.open("xb") as handle:
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except FileExistsError as exc:
+        raise OracleRunError(
+            "FOLLOWUP_ROUND_DUPLICATE",
+            "this parent conversation already has the requested follow-up round key",
+            {"round_receipt": str(path)},
+        ) from exc
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _followup_artifact_observation(value: Any) -> dict[str, Any]:
+    """Describe one child artifact without following links or inventing bytes."""
+    path_text = str(value or "").strip()
+    if not path_text:
+        return {"present": False, "reason": "path-absent"}
+    path = Path(path_text).expanduser()
+    try:
+        if path.is_symlink() or not path.is_file():
+            return {"path": str(path), "present": False, "reason": "not-regular-file"}
+        raw = path.read_bytes()
+    except OSError:
+        return {"path": str(path), "present": False, "reason": "unreadable"}
+    return {
+        "path": str(path.resolve()), "present": bool(raw), "size_bytes": len(raw),
+        "sha256": hashlib.sha256(raw).hexdigest() if raw else None,
+    }
+
+
+def _persist_followup_completion_receipt(
+    receipt_path: Path,
+    *,
+    reservation_sha256: str,
+    child_state_path: Path,
+    parent_conversation_url: str,
+    browser_receipt: dict[str, Any] | None,
+    identity_status: str,
+) -> dict[str, Any]:
+    """Append the actual child round outcome without rewriting reservation data."""
+    state = STATE.load_state(child_state_path)
+    artifacts = state.get("artifacts") if isinstance(state.get("artifacts"), dict) else {}
+    output = _followup_artifact_observation(artifacts.get("output"))
+    transcript = _followup_artifact_observation(artifacts.get("transcript"))
+    state_bytes = child_state_path.read_bytes()
+    observed_url = str(((browser_receipt or {}).get("payload") or {}).get("conversation_url") or "").strip()
+    payload = {
+        "schema": "codex.chatgpt.oracle-followup-round-result/v1",
+        "reservation_receipt_sha256": reservation_sha256,
+        "child": {
+            "run_id": state.get("run_id"),
+            "slug": (state.get("oracle") or {}).get("slug"),
+            "state_sha256": hashlib.sha256(state_bytes).hexdigest(),
+            "status": state.get("status"),
+            "transport_status": state.get("transport_status"),
+            "task_outcome": state.get("task_outcome"),
+            "session_authority": state.get("session_authority"),
+            "terminal_harvested": state.get("terminal_harvested"),
+            "output": output,
+            "transcript": transcript,
+            "artifact_sha256_matches_output": (
+                output.get("sha256") == state.get("artifact_sha256")
+                if output.get("sha256") else state.get("artifact_sha256") in {None, ""}
+            ),
+        },
+        "conversation_binding": {
+            "parent_conversation_url": parent_conversation_url,
+            "observed_child_conversation_url": observed_url or None,
+            "identity_status": identity_status,
+            "browser_identity_receipt_sha256": (browser_receipt or {}).get("sha256"),
+        },
+        "recorded_at": datetime.now(timezone.utc).isoformat(),
+    }
+    digest = _write_followup_round_receipt(receipt_path, payload)
+    return {"path": str(receipt_path), "sha256": digest, "payload": payload}
+
+
+def followup_run(
+    parent_run_dir: Path,
+    *,
+    mission_path: Path,
+    round_key: str,
+    run_id: str | None = None,
+    dry_run: bool = False,
+    **execute_kwargs: Any,
+) -> dict[str, Any]:
+    """Continue one qualifying read-only Pro conversation without a new tab.
+
+    It is intentionally an internal runner command.  Manifest ``oracle_args``
+    remains unable to pass Oracle's generic follow-up switches.
+    """
+    directory = parent_run_dir.expanduser().resolve(strict=True)
+    normalized_round_key = str(round_key or "").strip().casefold()
+    if FOLLOWUP_ROUND_KEY_RE.fullmatch(normalized_round_key) is None:
+        raise OracleRunError("FOLLOWUP_ROUND_KEY_INVALID", "round_key must be a safe 1-64 character identifier")
+    parent, ownership, browser, conversation_url, artifact_hashes = _require_followup_parent(directory)
+    parent_slug = str((parent.get("oracle") or {}).get("slug") or "")
+    child_run_id = str(run_id or f"followup-{uuid.uuid4().hex}").strip().casefold()
+    if STATE.RUN_ID_RE.fullmatch(child_run_id) is None:
+        raise OracleRunError("FOLLOWUP_RUN_ID_INVALID", "follow-up run_id must be a safe identifier")
+    project_root = Path(str(parent.get("project_root") or "")).resolve(strict=True)
+    child_mission = STATE.exact_regular_file(mission_path, label="followup_mission")
+    if not STATE.is_within(project_root, child_mission):
+        raise OracleRunError("FOLLOWUP_MISSION_OUTSIDE_PROJECT", "follow-up mission must remain in the exact parent project root")
+    STATE.read_utf8_strict(child_mission)
+    run_root = directory.parent.resolve()
+    child_slug = STATE.oracle_slug(project_root, child_run_id)
+    expected_port = STATE.reserve_loopback_cdp_port()
+    receipt_path = directory / "followup-rounds" / f"{normalized_round_key}.json"
+    if receipt_path.exists():
+        raise OracleRunError(
+            "FOLLOWUP_ROUND_DUPLICATE",
+            "this parent conversation already has the requested follow-up round key",
+            {"round_receipt": str(receipt_path)},
+        )
+    manifest_payload = _followup_manifest_payload(parent, mission_path=child_mission, run_id=child_run_id)
+    manifest_payload["run_root"] = str(run_root)
+    manifest_path = directory / "followup-manifests" / f"{child_run_id}.json"
+    receipt = {
+        "schema": "codex.chatgpt.oracle-followup-round/v1",
+        "round_key": normalized_round_key,
+        "source_thread_id": STATE.source_thread_id_from_state(parent),
+        "parent": {
+            "run_id": parent.get("run_id"), "slug": parent_slug,
+            "conversation_url": conversation_url,
+            "ownership_receipt_sha256": ownership.get("sha256"),
+            "browser_identity_receipt_sha256": browser.get("sha256"),
+            "artifacts": artifact_hashes,
+            # Existing terminal state stores the output hash, but not a
+            # transcript-hash field.  Preserve the current regular-file hash
+            # in this reservation without falsely claiming it was sealed by
+            # the legacy terminal-state schema.
+            "transcript_baseline": {
+                "sha256": artifact_hashes["transcript"],
+                "state_terminal_hash_field": "absent-in-parent-schema",
+            },
+        },
+        "child": {
+            "run_id": child_run_id, "slug": child_slug,
+            "mission_path": str(child_mission), "mission_sha256": STATE.sha256_file(child_mission),
+            "run_dir": str(run_root / child_run_id), "expected_cdp_port": expected_port,
+        },
+        "followup_argv": ["--followup", parent_slug],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    if dry_run:
+        return {
+            "ok": True,
+            "status": "followup_dry_run",
+            "parent_conversation_url": conversation_url,
+            "manifest_path": str(manifest_path),
+            "round_receipt_path": str(receipt_path),
+            "round_receipt_plan": receipt,
+            "argv_plan": ["--followup", parent_slug, "--slug", child_slug],
+            "submitted_question": False,
+        }
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    receipt_path.parent.mkdir(parents=True, exist_ok=True)
+    encoded_manifest = (json.dumps(manifest_payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    try:
+        with manifest_path.open("xb") as handle:
+            handle.write(encoded_manifest)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except FileExistsError as exc:
+        raise OracleRunError("FOLLOWUP_MANIFEST_CONFLICT", "follow-up manifest path already exists", {"manifest": str(manifest_path)}) from exc
+    receipt_sha256 = _write_followup_round_receipt(receipt_path, receipt)
+    try:
+        result = execute_run(
+            manifest_path,
+            dry_run=False,
+            _cdp_port=expected_port,
+            _followup_parent_slug=parent_slug,
+            **execute_kwargs,
+        )
+    except Exception:
+        # If a child layout exists, seal what is known before propagating the
+        # launcher failure.  The parent ownership is never changed here.
+        child_state_path = run_root / child_run_id / "state.json"
+        if child_state_path.exists():
+            _persist_followup_completion_receipt(
+                receipt_path.with_suffix(".result.json"),
+                reservation_sha256=receipt_sha256,
+                child_state_path=child_state_path,
+                parent_conversation_url=conversation_url,
+                browser_receipt=None,
+                identity_status="launcher-exception-identity-unavailable",
+            )
+        raise
+    result["followup_round_receipt"] = {"path": str(receipt_path), "sha256": receipt_sha256}
+    child_state_path = run_root / child_run_id / "state.json"
+    if child_state_path.exists():
+        child_state = STATE.load_state(child_state_path)
+        pre_submit = str(child_state.get("session_authority") or "") == "pre_submit"
+        child_browser = None if pre_submit else STATE.proven_browser_identity_receipt(child_state_path)
+        child_url = str(((child_browser or {}).get("payload") or {}).get("conversation_url") or "").strip()
+        identity_status = "not-applicable-pre-submit" if pre_submit else (
+            "same-exact-conversation" if child_url == conversation_url else "unverified-or-different-conversation"
+        )
+        identity_error = not pre_submit and (child_browser is None or child_url != conversation_url)
+        if identity_error:
+            STATE.update_state(
+                child_state_path,
+                status="attention_required",
+                task_outcome_reason="followup-conversation-identity-unverified",
+                conversation_url_conflict=(
+                    {"persisted": conversation_url, "observed": child_url}
+                    if child_url and child_url != conversation_url else None
+                ),
+            )
+            child_state = STATE.load_state(child_state_path)
+        completion = _persist_followup_completion_receipt(
+            receipt_path.with_suffix(".result.json"),
+            reservation_sha256=receipt_sha256,
+            child_state_path=child_state_path,
+            parent_conversation_url=conversation_url,
+            browser_receipt=child_browser,
+            identity_status=identity_status,
+        )
+        result["followup_round_result_receipt"] = {"path": completion["path"], "sha256": completion["sha256"]}
+        if identity_error:
+            raise OracleRunError(
+                "FOLLOWUP_CONVERSATION_IDENTITY_UNVERIFIED",
+                "follow-up launched but its exact browser receipt did not prove the parent conversation binding",
+                {
+                    "parent_conversation_url": conversation_url,
+                    "child_conversation_url": child_url or None,
+                    "child_run_dir": str(child_state_path.parent),
+                },
+            )
+    return result
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run additive Oracle browser missions without modifying agbrowse routing.")
     commands = parser.add_subparsers(dest="command", required=True)
     run_parser = commands.add_parser("run")
     run_parser.add_argument("--manifest", type=Path, required=True)
     run_parser.add_argument("--dry-run", action="store_true")
+    followup_parser = commands.add_parser("followup")
+    followup_parser.add_argument("--parent-run-dir", type=Path, required=True)
+    followup_parser.add_argument("--mission-path", type=Path, required=True)
+    followup_parser.add_argument("--round-key", required=True)
+    followup_parser.add_argument("--run-id")
+    followup_parser.add_argument("--dry-run", action="store_true")
     recover_parser = commands.add_parser("recover")
     recover_parser.add_argument("--run-dir", type=Path, required=True)
     recover_parser.add_argument("--action", choices=("harvest", "live"), required=True)
@@ -2167,6 +2654,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if args.command == "run":
             payload = execute_run(args.manifest, dry_run=args.dry_run)
+        elif args.command == "followup":
+            payload = followup_run(
+                args.parent_run_dir,
+                mission_path=args.mission_path,
+                round_key=args.round_key,
+                run_id=args.run_id,
+                dry_run=args.dry_run,
+            )
         elif args.command == "recover":
             payload = recover_run(
                 args.run_dir,

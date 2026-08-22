@@ -139,9 +139,10 @@ def test_pro_manifest_is_attachment_only_and_hashes_exact_files(tmp_path: Path) 
     )
     composer = state.composer_prompt(config)
     assert composer.startswith(
-        "Read the attached prompt/instructions and all attached files, then complete the task. "
-        "Task identity: oracle-pro-"
+        "Read the attached prompt/instructions and all attached files, then provide read-only analysis only. "
+        "Do not create, edit, delete, or rename files;"
     )
+    assert "Task identity: oracle-pro-" in composer
     assert composer.endswith(".")
     assert len(composer.rsplit("oracle-pro-", 1)[1][:-1]) == 24
     assert composer == state.composer_prompt(config)
@@ -153,7 +154,7 @@ def test_pro_manifest_is_attachment_only_and_hashes_exact_files(tmp_path: Path) 
     assert payload["attachments"][1]["sha256"] == state.sha256_file(packet.resolve())
 
 
-def test_pro_devspace_manifest_is_write_capable_and_stays_inside_project(tmp_path: Path) -> None:
+def test_historical_writable_pro_stays_loadable_and_current_pro_is_readonly(tmp_path: Path) -> None:
     state = load_state()
     mission = tmp_path / "mission.md"
     mission.write_text("implement the change", encoding="utf-8")
@@ -203,7 +204,7 @@ def test_pro_devspace_manifest_is_write_capable_and_stays_inside_project(tmp_pat
         ))
     assert exc.value.code == "PRO_DEVSPACE_TASK_OUTCOME_CONTRACT_REQUIRED"
 
-    legacy = state.load_manifest(manifest(
+    current = state.load_manifest(manifest(
         tmp_path,
         mission.resolve(),
         transport="pro-devspace-readonly",
@@ -214,11 +215,13 @@ def test_pro_devspace_manifest_is_write_capable_and_stays_inside_project(tmp_pat
         research="off",
         task_outcome_contract="v1",
     ))
-    legacy_prompt = state.composer_prompt(legacy)
-    assert legacy_prompt.startswith(
+    current_prompt = state.composer_prompt(current)
+    assert current_prompt.startswith(
         f"@DevSpace First open exactly this project root in checkout mode: {tmp_path.resolve()}."
     )
-    assert f"Then read the read-only mission file: {mission.resolve()}." in legacy_prompt
+    assert f"Then read the read-only mission file: {mission.resolve()}." in current_prompt
+    assert "Perform read-only work only; do not modify files, settings, accounts, or external state." in current_prompt
+    assert "create, edit, and remove mission-owned files and run commands" not in current_prompt
 
 
 def test_pro_composer_identity_changes_with_project_or_attachment_bytes(tmp_path: Path) -> None:
@@ -324,6 +327,88 @@ def test_exact_recovery_mutex_is_distinct_from_project_submit_mutex(tmp_path: Pa
     assert recovery_name != submit_name
 
 
+def test_task_scoped_owners_do_not_block_other_tasks_and_foreign_is_explicit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = load_state()
+    monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
+    mission = tmp_path / "mission.md"
+    mission.write_text("work", encoding="utf-8")
+    task_a = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    task_b = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+    config_a = state.load_manifest(manifest(tmp_path, mission.resolve(), source_thread_id=task_a))
+    layout_a = state.create_layout(config_a, run_id="task-a-run-123456")
+    layout_a.run_dir.mkdir(parents=True)
+    payload = state.state_payload(config_a, layout_a, status="running", resolved_version="0.17.1", cdp_port=43101)
+    payload["session_authority"] = "submitted_unknown"
+    state.write_json_atomic(layout_a.state_path, payload)
+
+    assert [item["run_id"] for item in state.unresolved_project_sessions(
+        config_a.run_root, tmp_path, source_thread_id=task_a
+    )] == [layout_a.run_id]
+    assert state.unresolved_project_sessions(config_a.run_root, tmp_path, source_thread_id=task_b) == []
+    foreign = state.foreign_project_sessions(config_a.run_root, tmp_path, source_thread_id=task_b)
+    assert foreign == [{
+        "run_id": layout_a.run_id,
+        "session_locator": layout_a.slug,
+        "session_authority": "submitted_unknown",
+        "source_thread_id": task_a,
+        "classification": "FOREIGN_TASK_SESSION",
+        "state_path": str(layout_a.state_path),
+    }]
+    assert state.submit_mutex_name(tmp_path, source_thread_id=task_a) != state.submit_mutex_name(
+        tmp_path, source_thread_id=task_b
+    )
+
+
+def test_browser_identity_receipt_binds_exact_task_run_profile_port_target_and_url(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = load_state()
+    monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
+    mission = tmp_path / "mission.md"
+    mission.write_text("work", encoding="utf-8")
+    task_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    config = state.load_manifest(manifest(tmp_path, mission.resolve(), source_thread_id=task_id))
+    layout = state.create_layout(config, run_id="identity-run-123456")
+    layout.run_dir.mkdir(parents=True)
+    layout.browser_temp_path.mkdir()
+    state.write_json_atomic(
+        layout.state_path,
+        state.state_payload(config, layout, status="running", resolved_version="0.17.1", cdp_port=43101),
+    )
+    state.persist_ownership_receipt(layout.state_path, oracle_process_pid=101)
+    session_root = tmp_path / "oracle-sessions"
+    monkeypatch.setenv("ORACLE_SESSION_ROOT", str(session_root))
+    profile = layout.browser_temp_path / "oracle-browser-isolated"
+    meta = {"browser": {"runtime": {
+        "chromePid": 102,
+        "controllerPid": 101,
+        "chromePort": 43101,
+        "userDataDir": str(profile),
+        "chromeTargetId": "target-exact",
+        "tabUrl": "https://chatgpt.com/c/exact-conversation",
+    }}}
+    meta_path = session_root / layout.slug / "meta.json"
+    meta_path.parent.mkdir(parents=True)
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+
+    captured = state.capture_browser_identity_receipt(layout.state_path)
+    assert captured is not None
+    assert captured["payload"]["source_thread_id"] == task_id
+    assert captured["payload"]["profile_path"] == str(profile.resolve())
+    assert captured["payload"]["cdp_port"] == 43101
+    assert captured["payload"]["target_id"] == "target-exact"
+    assert captured["payload"]["conversation_url"] == "https://chatgpt.com/c/exact-conversation"
+    assert state.proven_browser_identity_receipt(layout.state_path) is not None
+
+    receipt = state.browser_identity_receipt_path(layout.run_dir)
+    receipt.write_text(receipt.read_text(encoding="utf-8").replace("target-exact", "target-other"), encoding="utf-8")
+    assert state.proven_browser_identity_receipt(layout.state_path) is None
+
+
 def test_run_owned_browser_temp_is_removed_and_prior_boot_orphans_are_swept(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -355,6 +440,8 @@ def test_unsafe_oracle_args_are_rejected(tmp_path: Path) -> None:
         ["--file", "x"],
         ["restart"],
         ["--browser-tab", "current"],
+        ["--followup", "oracle-foreign-parent"],
+        ["--browser-follow-up", "oracle-foreign-parent"],
         ["--force"],
         ["--chatgpt-url=https://chatgpt.com/c/foreign"],
     ):

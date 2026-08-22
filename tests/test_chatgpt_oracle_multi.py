@@ -168,9 +168,13 @@ def test_multi_rejects_lane_path_traversal(tmp_path: Path) -> None:
         raise AssertionError("unsafe lane id must fail")
 
 
-def test_multi_accepts_parallel_strict_worktrees_and_injects_exact_ownership(tmp_path: Path) -> None:
+def test_multi_accepts_parallel_strict_worktrees_and_injects_exact_ownership(tmp_path: Path, monkeypatch) -> None:
     module = load()
     manifest = make_strict_manifest(tmp_path)
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    payload["source_thread_id"] = "33333333-3333-4333-8333-333333333333"
+    manifest.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("CODEX_THREAD_ID", payload["source_thread_id"])
     config = module.load_manifest(manifest)
 
     child = module._child_manifest(config, config["solvers"][0], "f" * 64)
@@ -188,8 +192,24 @@ def test_multi_accepts_parallel_strict_worktrees_and_injects_exact_ownership(tmp
     assert provenance["owned_paths"] == ["runtime.txt"]
     assert provenance["mission_path"] == str(effective)
     assert provenance["canonical_project_root"] == str(config["project_root"])
+    assert provenance["source_thread_id"] == config["source_thread_id"]
+    assert child_value["source_thread_id"] == config["source_thread_id"]
     child_config = module.STATE.load_manifest(child)
     assert module.RUNNER.web_multi_devspace_qualification_target(child_config) == config["project_root"]
+
+
+def test_multi_rejects_foreign_task_before_creating_outputs(tmp_path: Path, monkeypatch) -> None:
+    module = load()
+    manifest = make_manifest(tmp_path, 2)
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    payload["source_thread_id"] = "11111111-1111-4111-8111-111111111111"
+    manifest.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("CODEX_THREAD_ID", "22222222-2222-4222-8222-222222222222")
+
+    with pytest.raises(module.MultiError, match="SOURCE_THREAD_ID_MISMATCH"):
+        module.run_multi(manifest, execute=lambda *_args, **_kwargs: pytest.fail("must not execute"))
+
+    assert not (tmp_path / "out").exists()
 
 
 def test_strict_multi_materializes_bound_writesets_when_web_surface_is_read_only(

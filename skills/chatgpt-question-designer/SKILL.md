@@ -48,7 +48,7 @@ For non-Pro regular `GPT` / `지피티` runs through `chatgpt-thinking-browser`,
 - `review` / `검토모드` alone is adversarial. A blocker needs criterion, evidence, and impact; use `PASS`, `PASS_WITH_CONDITIONS`, `REVISE_LOCAL`, `REOPEN_DESIGN`, or `BLOCK` when the owning schema supports them.
 - `plan` / `계획모드` is constructive and read-only: reframe if useful, compare viable design families, choose one coherent path, and put risks last. Prior plans and reviews are nonbinding and hidden by default.
 - `edit` / `수정모드` performs `inspect -> edit -> test -> inspect result -> adapt`; it does not begin with a generic review.
-- `orchestrator` / `지휘` owns live workspace exploration, decisions, edits, tests, bounded adaptation, and every expensive strategy or implementation branch. When parallelism is useful, the one web GPT ExecutionMission partitions independent work into internal lanes or parallel tool calls and integrates them itself. Same-project web submissions stay serialized. Codex retains only submission/recovery, locks, hashes, exact browser identity, deterministic host-only verification, release, and irreversible boundaries; generic local tool-parallelism guidance never authorizes Codex to perform the delegated work locally.
+- `orchestrator` / `지휘` owns live workspace exploration, decisions, edits, tests, bounded adaptation, and every expensive strategy or implementation branch. When parallelism is useful, the one web GPT ExecutionMission partitions independent work into internal lanes or parallel tool calls and integrates them itself. Same-task submissions against one project stay serialized; separately bound Codex tasks may run concurrently without sharing ownership. Codex retains only submission/recovery, locks, hashes, exact browser identity, deterministic host-only verification, release, and irreversible boundaries; generic local tool-parallelism guidance never authorizes Codex to perform the delegated work locally.
 - `research` builds evidence; `synthesis` resolves candidates into a new coherent design. Neither is review.
 
 Use `codex.chatgpt.prompt-architecture/v3` receipts with orthogonal `task_kind`, `cognitive_frame`, `action_authority`, `context_policy`, `challenge_policy`, `output_contract`, `reasoning_budget`, and `decision_authority`. Local `AGENTS.md`, local skills, explicit no-write wording, and destructive-action boundaries outrank the overlay.
@@ -60,7 +60,7 @@ Every non-trivial GPT/browser question should include:
 1. `Goal`: what decision or artifact the answer should improve.
 2. `Original task`: preserve the user's request separately from any candidate artifact.
 3. `Cognitive profile`: answer, research, plan, review, edit, orchestrator, synthesis, or an explicit Web Multi role.
-4. `Evidence boundary`: list the live DevSpace workspace scope for regular GPT and qualified Pro, explicit frozen attachments only for `pro-attachment`, web/source constraints, freshness limits, and what cannot be inspected.
+4. `Evidence boundary`: list the live DevSpace workspace scope for regular GPT and qualified Pro, web/source constraints, freshness limits, and what cannot be inspected. New qualified Pro uses read-only DevSpace only. A separately explicit `pro-attachment` request may use a read-only immutable/external-evidence packet as a new route; it is never an automatic fallback from DevSpace. Persisted legacy attachment runs keep their exact recovery contract.
 5. `Action authority`: read-only, bounded workspace write, or mission-owned adaptive execution.
 6. `Confidence discipline`: separate evidence-backed findings, inference, speculation, and unknowns.
 7. `Answer shape`: compact sections; no vague approval; code-shaped output when code-oriented.
@@ -80,14 +80,14 @@ Append an adversarial module only for explicit review/counterexample roles: requ
 Context selection must match the question type.
 
 - New non-Pro direct, plan, review, edit, orchestrator, Deep Research, comprehensive, and Web Multi work uses Oracle plus the manually registered workspace app. The composer receives only the configured app mention (default `@codex`) and the absolute UTF-8 mission path. The mission tells GPT which project files, logs, tests, constraints, and artifacts to inspect through DevSpace.
-- Regular web work defaults to `gpt-5.6` at the highest supported non-Pro reasoning tier. Pro is quota-limited and may be designed only after an explicit user request; never infer or auto-upgrade to it. Qualified Pro uses Oracle, `GPT-5.6 Sol` at the Pro effort, and read/write DevSpace at the exact project root. Its action authority is mission-scoped and must name allowed files, commands, and external-state boundaries. `pro-attachment` uses exact snapshot attachments only for immutable/external or DevSpace-unreadable evidence; it is never an automatic fallback.
+- Regular web work defaults to `gpt-5.6` at the highest supported non-Pro reasoning tier. Pro is quota-limited and may be designed only after an explicit user request; never infer or auto-upgrade to it. Every new qualified Pro run uses Oracle, `GPT-5.6 Sol` at the Pro effort, and read-only DevSpace at the exact project root for design, advice, or review. It must not create, edit, or remove files or run commands; a regular `GPT-5.6` `extra-high` DevSpace stage owns those actions. Explicit `pro-attachment` remains a separate read-only immutable/external-evidence route and is never an automatic fallback. Persisted legacy `pro-devspace` write runs retain their exact authority only during recovery.
 - CodexPro is frozen for new work. It may appear only while recovering an already persisted legacy agbrowse run; never design a new prompt around CodexPro `tree/search/read`, app registration, app repair, or a CodexPro fallback.
 - Code/design/debug/refactor: give the regular web GPT a narrow project-contained mission and let it inspect the live workspace through DevSpace. Do not duplicate the workspace into attachments or a ZIP.
-- Planning/review: identify the live draft, research, acceptance criteria, local guidance, and known risks by project-relative paths in the mission. Use an attachment packet only when the exact immutable snapshot is the requested evidence or DevSpace cannot read the artifact.
+- Planning/review: identify the live draft, research, acceptance criteria, local guidance, and known risks by project-relative paths in the mission. New Pro planning/review remains inside read-only DevSpace; use an explicit attachment packet only for its immutable/external-evidence boundary.
 - Investigation/source synthesis: identify internal findings and provenance in the DevSpace-visible mission, and use web/search separately for current public facts.
 - Idea expansion: put the seed, constraints, non-goals, audience, and known alternatives in the mission; do not preselect a conclusion.
 
-For a new DevSpace project task, a failed or unavailable endpoint blocks submission and routes only to `chatgpt-workspace-setup` diagnosis. It never authorizes CodexPro, ZIP, agbrowse, in-app Browser, Playwright/CDP, or `@chrome` fallback. `pro-attachment` requires its exact Oracle attachments; qualified Pro does not fall back to it automatically.
+For a new DevSpace project task, a failed or unavailable endpoint blocks submission and routes only to `chatgpt-workspace-setup` diagnosis. It never authorizes CodexPro, ZIP, agbrowse, in-app Browser, Playwright/CDP, `@chrome`, or a new `pro-attachment` fallback. Persisted legacy attachment runs retain their exact recovery contract only.
 
 ## Oracle Continuity Rules
 
@@ -106,8 +106,8 @@ This skill designs the prompt packet; it must not erase local project question t
 Before submission, check:
 
 - `one-sided context`: only the preferred plan or happy path is attached.
-- `missing negative evidence`: failures, logs, rejected alternatives, or user complaints are absent from the DevSpace-visible scope or Pro attachment packet.
-- `stale packet`: a Pro attachment no longer matches the current draft, diff, branch, or run.
+- `missing negative evidence`: failures, logs, rejected alternatives, or user complaints are absent from the DevSpace-visible scope.
+- `stale packet`: a persisted legacy Pro attachment no longer matches its recorded draft, diff, branch, or run; do not create a new Pro attachment packet to bypass this gate.
 - `too-broad packet`: a mission grants a broad workspace without an evidence map or question boundary.
 - `conclusion leakage`: prompt asks for approval before asking for objections.
 - `role collapse`: prompt asks one model to both invent and approve without counterexample pressure.

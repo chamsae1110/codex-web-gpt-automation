@@ -82,23 +82,41 @@ def test_pro_attachment_is_oracle_attachment_only_and_manual_launches_nothing(tm
     assert pro["thinking_time"] == "heavy"
     assert pro["attachment_policy"] == "always"
     assert pro["attachments"] == [str(mission), str(packet)]
-    assert pro["composer_prompt"] == "Read the attached prompt/instructions and all attached files, then complete the task."
+    assert pro["composer_prompt"].startswith(
+        "Read the attached prompt/instructions and all attached files, then provide read-only analysis only."
+    )
+    assert "Do not create, edit, delete, or rename files" in pro["composer_prompt"]
     assert "@DevSpace" not in pro["composer_prompt"]
     assert manual["route"] == "manual-no-launch"
     assert manual["composer_prompt"] is None
     assert manual["oracle_launch"] is False
 
 
-def test_regular_ui_effort_contracts_are_distinct_and_accept_korean_labels(tmp_path: Path) -> None:
+def test_read_oriented_regular_ui_effort_contracts_are_distinct_and_accept_korean_labels(tmp_path: Path) -> None:
     profiles = load_profiles()
     mission = (tmp_path / "mission.md").resolve()
-    medium = profiles.build_launch_contract("direct", mission_path=mission, reasoning_level="중간")
-    high = profiles.build_launch_contract("direct", mission_path=mission, reasoning_level="높음")
-    very_high = profiles.build_launch_contract("direct", mission_path=mission, reasoning_level="xhigh")
+    medium = profiles.build_launch_contract("review", mission_path=mission, reasoning_level="중간")
+    high = profiles.build_launch_contract("review", mission_path=mission, reasoning_level="높음")
+    very_high = profiles.build_launch_contract("review", mission_path=mission, reasoning_level="xhigh")
 
     assert medium["thinking_time"] == "standard"
     assert high["thinking_time"] == "extended"
     assert very_high["thinking_time"] == "extra-high"
+
+
+@pytest.mark.parametrize("mode", ["direct", "edit", "orchestrator"])
+def test_write_capable_regular_modes_require_highest_non_pro(tmp_path: Path, mode: str) -> None:
+    profiles = load_profiles()
+    mission = (tmp_path / "mission.md").resolve()
+    with pytest.raises(profiles.OracleProfileError) as exc:
+        profiles.build_launch_contract(mode, mission_path=mission, reasoning_level="High")
+    assert exc.value.code == "WRITE_REQUIRES_HIGHEST_NON_PRO"
+    assert exc.value.evidence["thinking_time"] == "extra-high"
+
+    contract = profiles.build_launch_contract(mode, mission_path=mission)
+    assert contract["reasoning_level"] == "Very High"
+    assert contract["thinking_time"] == "extra-high"
+    assert contract["action_authority"] == "mission-scoped-write"
 
 
 def test_pro_attachment_includes_mission_once_and_regular_rejects_attachments(tmp_path: Path) -> None:
@@ -111,20 +129,23 @@ def test_pro_attachment_includes_mission_once_and_regular_rejects_attachments(tm
     assert exc.value.code == "REGULAR_ATTACHMENTS_FORBIDDEN"
 
 
-def test_pro_is_explicit_writable_devspace_without_attachments(tmp_path: Path) -> None:
+def test_pro_is_explicit_readonly_devspace_without_attachments(tmp_path: Path) -> None:
     profiles = load_profiles()
     mission = (tmp_path / "mission.md").resolve()
     contract = profiles.build_launch_contract("pro", mission_path=mission)
 
-    assert contract["route"] == "oracle-pro-devspace"
+    assert contract["route"] == "oracle-pro-devspace-readonly"
     assert contract["app_name"] == "DevSpace"
     assert contract["model"] == "gpt-5.6-sol"
     assert contract["model_strategy"] == "select"
     assert contract["thinking_time"] == "heavy"
     assert contract["research"] is False
     assert contract["attachments"] == []
-    assert contract["composer_prompt"].startswith(f"@DevSpace Read and execute the mission file: {mission}.")
-    assert "create, edit, and remove mission-owned files and run commands" in contract["composer_prompt"]
+    assert contract["action_authority"] == "read-only"
+    assert contract["write_handoff"] == "regular-gpt-5.6-extra-high-devspace"
+    assert contract["composer_prompt"].startswith(f"@DevSpace Read and analyze the read-only mission file: {mission}.")
+    assert "without creating, editing, deleting, or renaming files" in contract["composer_prompt"]
+    assert "separate regular GPT-5.6 extra-high DevSpace stage" in contract["composer_prompt"]
     with pytest.raises(profiles.OracleProfileError) as exc:
         profiles.build_launch_contract("pro", mission_path=mission, attachment_paths=[mission])
     assert exc.value.code == "PRO_DEVSPACE_ATTACHMENTS_FORBIDDEN"

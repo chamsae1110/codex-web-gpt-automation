@@ -8,6 +8,7 @@ It orders the non-secret setup stages and checks the resulting public contract.
 
 import argparse
 import datetime as dt
+import hashlib
 import json
 import os
 import shutil
@@ -21,6 +22,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from chatgpt_chrome_local_network import policy_status
+import codex_local_multi_gpt_setup as LOCAL_MULTI_GPT_SETUP
 
 
 PRODUCT_NAME = "Codex Web GPT Automation"
@@ -41,7 +43,19 @@ STAGE_IDS = (
     "07_chatgpt_app",
     "08_final_gate",
 )
-USER_OWNED_STAGES = ("03_devspace_init", "06_oracle_login", "07_chatgpt_app")
+USER_OWNED_STAGES = (
+    "02_stable_endpoint",
+    "03_devspace_init",
+    "06_oracle_login",
+    "06b_local_network_access",
+    "07_chatgpt_app",
+)
+USER_CONFIRMATION_STAGES = (
+    "02_stable_endpoint",
+    "04_reboot_service",
+    "06_oracle_login",
+    "07_chatgpt_app",
+)
 FINAL_GATE_TRANSPORTS = ("regular-non-pro-oracle",)
 FINAL_GATE_MIN_EVIDENCE = 16
 COMPLETION_STATES_BY_LANGUAGE = {
@@ -121,6 +135,8 @@ def validate_provider_url(provider: str, registration_url: str) -> None:
         raise OnboardingError("TAILSCALE_STABLE_TS_NET_URL_REQUIRED")
     if provider == "cloudflare" and hostname.endswith(".trycloudflare.com"):
         raise OnboardingError("CLOUDFLARE_NAMED_TUNNEL_REQUIRED")
+    if provider == "ngrok" and hostname.endswith(".ngrok-free.app"):
+        raise OnboardingError("NGROK_STATIC_DOMAIN_REQUIRED")
 
 
 def public_origin(registration_url: str) -> str:
@@ -142,6 +158,7 @@ def onboarding_plan(
     roots: Sequence[str],
     app_name: str = APP_NAME,
     python_executable: str = "python",
+    enable_local_multi_gpt: bool = False,
 ) -> dict[str, Any]:
     normalized_roots = normalize_roots(roots)
     registration_url = normalize_registration_url(registration_url)
@@ -169,14 +186,15 @@ def onboarding_plan(
             "doctor": f"Verify that {registration_url} returns an OAuth challenge (normally HTTP 401).",
         }
     profile = str(Path.home() / ".oracle" / "browser-profile")
+    install_flag = " --enable-local-multi-gpt" if enable_local_multi_gpt else ""
     stages = [
         {
             "id": "01_install",
             "owner": "agent",
             "complete_when": "receipt-backed install and doctor both succeed",
             "commands": [
-                f"{python_executable} install.py --dry-run",
-                f"{python_executable} install.py",
+                f"{python_executable} install.py --dry-run{install_flag}",
+                f"{python_executable} install.py{install_flag}",
                 f"{python_executable} doctor.py",
             ],
         },
@@ -193,6 +211,7 @@ def onboarding_plan(
             "public_origin": public_origin(registration_url),
             "allowed_roots": [str(root) for root in normalized_roots],
             "secret_rule": "Never pass, print, copy, or commit the DevSpace Owner password.",
+            "command": tunnel_commands["apply"],
         },
         {
             "id": "04_reboot_service",
@@ -281,6 +300,7 @@ def onboarding_plan(
         "registration_url": registration_url,
         "public_origin": public_origin(registration_url),
         "allowed_roots": [str(root) for root in normalized_roots],
+        "enable_local_multi_gpt": bool(enable_local_multi_gpt),
         "stages": stages,
     }
 
@@ -291,6 +311,20 @@ def _load_json(path: Path) -> dict[str, Any] | None:
     except (OSError, json.JSONDecodeError):
         return None
     return value if isinstance(value, dict) else None
+
+
+def _persisted_allowed_roots(devspace_home: Path) -> tuple[str, ...]:
+    """Read the DevSpace source-of-truth roots without silently dropping bad state."""
+    path = devspace_home / "config.json"
+    if not path.exists():
+        return ()
+    value = _load_json(path)
+    if value is None:
+        raise OnboardingError("DEVSPACE_CONFIG_INVALID")
+    roots = value.get("allowedRoots")
+    if not isinstance(roots, list) or not all(isinstance(item, str) and item.strip() for item in roots):
+        raise OnboardingError("DEVSPACE_CONFIG_ROOTS_INVALID")
+    return tuple(roots)
 
 
 def browser_profile_local_network_allowed(profile_dir: Path) -> bool:
@@ -458,6 +492,8 @@ def load_state(*, codex_home: Path | None = None) -> dict[str, Any]:
         stage.setdefault("status", "pending")
         stage.setdefault("verified_at", None)
         stage.setdefault("evidence", None)
+    value.setdefault("requested_roots", list(roots))
+    value.setdefault("enable_local_multi_gpt", False)
     return value
 
 
@@ -475,6 +511,7 @@ def start_onboarding(
     registration_url: str | None = None,
     app_name: str = APP_NAME,
     codex_home: Path | None = None,
+    devspace_home: Path | None = None,
     hostname_discovery: Any = None,
     enable_local_multi_gpt: bool = False,
 ) -> dict[str, Any]:
@@ -487,11 +524,18 @@ def start_onboarding(
             raise OnboardingError("PUBLIC_HTTPS_MCP_URL_REQUIRED")
         discover = hostname_discovery or _discover_tailscale_hostname
         resolved_url = f"https://{discover()}/mcp"
+    requested_roots = normalize_roots(roots)
+    resolved_devspace_home = (devspace_home or (Path.home() / ".devspace")).expanduser().resolve()
+    merged_roots = normalize_roots([
+        *_persisted_allowed_roots(resolved_devspace_home),
+        *(str(root) for root in requested_roots),
+    ])
     plan = onboarding_plan(
         provider=provider,
         registration_url=resolved_url,
-        roots=roots,
+        roots=[str(root) for root in merged_roots],
         app_name=app_name,
+        enable_local_multi_gpt=enable_local_multi_gpt,
     )
     state = {
         "schema": STATE_SCHEMA,
@@ -500,6 +544,7 @@ def start_onboarding(
         "registration_url": plan["registration_url"],
         "public_origin": plan["public_origin"],
         "allowed_roots": plan["allowed_roots"],
+        "requested_roots": [str(root) for root in requested_roots],
         "app_name": plan["app_name"],
         "enable_local_multi_gpt": bool(enable_local_multi_gpt),
         "started_at": _now(),
@@ -537,16 +582,44 @@ def _discover_tailscale_hostname() -> str:
 
 
 STAGE_VERIFIERS: dict[str, str] = {
-    "01_install": "install_receipt_present",
-    "02_stable_endpoint": "public_mcp_oauth_challenge",
+    "01_install": "installation_contract_satisfied",
+    "02_stable_endpoint": "stable_endpoint_user_confirmed",
     "03_devspace_init": "exact_roots_configured",
-    "04_reboot_service": "bootstrap_matches_config",
+    "04_reboot_service": "restart_persistence_verified",
     "05_endpoint_check": "local_mcp_oauth_challenge",
-    "06_oracle_login": "oracle_profile_initialized",
+    "06_oracle_login": "oracle_login_confirmed",
     "06b_local_network_access": "chatgpt_local_network_allowed",
-    "07_chatgpt_app": "app_name_matches_expected",
+    "07_chatgpt_app": "chatgpt_app_registration_confirmed",
     "08_final_gate": "exact_root_read_verified",
 }
+
+
+def _stage_user_confirmed(state: dict[str, Any], stage_id: str) -> bool:
+    evidence = ((state.get("stages") or {}).get(stage_id) or {}).get("evidence")
+    return bool(
+        isinstance(evidence, dict)
+        and evidence.get("kind") == "user-confirmed"
+        and isinstance(evidence.get("confirmed_at"), str)
+        and evidence["confirmed_at"].strip()
+    )
+
+
+def _stage_user_consented(state: dict[str, Any], stage_id: str) -> bool:
+    evidence = ((state.get("stages") or {}).get(stage_id) or {}).get("evidence")
+    return bool(
+        isinstance(evidence, dict)
+        and evidence.get("kind") == "user-consent"
+        and isinstance(evidence.get("confirmed_at"), str)
+        and evidence["confirmed_at"].strip()
+    )
+
+
+def _local_multi_gpt_ready(codex_home: Path) -> bool:
+    try:
+        result = LOCAL_MULTI_GPT_SETUP.doctor(codex_home)
+    except (OSError, subprocess.SubprocessError, LOCAL_MULTI_GPT_SETUP.SetupError):
+        return False
+    return bool(result.get("ok") and result.get("enabled") and result.get("registered_exactly"))
 
 
 def _install_receipt_present(codex_home: Path) -> bool:
@@ -556,11 +629,125 @@ def _install_receipt_present(codex_home: Path) -> bool:
     return any(receipts.glob("codexpro-automation-*.json"))
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _inside(parent: Path, child: Path) -> bool:
+    try:
+        child.relative_to(parent)
+    except ValueError:
+        return False
+    return True
+
+
+def _conversation_url(run_state: dict[str, Any]) -> str:
+    oracle = run_state.get("oracle") if isinstance(run_state.get("oracle"), dict) else {}
+    browser = run_state.get("browser") if isinstance(run_state.get("browser"), dict) else {}
+    runtime = browser.get("runtime") if isinstance(browser.get("runtime"), dict) else {}
+    harvest = browser.get("harvest") if isinstance(browser.get("harvest"), dict) else {}
+    for value in (
+        oracle.get("conversation_url"),
+        runtime.get("tabUrl"),
+        harvest.get("url"),
+    ):
+        candidate = str(value or "").strip()
+        parsed = urllib.parse.urlsplit(candidate)
+        if parsed.scheme == "https" and parsed.hostname == "chatgpt.com" and parsed.path.startswith("/c/"):
+            return candidate
+    return ""
+
+
+def _oracle_final_gate_binding(
+    *,
+    codex_home: Path,
+    run_dir: Path,
+    expected_root: str,
+    expected_app_name: str,
+    listing: Sequence[str],
+) -> dict[str, Any]:
+    try:
+        directory = run_dir.expanduser().resolve(strict=True)
+        state_root = (codex_home / "state").resolve(strict=True)
+    except OSError as exc:
+        raise OnboardingError("FINAL_GATE_ORACLE_RUN_UNREADABLE") from exc
+    if not directory.is_dir() or not _inside(state_root, directory):
+        raise OnboardingError("FINAL_GATE_ORACLE_RUN_OUTSIDE_CODEX_STATE")
+    state_path = directory / "state.json"
+    try:
+        run_state = json.loads(state_path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise OnboardingError("FINAL_GATE_ORACLE_STATE_INVALID") from exc
+    if not isinstance(run_state, dict) or run_state.get("schema") != "codex.chatgpt.oracle-run-state/v1":
+        raise OnboardingError("FINAL_GATE_ORACLE_STATE_INVALID")
+    exact_root = str(Path(str(run_state.get("project_root") or "")).expanduser().resolve())
+    if os.path.normcase(exact_root) != os.path.normcase(str(Path(expected_root).expanduser().resolve())):
+        raise OnboardingError("FINAL_GATE_ORACLE_ROOT_MISMATCH")
+    profile = run_state.get("profile") if isinstance(run_state.get("profile"), dict) else {}
+    terminal = (
+        run_state.get("transport") == "devspace"
+        and run_state.get("app_name") == expected_app_name
+        and profile.get("model") == "gpt-5.6"
+        and profile.get("thinking_time") == "extra-high"
+        and run_state.get("status") == "complete"
+        and run_state.get("transport_status") == "complete"
+        and run_state.get("session_authority") == "terminal"
+        and run_state.get("terminal_harvested") is True
+        and run_state.get("task_outcome") == "executed"
+    )
+    if not terminal:
+        raise OnboardingError("FINAL_GATE_REGULAR_NON_PRO_ORACLE_NOT_TERMINAL_EXECUTED")
+    artifacts = run_state.get("artifacts") if isinstance(run_state.get("artifacts"), dict) else {}
+    try:
+        output_path = Path(str(artifacts.get("output") or "")).expanduser().resolve(strict=True)
+    except OSError as exc:
+        raise OnboardingError("FINAL_GATE_ORACLE_OUTPUT_MISSING") from exc
+    if not output_path.is_file() or not _inside(directory, output_path):
+        raise OnboardingError("FINAL_GATE_ORACLE_OUTPUT_INVALID")
+    output_bytes = output_path.read_bytes()
+    if not output_bytes.strip():
+        raise OnboardingError("FINAL_GATE_ORACLE_OUTPUT_INVALID")
+    try:
+        output = output_bytes.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise OnboardingError("FINAL_GATE_ORACLE_OUTPUT_INVALID") from exc
+    output_sha256 = hashlib.sha256(output_bytes).hexdigest()
+    if run_state.get("artifact_sha256") != output_sha256:
+        raise OnboardingError("FINAL_GATE_ORACLE_OUTPUT_HASH_MISMATCH")
+    nonempty = [line.strip() for line in output.splitlines() if line.strip()]
+    if not nonempty or nonempty[-1] != "TASK_OUTCOME: EXECUTED":
+        raise OnboardingError("FINAL_GATE_ORACLE_OUTCOME_MARKER_INVALID")
+    folded = output.casefold()
+    entries = [str(item).strip() for item in listing if str(item).strip()]
+    if not entries or any(entry.casefold() not in folded for entry in entries):
+        raise OnboardingError("FINAL_GATE_LISTING_NOT_BOUND_TO_ORACLE_OUTPUT")
+    if expected_app_name.casefold() not in folded or "ws_" not in folded:
+        raise OnboardingError("FINAL_GATE_CONNECTOR_IDENTITY_MISSING")
+    conversation_url = _conversation_url(run_state)
+    if not conversation_url:
+        raise OnboardingError("FINAL_GATE_CONVERSATION_BINDING_MISSING")
+    oracle = run_state.get("oracle") if isinstance(run_state.get("oracle"), dict) else {}
+    return {
+        "run_dir": str(directory),
+        "run_id": str(run_state.get("run_id") or ""),
+        "slug": str(oracle.get("slug") or ""),
+        "conversation_url": conversation_url,
+        "state_sha256": _sha256_file(state_path),
+        "output_path": str(output_path),
+        "output_sha256": output_sha256,
+        "transport": "regular-non-pro-oracle",
+    }
+
+
 def _final_gate_receipt(codex_home: Path, state: dict[str, Any]) -> dict[str, Any] | None:
     recorded = ((state.get("stages") or {}).get("08_final_gate") or {}).get("evidence")
     if not isinstance(recorded, dict):
         return None
-    if recorded.get("transport") not in FINAL_GATE_TRANSPORTS:
+    if recorded.get("transport") not in FINAL_GATE_TRANSPORTS or recorded.get("read_ok") is not True:
         return None
     summary = str(recorded.get("evidence") or "").strip()
     listing = recorded.get("listing_sample")
@@ -573,6 +760,19 @@ def _final_gate_receipt(codex_home: Path, state: dict[str, Any]) -> dict[str, An
         return None
     if not isinstance(recorded.get("recorded_at"), str) or not recorded["recorded_at"].strip():
         return None
+    try:
+        binding = _oracle_final_gate_binding(
+            codex_home=codex_home,
+            run_dir=Path(str(recorded.get("run_dir") or "")),
+            expected_root=root,
+            expected_app_name=str(state.get("app_name") or ""),
+            listing=entries,
+        )
+    except OnboardingError:
+        return None
+    for key, value in binding.items():
+        if recorded.get(key) != value:
+            return None
     return recorded
 
 
@@ -600,14 +800,41 @@ def evaluate_stages(
     )
     checks = dict(status["checks"])
     checks["install_receipt_present"] = _install_receipt_present(resolved_home)
+    checks["local_multi_gpt_ready"] = (
+        not bool(state.get("enable_local_multi_gpt")) or _local_multi_gpt_ready(resolved_home)
+    )
+    checks["installation_contract_satisfied"] = bool(
+        checks["install_receipt_present"] and checks["local_multi_gpt_ready"]
+    )
+    checks["stable_endpoint_user_confirmed"] = _stage_user_confirmed(state, "02_stable_endpoint")
+    checks["restart_persistence_verified"] = bool(
+        checks.get("bootstrap_matches_config")
+        and (
+            state.get("provider") == "tailscale"
+            or _stage_user_confirmed(state, "04_reboot_service")
+        )
+    )
+    checks["oracle_login_confirmed"] = bool(
+        checks.get("oracle_profile_initialized") and _stage_user_confirmed(state, "06_oracle_login")
+    )
+    checks["chatgpt_app_registration_confirmed"] = bool(
+        checks.get("app_name_matches_expected") and _stage_user_confirmed(state, "07_chatgpt_app")
+    )
     gate = _final_gate_receipt(resolved_home, state)
     checks["exact_root_read_verified"] = bool(status["ready"]) and bool(gate and gate.get("read_ok"))
     stages: dict[str, Any] = {}
     for stage_id in STAGE_IDS:
         satisfied = bool(checks.get(STAGE_VERIFIERS[stage_id]))
+        owner = "user" if stage_id in USER_OWNED_STAGES else "agent"
+        if stage_id == "04_reboot_service" and state.get("provider") != "tailscale":
+            owner = "user"
+        if stage_id == "06b_local_network_access" and (
+            checks.get("chatgpt_local_network_allowed") or _stage_user_consented(state, stage_id)
+        ):
+            owner = "agent"
         stages[stage_id] = {
             "status": "complete" if satisfied else "pending",
-            "owner": "user" if stage_id in USER_OWNED_STAGES else "agent",
+            "owner": owner,
             "verifier": STAGE_VERIFIERS[stage_id],
             "verified": satisfied,
         }
@@ -662,8 +889,14 @@ def next_step(
         registration_url=state["registration_url"],
         roots=state["allowed_roots"],
         app_name=state["app_name"],
+        enable_local_multi_gpt=bool(state.get("enable_local_multi_gpt")),
     )
     detail = next((stage for stage in plan["stages"] if stage["id"] == current), None)
+    consent_needed = bool(
+        current == "06b_local_network_access"
+        and not _stage_user_consented(state, "06b_local_network_access")
+        and not stages["06b_local_network_access"]["verified"]
+    )
     return {
         "schema": "codex-web-gpt.onboarding-next/v1",
         "language": resolved_language,
@@ -673,7 +906,13 @@ def next_step(
         "current_stage": current,
         "owner": stages[current]["owner"] if current else None,
         "needs_user_action": bool(current and stages[current]["owner"] == "user"),
-        "confirm_command": f"onboard.py confirm {current}" if current and stages[current]["owner"] == "user" else None,
+        "confirm_command": (
+            "onboard.py consent 06b_local_network_access"
+            if consent_needed
+            else f"onboard.py confirm {current}"
+            if current and stages[current]["owner"] == "user"
+            else None
+        ),
         "instructions": (
             stage_instructions(current, state, resolved_language)
             if current
@@ -771,116 +1010,168 @@ def stage_instructions(stage_id: str, state: dict[str, Any], language: str = "ko
     roots = " ".join(f'--root "{root}"' for root in state["allowed_roots"])
     host = urllib.parse.urlsplit(url).hostname or ""
     setup = f"python {SETUP_SCRIPT.as_posix()}"
+    tailscale = state["provider"] == "tailscale"
+    install_flag = " --enable-local-multi-gpt" if state.get("enable_local_multi_gpt") else ""
+    profile = str(Path.home() / ".oracle" / "browser-profile")
+    oracle_login = _quoted_command([
+        "npx", "--yes", "@steipete/oracle@0.17.1", "--engine", "browser",
+        "--browser-manual-login", "--browser-keep-browser",
+        "--browser-manual-login-profile-dir", profile, "-p", "HI",
+    ])
+    status_command = _quoted_command([
+        "python", "onboard.py", "status", "--provider", state["provider"],
+        "--public-url", url,
+        *(part for root in state["allowed_roots"] for part in ("--root", str(root))),
+        "--app-name", state["app_name"],
+    ])
     korean: dict[str, list[str]] = {
         "01_install": [
             "수명주기 설치를 먼저 끝냅니다.",
-            "python install.py --dry-run",
-            "python install.py",
+            f"python install.py --dry-run{install_flag}",
+            f"python install.py{install_flag}",
             "python doctor.py",
         ],
         "02_stable_endpoint": [
-            f"고정 공개 주소 {url} 가 살아 있어야 합니다.",
-            f"{setup} setup {roots} --hostname {host} --dry-run",
-            "계획에 표시된 전체 허용 루트를 확인한 뒤에만 --apply 를 실행합니다.",
-            f"{setup} setup {roots} --hostname {host} --apply",
+            f"{state['provider']} 고정 공개 주소 {url} 와 전체 허용 루트를 검토합니다.",
+            (
+                f"{setup} setup {roots} --hostname {host} --dry-run"
+                if tailscale
+                else f"{state['provider']}에서 재부팅 후에도 유지되는 고정 HTTPS 주소가 http://127.0.0.1:{DEFAULT_LOCAL_PORT}로 연결되도록 계획합니다."
+            ),
+            "주소와 루트 계획이 맞으면 이 단계 확인 명령을 실행합니다. 아직 서비스나 DevSpace init을 실행하지 않습니다.",
         ],
         "03_devspace_init": [
-            "사용자 작업입니다. DevSpace init 화면이 현재 터미널에 표시됩니다.",
+            (
+                f"{setup} setup {roots} --hostname {host} --apply"
+                if tailscale
+                else "devspace init"
+            ),
+            "사용자 작업입니다. 위 명령이 여는 DevSpace init 화면을 현재 터미널에서 완료합니다.",
             f"표시된 전체 exact root 와 public origin {origin} 을 입력합니다.",
             "public origin 에는 /mcp 를 붙이지 않습니다.",
             "생성된 Owner 암호는 즉시 암호 관리자에 저장합니다. 에이전트에게 알려주지 않습니다.",
         ],
         "04_reboot_service": [
-            "재부팅 후에도 살아나도록 로그인 watchdog 을 확인합니다.",
-            f"{setup} doctor {roots} --hostname {host}",
+            (
+                "재부팅 후에도 살아나도록 Tailscale/DevSpace 로그인 watchdog 을 확인합니다."
+                if tailscale
+                else f"{state['provider']} 터널과 DevSpace를 OS 로그인 서비스로 등록했음을 확인합니다. 임시 터널은 허용되지 않습니다."
+            ),
+            (f"{setup} doctor {roots} --hostname {host}" if tailscale else status_command),
             "현재 config roots 와 bootstrap roots 가 완전히 같아야 합니다.",
         ],
         "05_endpoint_check": [
-            "로컬 DevSpace endpoint 를 확인합니다.",
+            "로컬과 공개 DevSpace endpoint 를 모두 확인합니다.",
             f"인증 없는 http://127.0.0.1:{DEFAULT_LOCAL_PORT}/mcp 는 HTTP 401 이 정상입니다.",
+            f"인증 없는 {url} 도 HTTP 401 이 정상입니다.",
             "연결 거부나 timeout 은 정상이 아닙니다.",
         ],
         "06_oracle_login": [
             "사용자 작업입니다. Oracle 전용 브라우저에서 ChatGPT 에 한 번 로그인합니다.",
             "일상 Chrome 프로필이 아니라 전용 프로필을 사용합니다.",
+            oracle_login,
             "로그인을 마친 뒤 onboard.py confirm 06_oracle_login 을 실행합니다.",
         ],
         "06b_local_network_access": [
-            "chatgpt.com 의 Local network 권한을 영속 등록합니다.",
-            "python bin/chatgpt_chrome_local_network.py enable",
-            "python bin/chatgpt_chrome_local_network.py status",
-            "Windows 정책 쓰기가 거부되면 전용 Oracle 프로필에서 직접 한 번 허용합니다.",
+            *(
+                ["chatgpt.com 전용 Local network 정책 변경에 동의하면 아래 동의 명령을 실행합니다."]
+                if not _stage_user_consented(state, "06b_local_network_access")
+                else [
+                    "동의가 기록되었습니다. chatgpt.com 의 Local network 권한만 영속 등록합니다.",
+                    "python bin/chatgpt_chrome_local_network.py enable",
+                    "python bin/chatgpt_chrome_local_network.py status",
+                    "Windows 정책 쓰기가 거부되면 전용 Oracle 프로필에서 직접 한 번 허용합니다.",
+                ]
+            ),
         ],
         "07_chatgpt_app": [
             "사용자 작업입니다. ChatGPT 개발자 모드를 켜고 앱을 직접 등록합니다.",
             f"앱 이름: {state['app_name']}",
             f"등록 주소: {url}",
+            f"python onboard.py configure-app-name --app-name {state['app_name']}",
             "계정에 따라 메뉴가 다르므로 아래 경로를 모두 확인합니다.",
             *(f"경로: {path}" for path in CHATGPT_UI_PATHS_BY_LANGUAGE["ko"]),
             "등록과 Owner 승인을 마친 뒤 onboard.py confirm 07_chatgpt_app 을 실행합니다.",
         ],
         "08_final_gate": [
             "마지막으로 실제 프로젝트를 읽을 수 있는지 확인합니다.",
-            f"{setup} post-register {roots} --hostname {host}",
+            (f"{setup} post-register {roots} --hostname {host}" if tailscale else status_command),
             f"새 일반 비-Pro Oracle 실행에서 @{state['app_name']} 로 exact root 를 열고 작은 디렉터리를 나열합니다.",
             "Codex Desktop 내장 DevSpace 플러그인 결과는 증거로 쓰지 않습니다.",
-            "성공하면 onboard.py record-final-gate --root <루트> --evidence <요약> 을 실행합니다.",
+            "성공하면 onboard.py record-final-gate --run-dir <Oracle run 디렉터리> --root <루트> --evidence <요약> --listing <항목> 을 실행합니다.",
         ],
     }
     english: dict[str, list[str]] = {
         "01_install": [
             "Finish the lifecycle install first.",
-            "python install.py --dry-run",
-            "python install.py",
+            f"python install.py --dry-run{install_flag}",
+            f"python install.py{install_flag}",
             "python doctor.py",
         ],
         "02_stable_endpoint": [
-            f"The stable public URL {url} must be reachable.",
-            f"{setup} setup {roots} --hostname {host} --dry-run",
-            "Review the full allowed-root list in the plan before running --apply.",
-            f"{setup} setup {roots} --hostname {host} --apply",
+            f"Review the {state['provider']} stable public URL {url} and the complete allowed-root list.",
+            (
+                f"{setup} setup {roots} --hostname {host} --dry-run"
+                if tailscale
+                else f"Plan a reboot-persistent {state['provider']} HTTPS service from this URL to http://127.0.0.1:{DEFAULT_LOCAL_PORT}."
+            ),
+            "Confirm this stage only after the URL and roots are correct. Do not start the service or DevSpace init yet.",
         ],
         "03_devspace_init": [
-            "User step. The DevSpace init prompt appears in this terminal.",
+            (f"{setup} setup {roots} --hostname {host} --apply" if tailscale else "devspace init"),
+            "User step. Complete the DevSpace init prompt opened by the command above in this terminal.",
             f"Enter every exact root shown plus the public origin {origin}.",
             "Do not append /mcp to the public origin.",
             "Save the generated Owner password in a password manager. Never share it with the agent.",
         ],
         "04_reboot_service": [
-            "Confirm the login watchdog so setup survives a reboot.",
-            f"{setup} doctor {roots} --hostname {host}",
+            (
+                "Confirm the Tailscale/DevSpace login watchdog so setup survives a reboot."
+                if tailscale
+                else f"Confirm the {state['provider']} tunnel and DevSpace are registered as OS login services; an ephemeral tunnel is forbidden."
+            ),
+            (f"{setup} doctor {roots} --hostname {host}" if tailscale else status_command),
             "Current config roots and bootstrap roots must match exactly.",
         ],
         "05_endpoint_check": [
-            "Check the local DevSpace endpoint.",
+            "Check both the local and public DevSpace endpoints.",
             f"An unauthenticated http://127.0.0.1:{DEFAULT_LOCAL_PORT}/mcp returning HTTP 401 is healthy.",
+            f"An unauthenticated {url} must also return HTTP 401.",
             "Connection refused or timeout is not healthy.",
         ],
         "06_oracle_login": [
             "User step. Sign in to ChatGPT once in the dedicated Oracle browser.",
             "Use the dedicated profile, not your everyday Chrome profile.",
+            oracle_login,
             "After signing in, run onboard.py confirm 06_oracle_login.",
         ],
         "06b_local_network_access": [
-            "Persist the Local Network grant for chatgpt.com.",
-            "python bin/chatgpt_chrome_local_network.py enable",
-            "python bin/chatgpt_chrome_local_network.py status",
-            "If the Windows policy write is denied, grant it once in the dedicated Oracle profile.",
+            *(
+                ["If you consent to changing only the chatgpt.com Local Network policy, run the consent command below."]
+                if not _stage_user_consented(state, "06b_local_network_access")
+                else [
+                    "Consent is recorded. Persist the Local Network grant for chatgpt.com only.",
+                    "python bin/chatgpt_chrome_local_network.py enable",
+                    "python bin/chatgpt_chrome_local_network.py status",
+                    "If the Windows policy write is denied, grant it once in the dedicated Oracle profile.",
+                ]
+            ),
         ],
         "07_chatgpt_app": [
             "User step. Turn on ChatGPT developer mode and register the app yourself.",
             f"App name: {state['app_name']}",
             f"Connection URL: {url}",
+            f"python onboard.py configure-app-name --app-name {state['app_name']}",
             "Menus differ by account, so check every path below.",
             *(f"Path: {path}" for path in CHATGPT_UI_PATHS_BY_LANGUAGE["en"]),
             "After registration and Owner approval, run onboard.py confirm 07_chatgpt_app.",
         ],
         "08_final_gate": [
             "Finally confirm the real project root is readable.",
-            f"{setup} post-register {roots} --hostname {host}",
+            (f"{setup} post-register {roots} --hostname {host}" if tailscale else status_command),
             f"In a fresh regular non-Pro Oracle run, open the exact root with @{state['app_name']} and list a small directory.",
             "The built-in Codex Desktop DevSpace plugin is not valid evidence.",
-            "On success run onboard.py record-final-gate --root <root> --evidence <summary>.",
+            "On success run onboard.py record-final-gate --run-dir <Oracle run directory> --root <root> --evidence <summary> --listing <entry>.",
         ],
     }
     guides = korean if language == "ko" else english
@@ -919,9 +1210,29 @@ def confirm_stage(
         ),
         None,
     )
-    verified = bool(evaluated["stages"][stage_id]["verified"])
-    if blocking is not None:
-        verified = False
+    if blocking is None and stage_id in USER_CONFIRMATION_STAGES:
+        prerequisite = {
+            "02_stable_endpoint": True,
+            "04_reboot_service": bool(evaluated["checks"].get("bootstrap_matches_config")),
+            "06_oracle_login": bool(evaluated["checks"].get("oracle_profile_initialized")),
+            "07_chatgpt_app": bool(evaluated["checks"].get("app_name_matches_expected")),
+        }[stage_id]
+        if prerequisite:
+            state["stages"][stage_id]["evidence"] = {
+                "kind": "user-confirmed",
+                "confirmed_at": _now(),
+            }
+            _secret_free(state)
+            _write_state(state, codex_home=codex_home)
+            evaluated = evaluate_stages(
+                state,
+                codex_home=codex_home,
+                devspace_home=devspace_home,
+                http_probe=http_probe,
+                oracle_profile_dir=oracle_profile_dir,
+                local_network_policy_probe=local_network_policy_probe,
+            )
+    verified = bool(evaluated["stages"][stage_id]["verified"]) and blocking is None
     state["stages"][stage_id]["status"] = "complete" if verified else "pending"
     state["stages"][stage_id]["confirmed_at"] = _now()
     if verified:
@@ -946,6 +1257,59 @@ def confirm_stage(
         "checks": evaluated["checks"],
         "completion_state": state["completion_state"],
         "completion_label": COMPLETION_STATES_BY_LANGUAGE[resolved_language][state["completion_state"]],
+    }
+
+
+def consent_stage(
+    stage_id: str,
+    *,
+    codex_home: Path | None = None,
+    devspace_home: Path | None = None,
+    http_probe: Any = probe_http,
+    oracle_profile_dir: Path | None = None,
+    local_network_policy_probe: Any = policy_status,
+) -> dict[str, Any]:
+    """Persist explicit non-secret consent before an agent changes Chrome policy."""
+    if stage_id != "06b_local_network_access":
+        raise OnboardingError("ONBOARDING_CONSENT_STAGE_UNSUPPORTED")
+    state = load_state(codex_home=codex_home)
+    evaluated = evaluate_stages(
+        state,
+        codex_home=codex_home,
+        devspace_home=devspace_home,
+        http_probe=http_probe,
+        oracle_profile_dir=oracle_profile_dir,
+        local_network_policy_probe=local_network_policy_probe,
+    )
+    blocking = next(
+        (
+            earlier
+            for earlier in STAGE_IDS[: STAGE_IDS.index(stage_id)]
+            if not evaluated["stages"][earlier]["verified"]
+        ),
+        None,
+    )
+    if blocking is not None:
+        return {
+            "schema": "codex-web-gpt.onboarding-consent/v1",
+            "stage": stage_id,
+            "accepted": False,
+            "reason": "STAGE_OUT_OF_ORDER_EARLIER_STAGE_PENDING",
+            "blocking_stage": blocking,
+        }
+    state["stages"][stage_id]["evidence"] = {
+        "kind": "user-consent",
+        "confirmed_at": _now(),
+        "scope": "persist-local-network-access-for-https://chatgpt.com-only",
+    }
+    state["updated_at"] = _now()
+    _secret_free(state)
+    _write_state(state, codex_home=codex_home)
+    return {
+        "schema": "codex-web-gpt.onboarding-consent/v1",
+        "stage": stage_id,
+        "accepted": True,
+        "next_command": "python onboard.py next",
     }
 
 
@@ -1009,6 +1373,7 @@ def record_final_gate(
     read_ok: bool,
     root: str,
     evidence: str,
+    run_dir: Path | None = None,
     codex_home: Path | None = None,
     transport: str = "regular-non-pro-oracle",
     listing: Sequence[str] | None = None,
@@ -1024,6 +1389,17 @@ def record_final_gate(
     entries = [str(item).strip() for item in (listing or []) if str(item).strip()]
     if read_ok and (len(summary) < FINAL_GATE_MIN_EVIDENCE or not entries):
         raise OnboardingError("FINAL_GATE_EVIDENCE_INSUFFICIENT")
+    binding: dict[str, Any] = {}
+    if read_ok:
+        if run_dir is None:
+            raise OnboardingError("FINAL_GATE_ORACLE_RUN_REQUIRED")
+        binding = _oracle_final_gate_binding(
+            codex_home=_codex_home(codex_home),
+            run_dir=run_dir,
+            expected_root=root,
+            expected_app_name=state["app_name"],
+            listing=entries,
+        )
     state["stages"]["08_final_gate"]["evidence"] = {
         "read_ok": bool(read_ok),
         "root": str(Path(root).expanduser().resolve()),
@@ -1031,6 +1407,7 @@ def record_final_gate(
         "listing_sample": entries[:10],
         "recorded_at": _now(),
         "transport": transport,
+        **binding,
     }
     state["updated_at"] = _now()
     _secret_free(state)
@@ -1049,6 +1426,8 @@ def _parser() -> argparse.ArgumentParser:
         current.add_argument("--public-url", required=True, help="Stable public HTTPS URL ending in /mcp")
         current.add_argument("--root", action="append", required=True, dest="roots")
         current.add_argument("--app-name", default=APP_NAME)
+        if name == "plan":
+            current.add_argument("--enable-local-multi-gpt", action="store_true")
     configure = commands.add_parser("configure-app-name")
     configure.add_argument("--codex-home", type=Path)
     configure.add_argument("--app-name", default=APP_NAME)
@@ -1066,9 +1445,12 @@ def _parser() -> argparse.ArgumentParser:
     confirm = commands.add_parser("confirm")
     confirm.add_argument("stage")
     confirm.add_argument("--lang", choices=LANGUAGES, dest="lang", default=None)
+    consent = commands.add_parser("consent")
+    consent.add_argument("stage")
     gate = commands.add_parser("record-final-gate")
     gate.add_argument("--root", required=True)
     gate.add_argument("--evidence", required=True)
+    gate.add_argument("--run-dir", type=Path)
     gate.add_argument("--listing", action="append", default=[], help="One observed directory entry; repeatable")
     gate.add_argument("--failed", action="store_true")
     return parser
@@ -1100,6 +1482,7 @@ def main(argv: list[str] | None = None) -> int:
                 registration_url=args.public_url,
                 roots=args.roots,
                 app_name=args.app_name,
+                enable_local_multi_gpt=args.enable_local_multi_gpt,
             )
         elif args.command == "status":
             result = readiness_status(
@@ -1149,11 +1532,14 @@ def main(argv: list[str] | None = None) -> int:
             result = next_step(language=args.lang)
         elif args.command == "confirm":
             result = confirm_stage(args.stage, language=args.lang)
+        elif args.command == "consent":
+            result = consent_stage(args.stage)
         elif args.command == "record-final-gate":
             result = record_final_gate(
                 read_ok=not args.failed,
                 root=args.root,
                 evidence=args.evidence,
+                run_dir=args.run_dir,
                 listing=args.listing,
             )
         else:

@@ -51,7 +51,7 @@ def test_regular_high_is_forwarded_as_the_visible_high_tier(tmp_path: Path) -> N
     target = tmp_path / "high.json"
 
     result = module.compile_manifest(
-        mode="direct",
+        mode="review",
         project_root=tmp_path,
         mission_path=mission,
         output_path=target,
@@ -71,7 +71,7 @@ def test_configured_app_name_is_forwarded_to_manifest_and_composer(tmp_path: Pat
     target = tmp_path / "custom-app.json"
 
     result = module.compile_manifest(
-        mode="direct",
+        mode="review",
         project_root=tmp_path,
         mission_path=mission,
         output_path=target,
@@ -90,7 +90,7 @@ def test_regular_medium_is_forwarded_as_the_visible_medium_tier(tmp_path: Path) 
     target = tmp_path / "medium.json"
 
     result = module.compile_manifest(
-        mode="direct",
+        mode="review",
         project_root=tmp_path,
         mission_path=mission,
         output_path=target,
@@ -147,8 +147,8 @@ def test_pro_defaults_to_devspace_without_attachments(tmp_path: Path) -> None:
     )
 
     value = json.loads(target.read_text(encoding="utf-8"))
-    assert result["contract"]["route"] == "oracle-pro-devspace"
-    assert value["transport"] == "pro-devspace"
+    assert result["contract"]["route"] == "oracle-pro-devspace-readonly"
+    assert value["transport"] == "pro-devspace-readonly"
     assert value["app_name"] == "DevSpace"
     assert value["model"] == "gpt-5.6-sol"
     assert value["model_strategy"] == "select"

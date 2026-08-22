@@ -22,7 +22,13 @@
   optional Local Multi-GPT component is wanted.
 - Drive remaining setup through `onboard.py next` and `onboard.py confirm
   <stage-id>`. Never skip a pending stage, re-run a verified stage, or accept a
-  user confirmation that live evidence does not prove.
+  user confirmation that required non-secret evidence does not prove. Stable
+  endpoint confirmation is the user's explicit approval of the fixed URL/root
+  plan; later connectivity, login, persistence, app, and final-gate stages also
+  require their own live or hash-bound evidence.
+- Preserve every existing DevSpace `allowedRoots` entry when adding roots. A
+  malformed existing config fails closed. Chrome Local Network policy may be
+  changed only after explicit scoped consent for `https://chatgpt.com`.
 - Onboarding state is non-secret by contract. Never write Owner passwords,
   tokens, cookies, or OAuth secrets into it, and never ask the user to paste the
   DevSpace Owner password to the agent.
@@ -30,12 +36,23 @@
   regular non-Pro Oracle read of the exact project root. Report the precise
   pending completion state instead. The Codex Desktop DevSpace plugin is a
   different connection and is never that proof.
+- The final gate must bind the exact Oracle run directory, source task, root,
+  configured app, regular model/effort, conversation URL, terminal state,
+  output SHA-256, observed listing, and final outcome marker.
 - ChatGPT developer mode, custom app creation, permission and tool selection,
   and Owner approval stay manual. When the create button is missing, triage the
   surface, workspace type, developer-mode toggle, and Apps/Plugins UI before
   ever concluding that a plan upgrade is required.
 
 ## Comprehensive-mode ownership
+
+- Oracle ownership is task scoped, not project scoped. Two different Codex
+  tasks may run concurrently against the same exact project root; each owns its
+  own task ID, run, mission hash, slug/conversation, browser profile, dynamic
+  CDP port, process tree, and lock. Only unresolved runs from the same task may
+  block a new submission. Foreign-task sessions may be diagnosed but never
+  recovered, harvested, stopped, settled, or adopted. Legacy unbound runs are
+  never assigned to the newest project task by inference.
 
 - macOS new-work support uses the portable Python lifecycle, POSIX identity,
   DevSpace/Tailscale Funnel, and `com.ventianima.codexpro-automation.*`
@@ -55,7 +72,7 @@
   distinct worktrees. Oracle Web Multi remains separately bounded to five
   provider sessions, and local-subagent and Oracle-web phases do not overlap.
 
-- Every new ChatGPT submission uses Oracle. Regular web work defaults to `GPT-5.6` at the highest supported non-Pro reasoning tier (`extra-high`). Pro is quota-limited and must never be selected or upgraded automatically: only an explicit user Pro request may select `GPT-5.6 Sol` at the Pro effort. Qualified Pro uses the same DevSpace app with mission-scoped read/write/command authority inside the exact root; explicit `pro-attachment` is reserved for immutable or external evidence that DevSpace cannot read and is never an automatic fallback.
+- Every new ChatGPT submission uses Oracle. Regular web work defaults to `GPT-5.6` at the highest supported non-Pro reasoning tier (`extra-high`). Pro is quota-limited and must never be selected or upgraded automatically: only an explicit user Pro request may select `GPT-5.6 Sol` at the Pro effort. Every new qualified Pro run uses the `pro-devspace-readonly` read-only DevSpace route only for design, advice, or review; it must not create, edit, or remove files or run commands. A regular `GPT-5.6` `extra-high` DevSpace stage owns every required file mutation, deletion, or command. Explicit `pro-attachment` remains a separate read-only immutable/external-evidence route and is never an automatic fallback. Persisted legacy `pro-devspace` write runs retain their exact original authority only during recovery.
 - New GPT comprehensive workflows use `codex.chatgpt.oracle-comprehensive/v1`. Existing CodexPro/agbrowse comprehensive v1-v4 state remains exact recovery-only.
 - The explicit `ultra-gpt` comprehensive profile moves all semantic subagent roles to separate web GPT sessions. Local Codex is a deterministic controller only; parallel web writers run in distinct pre-created Git worktrees with host-audited pairwise-disjoint project-relative ownership, an all-lanes barrier, and bounded concurrency. Pro remains a separate explicit pre-workflow advisory rather than an internal stage.
 - The opt-in `strict-ultra` profile reuses that scheduler and adds closed, hash-bound dependency, authority, advisory Research Governor, identity-ledger, local-gate, and workflow-audit artifacts. Never silently upgrade an ordinary workflow to it, weaken its no-extra-key validation, count advisory artifacts as execution, or grant its optional pre-workflow Pro binding in-workflow authority.
@@ -63,13 +80,15 @@
 - A selected Web Multi advisory uses genuine independent Oracle sessions. Provider generation is limited to at most five concurrent children; larger accepted topologies run in capacity waves without reducing their logical lane count.
 - Comprehensive review owns plan repair and finalization. It fixes every locally resolvable defect inline, writes the corrected final plan and implementation mission, then returns PASS or PASS_WITH_NOTES. New work never loops review back to plan; legacy REVISE is terminal compatibility only, and FAIL requires a concrete external blocker.
 - Every regular Oracle stage is bound to one exact project root and one exact mission path. DevSpace may retry that same root once after listing registered workspaces, but must never substitute a parent, child, similarly named, active workspace, or shell boundary workaround.
-- A Pro DevSpace stage has the same exact-root binding. It may broadly inspect decision-relevant material and perform mission-authorized file edits and commands inside that root, subject to the repository `AGENTS.md` chain and normal safety rules. It must not alter accounts, app settings, or external state unless the mission explicitly authorizes that action. Once the one-time DevSpace qualification is complete, do not re-check app/settings state per run.
+- A new Pro DevSpace stage has the same exact-root binding and may broadly inspect decision-relevant material, but is read-only and limited to design, advice, or review. It must not create, edit, or remove files, run commands, or alter accounts, app settings, or external state; a regular `GPT-5.6` `extra-high` DevSpace stage owns authorized actions. Persisted legacy `pro-devspace` write runs preserve their original authority only during exact recovery. Once the one-time DevSpace qualification is complete, do not re-check app/settings state per run.
 - Before the first DevSpace-backed Oracle submission for a new exact project root, verify exact equality against the current local DevSpace `allowedRoots`. Cache that qualification against the config hash; revalidate only when the config changes. Missing, parent, child, or similarly named roots fail before Oracle/browser creation. This lightweight root guard must not automate or repeatedly inspect ChatGPT app/settings state.
-- Pro DevSpace completion requires a v1 `TASK_OUTCOME` marker as the final nonempty line, with citations and reference definitions before it. A bounded provider-rendering exception may accept exactly one marker followed only by single-line HTTP(S) Markdown reference definitions; ordinary prose or another marker remains unknown. Exit zero plus a durable answer is not successful execution when the session exposed no callable DevSpace tools or could not read the exact mission/root. A durably terminal `NOT_EXECUTED` run may release the project lock for one fresh retry with identical mission bytes and SHA-256; a repeated tool-exposure failure is `attention_required`, with no automatic app-settings manipulation or attachment fallback.
+- Pro DevSpace completion requires a v1 `TASK_OUTCOME` marker as the final nonempty line, with citations and reference definitions before it. A bounded provider-rendering exception may accept exactly one marker followed only by single-line HTTP(S) Markdown reference definitions; ordinary prose or another marker remains unknown. Exit zero plus a durable answer is not successful execution when the session exposed no callable DevSpace tools or could not read the exact mission/root. A durably terminal `NOT_EXECUTED` run may release that task's project lock for one fresh retry with identical mission bytes and SHA-256; a repeated tool-exposure failure is `attention_required`, with no automatic app-settings manipulation or attachment fallback.
 - Transport and runner recovery retain the exact workflow/stage identity. They must not create a replacement workflow or reset the semantic revision budget.
 - CodexPro and agbrowse are frozen for new work. Their code may be invoked only to recover an exact persisted legacy run, never as an Oracle fallback.
 - Every new Oracle run must use a throwaway copy of the manually signed-in profile and an Oracle-owned hidden window. Never share the manual-login Chrome process across concurrent projects.
+- Oracle ownership is task-scoped, not project-scoped. Two different Codex tasks may run against the same exact project root concurrently, with separate task-bound mutexes, run IDs, slugs, dynamic CDP ports, browser profiles, conversation bindings, and receipts. Only an unresolved run owned by the same task blocks that task's next submission. A foreign task may be listed for diagnosis but must never be adopted, recovered, harvested, followed up, canceled, or stopped. Never infer a legacy unbound run's owner from the project root or newest timestamp.
+- A same-conversation Pro follow-up is allowed only through the runner's internal `followup` command against a task-bound terminal `pro-devspace-readonly` parent. Raw Oracle `--followup`, `--browser-follow-up`, and `session` injection remain forbidden. Every round uses a new task-bound Oracle run/slug while reopening the exact persisted ChatGPT conversation, and records append-only reservation and result receipts with mission, state, output, transcript, and conversation hashes. A changed or unproven conversation fails closed and never authorizes a replacement prompt.
 - Exact-slug recovery may relaunch a bounded recovery browser from the persisted profile seed and open only the recorded conversation URL. It must never restart, resubmit, or create a replacement conversation.
 - A nonzero Oracle exit after submission, including a browser response timeout, is attention-required rather than web-terminal failure. It retains exact-session ownership and allows only exact-slug live/harvest recovery.
-- Exact session authority is monotonic. `terminal_observed` cannot regress to `live`; observer disagreement remains attention-required under the same project lock until a later exact terminal harvest produces fresh nonempty durable output.
+- Exact session authority is monotonic. `terminal_observed` cannot regress to `live`; observer disagreement remains attention-required under the same task-scoped project lock until a later exact terminal harvest produces fresh nonempty durable output.
 - A web worker must never inspect, poll, wait for, invoke, or recover its own exact Oracle run/slug or launch nested Oracle automation. Only the bounded conjunction of exact own identity, own running/pending/output-absent/continue-observing evidence, and terminal BLOCKED is recursive self-observation. Comprehensive mode terminalizes that stage and releases its workflow scope without auto-retry; a direct fresh run additionally requires the append-only hash-bound user-authority settlement.

@@ -1,15 +1,17 @@
 ---
 name: chatgpt-pro-browser
-description: Use for an explicitly requested one-shot ChatGPT Pro plan, research, implementation, or review through Oracle. Qualified Pro uses read/write DevSpace; `pro-attachment` is an explicit immutable-evidence route. Return the Pro result only.
+description: Use for an explicitly requested ChatGPT Pro design, advice, or review through Oracle, including bounded follow-up rounds in the same conversation. New qualified Pro uses read-only DevSpace.
 ---
 
 # ChatGPT Pro through Oracle
 
 ## Standalone scope
 
-This is the standalone, one-shot Pro route. It may produce a plan, research
-finding, review, or decision, but it returns that durable Pro result to Codex
-and stops. It never starts a review-to-implementation chain, authors a
+This is the standalone read-only Pro conversation route. It may produce a
+design, advice, research finding, review, or decision. After each durable
+answer it returns control to Codex and stops; only an explicit user request may
+add another bounded round to that same conversation. It never starts a
+review-to-implementation chain, authors a
 follow-on implementation stage, or invokes `chatgpt-pro-plan-handoff` on its
 own. If the user asks for comprehensive mode, use `chatgpt-pro-plan-handoff`
 instead.
@@ -36,26 +38,20 @@ Failure returns `DEVSPACE_EXACT_ROOT_UNAVAILABLE` before Oracle or a browser is
 created and points to the complete root-preserving setup preview.
 
 Pro reads the mission and applicable `AGENTS.md` chain completely. Within the
-exact root it may inspect, create, edit, and remove mission-owned files and run
-commands required by the mission. Repository safety rules remain authoritative.
-It must not change accounts, app settings, or external state unless the mission
-explicitly authorizes that action. It may not substitute a parent, child,
-similarly named, active, or shell-boundary workspace, and may retry only the
-same root once after a timeout.
+exact root it is read-only and limited to design, advice, or review: it must not
+create, edit, or remove files or run commands. A regular `GPT-5.6`
+`extra-high` DevSpace stage owns any required mutation or command. Repository
+safety rules remain authoritative. Pro must not change accounts, app settings,
+or external state. It may
+not substitute a parent, child, similarly named, active, or shell-boundary
+workspace, and may retry only the same root once after a timeout.
 
-## Explicit attachment route
+## Explicit attachment evidence route
 
-`pro-attachment` is attachment-only through Oracle. Use it only when the
-question depends on immutable/external evidence or artifacts that DevSpace
-cannot read. Its mission and every attachment are exact regular non-symlink
-files with frozen SHA-256 values. It is an explicit evidence contract, never an
-automatic fallback from qualified Pro DevSpace.
-
-Build this route with the repository's
-`scripts/build_project_context_packet.py` helper. Preview and validate the
-packet before launch, preserve the generated manifest and hashes, and attach
-only the mission plus the explicitly frozen evidence packet. Do not scrape
-the project into an ad-hoc ZIP or infer attachments from prose.
+`pro-attachment` remains an explicit, read-only route for immutable/external
+evidence or artifacts that DevSpace cannot read. It is never an automatic
+fallback from a DevSpace failure. Build only the declared packet, bind every
+attachment path and SHA-256, and never infer attachments from prose.
 
 ## Required Web Multi decision
 
@@ -73,16 +69,16 @@ assigns stable lane order, and synthesis/judge criteria. After a durable Pro
 answer says `WEB_MULTI_NEEDED: YES`, Codex starts that ready-to-run Web Multi-GPT Very
 High mission automatically without a routine user
 choice. It waits for the exact Pro session to be terminal first and preserves
-the same-project serialization contract. Choose `NO` for a trivial, single-answer, or purely mechanical question. This optional advisory handoff
+the same-task project serialization contract. A different Codex task owns a separate run namespace and may proceed concurrently. Choose `NO` for a trivial, single-answer, or purely mechanical question. This optional advisory handoff
 does not turn the standalone Pro result into a review-to-implementation chain.
 
 ## Preflight and completion
 
 1. Resolve and hash-validate the tested Oracle compatibility contract.
-2. Bind the same normalized-project mutex used by regular Oracle work.
-3. Build a short UTF-8 mission that states the exact root, question, explicit
-   file/command authority, and any evidence limitations. For `pro-attachment`,
-   freeze the required attachments and their hashes instead.
+2. Bind the same task-scoped normalized-project mutex used by regular Oracle work.
+3. Build a short UTF-8 mission that states the exact root, question, read-only
+   design/advice/review authority, and any evidence limitations. Route any
+   required file mutation or command to a regular `GPT-5.6` `extra-high` stage.
 4. Use a fresh Oracle slug and require Oracle model and transport evidence
    before accepting a send.
 
@@ -90,12 +86,34 @@ The public dispatcher entry points are:
 
 ```powershell
 python "$env:USERPROFILE\.codex\bin\chatgpt_oracle_dispatch.py" --mode pro --project-root <ROOT> --mission-path <MISSION> --manifest-output <MANIFEST> --dry-run
-python "$env:USERPROFILE\.codex\bin\chatgpt_oracle_dispatch.py" --mode pro-attachment --project-root <ROOT> --mission-path <MISSION> --attachment <PACKET> --manifest-output <MANIFEST> --dry-run
 ```
 
 Remove `--dry-run` only after the manifest, project mutex, Oracle version, and
-compatibility hashes pass preflight. The default `pro` command never accepts
-attachments; `pro-attachment` never invokes DevSpace.
+compatibility hashes pass preflight. New `pro` work uses read-only DevSpace;
+attachment work uses only the separate explicit evidence contract.
+
+## Same-conversation follow-up
+
+When the user explicitly wants continued discussion, do not create a new Pro
+conversation and do not loosen the raw Oracle argument allowlist. The exact
+parent must be owned by the current Codex task, terminal `EXECUTED`, bound to
+`pro-devspace-readonly`, and retain valid ownership/browser receipts plus the
+canonical conversation URL. Put the next read-only question in a UTF-8 mission
+inside the same project, then preview the internal lifecycle:
+
+```powershell
+python "$env:USERPROFILE\.codex\bin\chatgpt_oracle_run.py" followup --parent-run-dir <TERMINAL_PARENT_RUN_DIR> --mission-path <FOLLOWUP_MISSION> --round-key <UNIQUE_ROUND_KEY> --dry-run
+```
+
+Remove only `--dry-run` after the preview and explicit send authority. The
+child gets a new Oracle run/slug and dynamic CDP port but must reopen the exact
+same ChatGPT conversation. Append-only reservation and result receipts bind
+the round mission, child state, output/transcript hashes, task owner, and
+conversation identity. Foreign/legacy ownership, a duplicate key, attachment
+or writable transport, artifact tamper, missing receipt, or a changed/unproven
+conversation fails closed. Never inject raw `--followup`,
+`--browser-follow-up`, or `session`; recovery observes only and cannot send a
+round; uncertainty never authorizes a replacement prompt.
 
 Completion requires the requested Pro model/effort evidence, exit zero, fresh
 nonempty host-only `output.md`, immutable run identity, and a refreshed
@@ -107,7 +125,7 @@ followed solely by single-line HTTP(S) Markdown reference definitions. Ordinary
 trailing prose or another marker remains `unknown`. A terminal answer that reports
 zero callable DevSpace tools or says the mission/root could not be read is
 `NOT_EXECUTED`, never successful Pro work. When that exact terminal run is
-durably captured, it releases same-project ownership and permits at most one
+durably captured, it releases the current task's project ownership and permits at most one
 fresh retry with the same mission bytes and SHA-256. If the retry has the same
 tool-exposure failure, stop with `attention_required`; do not loop, manipulate
 ChatGPT app settings, or switch to attachments automatically. A nonzero exit
@@ -128,14 +146,14 @@ run. Only then may an explicitly authorized single retry reuse the identical
 mission bytes; no output, URL, mismatched hash, conflicting recovery state, or
 ordinary trailing browser error may be treated as proof.
 
-The same user-confirmed, fail-closed settlement is available to an explicit
+The same user-confirmed, fail-closed settlement is available to a
 `pro-attachment` run only when Oracle 0.17.1 reports the exact attachment-upload
 timeout before prompt submission. It binds every attachment path, size, and
 SHA-256; the source and transport mission copies; Oracle locator/version; exact
 stdout/transcript and recovery bytes; and the absence of output and a
 conversation URL. The user confirmation token is still mandatory. Any changed
 attachment, live recovery state, URL, output, or unrecognized error keeps the
-project locked.
+current task's project lock. This recovery rule never authorizes an automatic replacement attachment run.
 
 For an already persisted agbrowse Pro run only, former recovery commands remain
 available. They must never create a new run.

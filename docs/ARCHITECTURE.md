@@ -35,13 +35,16 @@ changes.
 
 Every run records the project, mission bytes, transport, model, effort, and
 artifact identity. Regular web work defaults to the highest supported non-Pro
-reasoning tier. Pro is an explicit, quota-aware opt-in and uses exact-root
-DevSpace with mission-scoped read/write authority. Attachment mode is an
-explicit immutable-evidence contract, not an automatic fallback.
+reasoning tier. New Pro is an explicit, quota-aware opt-in for exact-root,
+read-only DevSpace design, advice, or review. A regular `GPT-5.6` `extra-high`
+DevSpace stage performs every file creation, edit, removal, and command.
+Explicit attachment mode remains a separate read-only immutable-evidence
+contract, not an automatic fallback. Persisted legacy `pro-devspace` write
+runs preserve their exact original authority only during recovery.
 
 ## Recoverable lifecycle
 
-The project lock follows exact session authority:
+The task-scoped project lock follows exact session authority; different bound Codex tasks use distinct locks even at the same root:
 
 ```text
 pre-submit -> submitted/unknown -> live -> terminal -> harvested

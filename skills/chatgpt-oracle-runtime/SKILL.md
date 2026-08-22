@@ -1,15 +1,18 @@
 ---
 name: chatgpt-oracle-runtime
-description: "Current Oracle runtime path for new ChatGPT work: regular modes use highest-tier non-Pro DevSpace, explicitly requested qualified Pro uses read/write DevSpace, and explicit Pro attachments remain for bounded evidence."
+description: "Current Oracle runtime path for new ChatGPT work: regular modes use highest-tier non-Pro DevSpace, and explicitly requested qualified Pro uses read-only DevSpace for design, advice, or review."
 ---
 
 # ChatGPT Oracle Runtime
 
 This is the only active browser path for all new GPT work. CodexPro and
 agbrowse are frozen for exact legacy recovery only. Regular modes use DevSpace;
-explicitly requested qualified Pro uses the same app with mission-scoped
-read/write authority, while `pro-attachment` uses Oracle
-attachment transport for its explicit evidence boundary.
+every explicitly requested new qualified Pro run uses the same app read-only
+for design, advice, or review. A regular `GPT-5.6` `extra-high` DevSpace stage
+owns all file creation, edits, removals, and commands. Explicit
+`pro-attachment` remains a separate read-only immutable/external-evidence route
+and is never an automatic fallback. Persisted legacy `pro-devspace` write runs
+retain their exact authority only during recovery.
 
 `chatgpt_oracle_dispatch.py` supports exactly `direct`, `plan`, `review`, `edit`,
 `orchestrator`, `deep-research`, `manual`, and `pro`. `manual` is a supported
@@ -23,10 +26,12 @@ project root recorded in that mission, read the mission and applicable
 It must not substitute a parent, child, active workspace, or shell boundary
 workaround. Regular routes default to `gpt-5.6` with `extra-high`, the highest
 supported non-Pro reasoning tier, and never auto-upgrade to Pro. Only explicit
-`pro` mode selects `GPT-5.6 Sol` at the Pro effort. It uses DevSpace at the same
-exact root and may perform mission-authorized writes and commands under the
-repository safety policy. Explicit
-`pro-attachment` sends one short instruction plus exact attachment files.
+`pro` mode selects `GPT-5.6 Sol` at the Pro effort and the
+`pro-devspace-readonly` transport. It uses read-only DevSpace at the same exact
+root for design, advice, or review and must not perform file
+mutations or commands; a regular `GPT-5.6` `extra-high` stage owns those
+actions. Explicit `pro-attachment` is limited to its read-only immutable or
+external evidence contract and is never an automatic fallback.
 Never infer Pro from task difficulty, invent xhigh, or silently downgrade.
 
 On the first DevSpace-backed submission for a new project, the runner checks
@@ -42,9 +47,9 @@ Require schema `codex.chatgpt.oracle-run/v1` with:
 - `project_root`: absolute existing directory.
 - `mission_path`: absolute UTF-8 regular file inside the project.
 - `app_name`: one-line app name, without a leading `@`, for regular routes.
-- `task_kind: pro`; qualified Pro uses the same configured app name (default
-  `codex`), while explicit `pro-attachment` includes one or more exact
-  `attachments`.
+- `task_kind: pro`; new qualified Pro uses the same configured app name (default
+  `codex`) and read-only DevSpace. Persisted legacy attachment records retain
+  their original attachment metadata only during exact recovery.
 - `mode`: `browser`.
 - Optional `run_root`, `oracle_command`, `oracle_args`, `thinking_time`,
   hash-validated `copy_profile`, and mutex timeout.
@@ -82,7 +87,7 @@ single-line HTTP(S) Markdown reference definitions is also classifiable; any
 ordinary trailing prose or conflicting marker remains `unknown`.
 A nonzero Oracle exit after launch, including a browser response timeout, is
 `attention_required` rather than proof that the web session failed. It retains
-same-project ownership and permits only exact-slug `live` or `harvest`
+same-task exact-run ownership and permits only exact-slug `live` or `harvest`
 recovery; it never authorizes a replacement submission.
 `--browser-timeout` is a browser observation window, not proof that the web run
 ended. The default is aligned with the observed provider boundary. Separately,
@@ -90,6 +95,28 @@ ended. The default is aligned with the observed provider boundary. Separately,
 exact slug, process liveness, artifact progress, known conversation binding,
 and terminal evidence, then keeps waiting on the same process. It never kills,
 fails, releases, or replaces a run because that threshold elapsed.
+
+## Read-only Pro follow-up round
+
+When the user explicitly asks to continue one already-terminal read-only Pro
+discussion, use only the internal follow-up lifecycle. The parent must belong
+to the current Codex task, be terminal `EXECUTED`, use
+`pro-devspace-readonly`, retain valid ownership/browser receipts and the exact
+canonical conversation URL, and pass all stored mission/output identity
+checks. Preview before sending:
+
+```powershell
+python skills/chatgpt-oracle-runtime/scripts/run_chatgpt_oracle.py followup --parent-run-dir C:\absolute\parent-run --mission-path C:\project\followup-round.md --round-key round-2 --dry-run
+```
+
+After explicit live authority, remove only `--dry-run`. Each round gets a new
+Oracle run and slug but must reopen the same ChatGPT conversation. The runner
+writes append-only `followup-rounds/<round-key>.json` and
+`followup-rounds/<round-key>.result.json` receipts. A foreign or legacy-unbound
+parent, duplicate round key, writable/attachment transport, missing or changed
+conversation, tampered artifact, or uncertain identity fails closed. Never
+inject raw `--followup`, `--browser-follow-up`, or `session`; never use recovery
+to send a question; never create a replacement conversation after uncertainty.
 
 ## Recovery
 
@@ -110,7 +137,7 @@ The CLI keeps `--action live` bound to the same exact slug. At each 80-minute
 caution interval it records a status audit and, if the observer process must
 return while the session is still live, automatically opens another live
 observer for that same saved session. Transient `stalled`, `running`, or
-provider-delivery-timeout states keep the same authority and project lock.
+provider-delivery-timeout states keep the same authority and task-scoped project lock.
 There is no time-based replacement, ownership release, or new prompt.
 If Oracle proves both that no live tab matches the exact slug and that its
 metadata has no recoverable canonical conversation URL, the runner returns
@@ -130,12 +157,13 @@ direct Web Multi child, or standalone qualified-Pro identity and immutable
 mission evidence and does not launch Oracle. Comprehensive mode may consume
 only one replacement for its binding; standalone qualified Pro permits only
 the separately authorized single fresh retry with identical mission bytes.
-For `pro-attachment-only`, the supported Oracle 0.17.1 attachment-upload
-timeout additionally requires an exact immutable attachment manifest (path,
-size, and SHA-256 for every file), the upload-timeout marker, matching
-stdout/transcript, no stderr, and exact no-live-tab/no-saved-URL recovery hashes.
-It remains ineligible without the same explicit user token or if any artifact
-has changed.
+For a persisted legacy `pro-attachment-only` run, the supported Oracle 0.17.1
+attachment-upload timeout additionally requires an exact immutable attachment
+manifest (path, size, and SHA-256 for every file), the upload-timeout marker,
+matching stdout/transcript, no stderr, and exact no-live-tab/no-saved-URL
+recovery hashes. It remains ineligible without the same explicit user token or
+if any artifact has changed. This recovery rule does not authorize a new
+attachment run.
 
 A terminal BLOCKED answer is classified as
 `post-submit-recursive-self-observation` only when it contains the exact own
@@ -150,7 +178,7 @@ state/output/transcript SHA-256 values and confirmation token
 writes one append-only receipt; it does not edit historical run artifacts or
 submit a prompt.
 
-Direct same-project runs hold one cross-process mutex for the entire Oracle
+Direct runs from the same Codex task against one project hold one cross-process mutex for the entire Oracle
 process lifetime. A Multi parent owns that project mutex while authorized
 children use a short parent-scoped launch mutex and isolated copied Chrome
 profiles, then wait concurrently.

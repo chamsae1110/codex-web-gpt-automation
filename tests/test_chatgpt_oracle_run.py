@@ -14,6 +14,12 @@ import pytest
 RUNNER_PATH = Path(__file__).resolve().parents[1] / "bin" / "chatgpt_oracle_run.py"
 
 
+@pytest.fixture(autouse=True)
+def isolated_runtime_task(monkeypatch: pytest.MonkeyPatch):
+    """Keep historical runner fixtures unbound unless a test binds one."""
+    monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
+
+
 def load_runner():
     name = "chatgpt_oracle_run_test"
     spec = importlib.util.spec_from_file_location(name, RUNNER_PATH)
@@ -64,7 +70,7 @@ def pro_manifest(tmp_path: Path, **extra) -> Path:
 def pro_readonly_manifest(tmp_path: Path, **extra) -> Path:
     return manifest(
         tmp_path,
-        transport="pro-devspace",
+        transport="pro-devspace-readonly",
         app_name="DevSpace",
         model="gpt-5.6-sol",
         model_strategy="select",
@@ -150,6 +156,87 @@ def test_conversation_url_helpers_preserve_exact_binding_and_detect_conflicts(tm
         "persisted": "https://chatgpt.com/c/oracle-current",
         "observed": "https://chatgpt.com/c/oracle-other",
     }
+
+
+def test_new_runs_use_dynamic_cdp_port_instead_of_global_9222(tmp_path: Path) -> None:
+    runner = load_runner()
+    result = execute_run(runner, manifest(tmp_path), dry_run=True)
+    argv = result["argv"]
+    port = int(argv[argv.index("--browser-port") + 1])
+
+    assert 1024 <= port <= 65535
+    assert port != 9222
+
+
+def test_fresh_execution_binds_runtime_task_but_plain_manifest_loading_stays_unbound(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = load_runner()
+    task_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    path = manifest(tmp_path)
+    assert runner.STATE.load_manifest(path).source_thread_id is None
+    monkeypatch.setenv("CODEX_THREAD_ID", task_id)
+    captured: dict = {}
+    result = execute_run(
+        runner,
+        path,
+        run_factory=version_runner,
+        popen_factory=popen_for(1, None, captured, []),
+    )
+    state = runner.STATE.load_state(Path(result["run_dir"]) / "state.json")
+
+    assert state["originating_task"] == {
+        "schema": "codex.chatgpt.oracle-task-owner/v1",
+        "source_thread_id": task_id,
+        "binding": "bound",
+    }
+    assert state["ownership"]["source_thread_id"] == task_id
+    assert int(captured["command"][captured["command"].index("--browser-port") + 1]) != 9222
+
+
+def test_foreign_task_recovery_is_fail_closed_before_browser_or_oracle_access(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = load_runner()
+    owner = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    caller = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+    monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
+    config = runner.STATE.load_manifest(manifest(tmp_path, source_thread_id=owner))
+    layout = runner.STATE.create_layout(config, run_id="owner-run-12345678")
+    layout.run_dir.mkdir(parents=True)
+    runner.STATE.write_json_atomic(
+        layout.state_path,
+        runner.STATE.state_payload(config, layout, status="running", resolved_version="0.17.1", cdp_port=43101),
+    )
+    monkeypatch.setenv("CODEX_THREAD_ID", caller)
+
+    with pytest.raises(runner.OracleRunError) as exc:
+        runner.recover_run(layout.run_dir, action="harvest", dry_run=True)
+
+    assert exc.value.code == "FOREIGN_TASK_SESSION"
+    assert exc.value.evidence["owner_source_thread_id"] == owner
+    assert exc.value.evidence["caller_source_thread_id"] == caller
+
+
+def test_legacy_unbound_recovery_is_not_adopted_by_the_current_task(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = load_runner()
+    monkeypatch.setenv("CODEX_THREAD_ID", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+    config = runner.STATE.load_manifest(manifest(tmp_path))
+    layout = runner.STATE.create_layout(config, run_id="legacy-run-12345678")
+    layout.run_dir.mkdir(parents=True)
+    runner.STATE.write_json_atomic(
+        layout.state_path,
+        runner.STATE.state_payload(config, layout, status="running", resolved_version="0.17.1", cdp_port=43101),
+    )
+
+    with pytest.raises(runner.OracleRunError) as exc:
+        runner.recover_run(layout.run_dir, action="harvest", dry_run=True)
+
+    assert exc.value.code == "LEGACY_TASK_OWNER_UNBOUND"
 
 
 def execute_run(runner, *args, **kwargs):
@@ -761,15 +848,16 @@ def test_pro_dry_run_uses_oracle_attachments_and_no_app_mention(tmp_path: Path) 
         str((tmp_path / "packet.zip").resolve()),
     ]
     assert prompt.startswith(
-        "Read the attached prompt/instructions and all attached files, then complete the task. "
-        "Task identity: oracle-pro-"
+        "Read the attached prompt/instructions and all attached files, then provide read-only analysis only. "
+        "Do not create, edit, delete, or rename files;"
     )
+    assert "Task identity: oracle-pro-" in prompt
     assert prompt.endswith(".")
     assert "@DevSpace" not in prompt
     assert all(item["sha256"] for item in result["attachments"])
 
 
-def test_pro_devspace_dry_run_uses_write_capable_handoff_without_file_transport(tmp_path: Path) -> None:
+def test_pro_devspace_dry_run_uses_readonly_handoff_without_file_transport(tmp_path: Path) -> None:
     runner = load_runner()
     preflight_calls = []
     captured = {}
@@ -786,17 +874,44 @@ def test_pro_devspace_dry_run_uses_write_capable_handoff_without_file_transport(
 
     argv = captured["command"]
     prompt = argv[argv.index("--prompt") + 1]
-    assert result["result"]["transport"] == "pro-devspace"
+    assert result["result"]["transport"] == "pro-devspace-readonly"
     assert "--browser-attachments" not in argv
     assert "--file" not in argv
     assert argv[argv.index("--model") + 1] == "gpt-5.6-sol"
     assert argv[argv.index("--browser-thinking-time") + 1] == "heavy"
     assert prompt.startswith(f"@DevSpace First open exactly this project root in checkout mode: {tmp_path}.")
-    assert f"Then read and execute the mission file: {tmp_path / 'mission.md'}." in prompt
+    assert f"Then read the read-only mission file: {tmp_path / 'mission.md'}." in prompt
     assert "Do not open the mission directory, a parent, a child" in prompt
     assert prompt.index(str(tmp_path)) < prompt.index(str(tmp_path / "mission.md"))
-    assert "create, edit, and remove mission-owned files and run commands" in prompt
+    assert "Perform read-only work only; do not modify files" in prompt
     assert preflight_calls == [True]
+
+
+def test_new_writable_pro_manifest_is_rejected_before_layout_or_browser(tmp_path: Path) -> None:
+    runner = load_runner()
+    manifest_path = manifest(
+        tmp_path,
+        transport="pro-devspace",
+        app_name="DevSpace",
+        model="gpt-5.6-sol",
+        model_strategy="select",
+        thinking_time="heavy",
+        research="off",
+        task_outcome_contract="v1",
+    )
+
+    with pytest.raises(runner.OracleRunError) as exc:
+        runner.execute_run(manifest_path, dry_run=True)
+
+    assert exc.value.code == "PRO_WRITABLE_TRANSPORT_FROZEN"
+    assert exc.value.evidence == {
+        "transport": "pro-devspace",
+        "pro_transport": "pro-devspace-readonly",
+        "write_transport": "devspace",
+        "write_model": "gpt-5.6",
+        "write_thinking_time": "extra-high",
+    }
+    assert not (tmp_path.parent / f"{tmp_path.name}-host-state" / "runs").exists()
 
 
 def test_d_coin_missing_exact_root_blocks_before_oracle_or_run_creation(tmp_path: Path) -> None:
@@ -1504,6 +1619,44 @@ def test_pro_recovery_uses_exact_slug_without_attachments_or_resubmit(tmp_path: 
     assert "--prompt" not in argv
     assert "--file" not in argv
     assert "--browser-attachments" not in argv
+    assert "--no-recover" not in argv
+
+
+def test_historical_writable_pro_state_recovers_exact_slug_without_resubmit(tmp_path: Path) -> None:
+    runner = load_runner()
+    historical_manifest = manifest(
+        tmp_path,
+        transport="pro-devspace",
+        app_name="DevSpace",
+        model="gpt-5.6-sol",
+        model_strategy="select",
+        thinking_time="heavy",
+        research="off",
+        task_outcome_contract="v1",
+        run_id="9" * 32,
+    )
+    config = runner.STATE.load_manifest(historical_manifest)
+    layout = runner.STATE.create_layout(config, run_id=config.requested_run_id)
+    layout.run_dir.mkdir(parents=True)
+    runner.STATE.write_json_atomic(
+        layout.state_path,
+        runner.STATE.state_payload(config, layout, status="attention_required", resolved_version="0.17.1"),
+    )
+
+    prompt = runner.STATE.composer_prompt(config, layout.run_dir / "mission.md")
+    recovery = runner.recover_run(
+        layout.run_dir,
+        action="harvest",
+        dry_run=True,
+        oracle_command=["oracle"],
+    )
+    argv = recovery["argv"]
+
+    assert config.transport == "pro-devspace"
+    assert "You may inspect, create, edit, and remove mission-owned files" in prompt
+    assert argv[argv.index("session") + 1] == layout.slug
+    assert "--prompt" not in argv
+    assert "--file" not in argv
     assert "--no-recover" not in argv
 
 
@@ -2262,7 +2415,7 @@ def test_exact_oracle_version_failure_is_settleable_pre_submit_without_retry(
         (run_dir / "user-confirmed-no-submission.json").read_text(encoding="utf-8")
     )
     assert receipt["settlement_eligibility"] == "oracle-pre-submit-host/v1"
-    assert receipt["transport"] == "pro-devspace"
+    assert receipt["transport"] == "pro-devspace-readonly"
 
 
 @pytest.mark.parametrize("mutation", ["similar-error", "output", "conversation-url"])
@@ -2584,7 +2737,7 @@ def test_standalone_qualified_pro_prompt_timeout_can_be_user_settled_and_unlocks
     assert settled["result"]["session_authority"] == "pre_submit"
     assert proof is not None
     assert proof["settlement_eligibility"] == "oracle-standalone-qualified-pro/v1"
-    assert proof["transport"] == "pro-devspace"
+    assert proof["transport"] == "pro-devspace-readonly"
     assert proof["oracle_version"] == "0.17.1"
     assert proof["source_mission_sha256"] == proof["transport_mission_sha256"]
 

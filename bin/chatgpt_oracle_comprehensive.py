@@ -180,6 +180,7 @@ def load_manifest(path: Path) -> dict[str, Any]:
     if not isinstance(allow_pro_raw, bool):
         raise WorkflowError("allow_pro must be a boolean explicit opt-in")
     allow_pro = allow_pro_raw or workflow_profile == ULTRA_ECONOMY_PROFILE
+    regular_model = str(value.get("model") or "gpt-5.6").strip()
     initial_stage = str(
         value.get("initial_stage")
         or ("pro" if workflow_profile == ULTRA_ECONOMY_PROFILE else "plan")
@@ -193,6 +194,10 @@ def load_manifest(path: Path) -> dict[str, Any]:
             raise WorkflowError("ULTRA_ECONOMY_INITIAL_STAGE_REQUIRED: initial_stage must be pro")
         if maximum < 4:
             raise WorkflowError("ULTRA_ECONOMY_STAGE_BUDGET_TOO_SMALL: max_stages must be at least 4")
+        if regular_model != "gpt-5.6":
+            raise WorkflowError(
+                "COMPREHENSIVE_REGULAR_MODEL_REQUIRED: regular write stages must use gpt-5.6 at extra-high"
+            )
     elif workflow_profile in {ULTRA_GPT_PROFILE, STRICT_ULTRA_PROFILE}:
         if allow_pro:
             raise WorkflowError(
@@ -203,11 +208,15 @@ def load_manifest(path: Path) -> dict[str, Any]:
             raise WorkflowError("ULTRA_GPT_INITIAL_STAGE_REQUIRED: initial_stage must be plan")
         if maximum < 5:
             raise WorkflowError("ULTRA_GPT_STAGE_BUDGET_TOO_SMALL: max_stages must be at least 5")
-        if str(value.get("model") or "gpt-5.6").strip() != "gpt-5.6":
+        if regular_model != "gpt-5.6":
             raise WorkflowError("ULTRA_GPT_REGULAR_MODEL_REQUIRED: model must be gpt-5.6")
     else:
         if initial_stage != "plan":
             raise WorkflowError("standard workflow initial_stage must be plan")
+        if regular_model != "gpt-5.6":
+            raise WorkflowError(
+                "COMPREHENSIVE_REGULAR_MODEL_REQUIRED: regular write stages must use gpt-5.6 at extra-high"
+            )
     local_gate = value.get("local_gate_command")
     if not isinstance(local_gate, list) or not local_gate or not all(isinstance(item, str) and item for item in local_gate):
         raise WorkflowError("local_gate_command must be a nonempty string list")
@@ -223,6 +232,19 @@ def load_manifest(path: Path) -> dict[str, Any]:
         )
     except ValueError as exc:
         raise WorkflowError(str(exc)) from exc
+    explicit_source_thread_id = str(value.get("source_thread_id") or "").strip().casefold() or None
+    runtime_source_thread_id = RUNNER.STATE.current_source_thread_id()
+    if (
+        explicit_source_thread_id is not None
+        and runtime_source_thread_id is not None
+        and explicit_source_thread_id != runtime_source_thread_id
+    ):
+        raise WorkflowError(
+            "SOURCE_THREAD_ID_MISMATCH: comprehensive manifest belongs to a different Codex task"
+        )
+    source_thread_id = explicit_source_thread_id or runtime_source_thread_id
+    if source_thread_id is not None and RUNNER.STATE.SOURCE_THREAD_ID_RE.fullmatch(source_thread_id) is None:
+        raise WorkflowError("source_thread_id must be one Codex task UUID")
     normalized = {
         **value,
         "project_root": root,
@@ -233,20 +255,21 @@ def load_manifest(path: Path) -> dict[str, Any]:
         "allow_pro": allow_pro,
         "initial_stage": initial_stage,
         "app_name": app_name,
-        "model": str(value.get("model") or "gpt-5.6"),
+        "model": regular_model,
         "copy_profile": Path(
             str(value.get("copy_profile") or (Path.home() / ".oracle" / "browser-profile"))
         ).expanduser().resolve(),
         "local_gate_command": list(local_gate),
         "manifest_sha256": sha(path.resolve(strict=True)),
         "workflow_id": workflow_id,
+        "source_thread_id": source_thread_id,
     }
     if workflow_profile == STRICT_ULTRA_PROFILE:
         allowed = {
             "schema", "workflow_id", "project_root", "workflow_dir", "initial_mission_path",
             "workflow_profile", "initial_stage", "max_stages", "allow_pro", "app_name", "model",
             "copy_profile", "local_gate_command", "strict_ultra_contract_path",
-            "strict_ultra_contract_sha256",
+            "strict_ultra_contract_sha256", "source_thread_id",
         }
         extra = sorted(set(value) - allowed)
         if extra:
@@ -396,7 +419,10 @@ def _allowed_transitions(config: dict[str, Any], stage: str) -> set[str]:
 
 def _scope_path(config: dict[str, Any]) -> Path:
     project_key = hashlib.sha256(str(config["project_root"]).casefold().encode("utf-8")).hexdigest()[:24]
-    scope_material = f"{config['project_root']}|{config['workflow_dir'].parent}".casefold()
+    scope_material = (
+        f"{config['project_root']}|{config['workflow_dir'].parent}|"
+        f"{config.get('source_thread_id') or 'legacy-unbound'}"
+    ).casefold()
     scope_key = hashlib.sha256(scope_material.encode("utf-8")).hexdigest()[:32]
     return RUNNER.STATE.oracle_state_root() / "comprehensive-scopes" / project_key / f"{scope_key}.json"
 
@@ -419,12 +445,17 @@ def _claim_scope(config: dict[str, Any], workflow_id: str) -> None:
         "active_workflow_id": workflow_id,
         "project_root": str(config["project_root"]),
         "workflow_parent": str(config["workflow_dir"].parent),
+        "source_thread_id": config.get("source_thread_id"),
         "review_policy": config["_review_policy"],
     })
 
 
 def _write_workflow_state(path: Path, config: dict[str, Any], value: dict[str, Any]) -> None:
-    payload = {**value, "review_policy": dict(config["_review_policy"])}
+    payload = {
+        **value,
+        "source_thread_id": config.get("source_thread_id"),
+        "review_policy": dict(config["_review_policy"]),
+    }
     _write(path, payload)
     scope_status = str(payload.get("status") or "active")
     scope_payload = {
@@ -433,6 +464,7 @@ def _write_workflow_state(path: Path, config: dict[str, Any], value: dict[str, A
         "active_workflow_id": config["workflow_id"],
         "project_root": str(config["project_root"]),
         "workflow_parent": str(config["workflow_dir"].parent),
+        "source_thread_id": config.get("source_thread_id"),
         "workflow_state_path": str(path),
         "review_policy": dict(config["_review_policy"]),
     }
@@ -640,7 +672,26 @@ def settle_user_stopped_workflow(
         raise WorkflowError("Oracle run project binding mismatch")
 
     receipt_path = _user_stop_receipt_path(state_root, project_key, workflow_id, run_id)
-    with RUNNER.STATE.project_submit_mutex(project_root, timeout_seconds=30):
+    source_thread_id = RUNNER.STATE.source_thread_id_from_state(run_state)
+    current_thread_id = RUNNER.STATE.current_source_thread_id()
+    workflow_owner = str(_json(workflow_path).get("source_thread_id") or "").strip().casefold() or None
+    scope_owner = str(_json(scope_path).get("source_thread_id") or "").strip().casefold() or None
+    if (
+        current_thread_id is None
+        or source_thread_id is None
+        or workflow_owner is None
+        or scope_owner is None
+        or len({current_thread_id, source_thread_id, workflow_owner, scope_owner}) != 1
+    ):
+        raise WorkflowError(
+            "FOREIGN_TASK_SESSION: user-stop settlement requires the current task, Oracle run, "
+            "workflow, and scope to have one exact source_thread_id"
+        )
+    with RUNNER.STATE.project_submit_mutex(
+        project_root,
+        timeout_seconds=30,
+        source_thread_id=source_thread_id,
+    ):
         run_state, _ = _load_expected_json(
             run_state_path, expected_run_state_sha256, label="Oracle run state"
         )
@@ -688,6 +739,7 @@ def settle_user_stopped_workflow(
 
         binding = {
             "confirmation": confirmation,
+            "source_thread_id": source_thread_id,
             "workflow_id": workflow_id,
             "run_id": run_id,
             "project_key": project_key,
@@ -952,10 +1004,12 @@ def _stage_mission(
         protocol += (
             "\n[PRO_SELECTION_POLICY]\n"
             f"pro_selection_allowed={'true' if config['allow_pro'] else 'false'}\n"
-            "Pro is quota-limited and may be selected only when this manifest explicitly authorizes it. "
+            "Pro is quota-limited, read-only, and may be selected only when this manifest explicitly authorizes it. "
+            "Use Pro only for architecture, research, advice, or review; route every write or command task to the "
+            "separate regular GPT-5.6 extra-high implementation stage. "
             f"{pro_selection_instruction}"
             "\n[PRO_ATTACHMENT_AUTHORING_CONTRACT]\n"
-            "Use the default Pro DevSpace route unless frozen external evidence is unavailable or inappropriate "
+            "Use the default read-only Pro DevSpace route unless frozen external evidence is unavailable or inappropriate "
             "through the live exact root. If and only if next_stage=pro requires such evidence files, the authored "
             "next mission must contain exactly "
             "one closed [PRO_ATTACHMENT_CONTRACT] block. Its body must be one JSON object with "
@@ -1070,6 +1124,13 @@ def _pro_stage_mission(
             "must remain separate later sessions. Do not ask the local Luna commander to perform project analysis, "
             "implementation, or semantic review.\n"
         )
+    protocol += (
+        "\n[PRO_READ_ONLY_AUTHORITY]\n"
+        "This Pro stage is advisory and read-only. Do not create, edit, delete, or rename project files; do not "
+        "run commands or change settings, accounts, or external state. Return analysis and an implementation-ready "
+        "next mission only. A separate regular GPT-5.6 extra-high DevSpace implementation stage owns all writes "
+        "and commands.\n"
+    )
     target.write_text(body.rstrip() + protocol, encoding="utf-8")
     return target, receipt, input_sha
 
@@ -1099,13 +1160,14 @@ def _oracle_manifest(
         "archive": "auto",
         "parallel_parent_id": config["_parallel_parent_id"],
         "run_id": run_id,
+        "source_thread_id": config.get("source_thread_id"),
     }
     if stage == "pro":
         if pro_attachments:
             payload["transport"] = "pro-attachment-only"
             payload["attachments"] = [str(mission), *(str(item) for item in pro_attachments)]
         else:
-            payload["transport"] = "pro-devspace"
+            payload["transport"] = "pro-devspace-readonly"
             payload["app_name"] = config["app_name"]
             payload["task_outcome_contract"] = "v1"
     else:
@@ -2560,7 +2622,11 @@ def run_workflow(
             multi_execute=multi_execute,
             local_gate_runner=local_gate_runner,
         )
-    with RUNNER.STATE.project_submit_mutex(config["project_root"], timeout_seconds=30):
+    with RUNNER.STATE.project_submit_mutex(
+        config["project_root"],
+        timeout_seconds=30,
+        source_thread_id=config.get("source_thread_id"),
+    ):
         return _run_workflow_locked(
             manifest_path,
             dry_run=False,

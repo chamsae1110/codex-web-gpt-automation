@@ -24,31 +24,42 @@ Use this routing in the Codex global `AGENTS.md` after installing the package.
   standard comprehensive manifest must contain `allow_pro: true`, supplied
   only after an explicit user request; selecting Ultra Economy Mode is itself
   an explicit Pro-design request.
-- Qualified Pro uses Oracle, `GPT-5.6 Sol` at the Pro effort, and the manually
-  registered DevSpace app. It binds the exact project root and may inspect,
-  create, edit, and remove mission-owned files and run commands there as the
-  mission requires. Repository safety rules remain authoritative; account,
-  app-setting, or external-state changes require explicit mission authority.
-  One-time app qualification is sufficient: do not inspect app settings or
-  picker state per run.
+- Every new qualified Pro run uses Oracle, `GPT-5.6 Sol` at the Pro effort, the
+  `pro-devspace-readonly` transport, and the manually registered DevSpace app.
+  It binds the exact project root but is
+  read-only and limited to design, advice, or review; it must not create, edit,
+  or remove files or run commands. A regular `GPT-5.6` `extra-high` DevSpace
+  stage owns those actions. Repository safety rules remain authoritative; Pro
+  never changes accounts, app settings, or external state. One-time app qualification is sufficient: do not inspect app
+  settings or picker state per run.
 - Qualified Pro output uses the v1 task-outcome marker. Exit zero and a durable
   answer do not count as success when DevSpace exposed no callable tools or the
   exact mission/root was unread. A durably terminal `NOT_EXECUTED` run may
-  release its project lock for one fresh retry with identical mission bytes;
+  release its task-scoped project lock for one fresh retry with identical mission bytes;
   repeated tool absence is `attention_required`, not an automatic app-settings
   repair or attachment fallback.
-- Explicit `pro-attachment` is attachment-only and is available only for
-  immutable/external evidence or artifacts unreadable through DevSpace. It is
-  not a fallback from a qualified Pro DevSpace run.
+- Explicit `pro-attachment` remains a separate read-only route for immutable or
+  external evidence and is never an automatic fallback from a qualified Pro
+  DevSpace run. Persisted legacy `pro-devspace` write runs retain their exact
+  original authority only during recovery.
 - Existing persisted agbrowse runs remain recovery-only. There is no new
   agbrowse submission path and no Oracle-to-agbrowse fallback.
+- Oracle run ownership is scoped by Codex task plus exact run identity, not by
+  project root alone. Different Codex tasks may work concurrently in the same
+  project with distinct mutexes, slugs, dynamic CDP ports, profiles, and
+  conversations. Only the same task's unresolved run blocks its next
+  submission. Foreign or legacy-unbound runs are never inferred from the
+  newest project run and cannot be recovered, harvested, followed up, stopped,
+  or canceled by the current task.
 - Comprehensive stages author the next semantic mission and a bound hash
   receipt. Local Codex owns transport, immutable identity, host safety, and one
   final deterministic gate rather than rewriting web output.
 - An optional comprehensive Pro stage is available only after explicit opt-in
-  and uses read/write DevSpace. A plan-authored explicit `pro-attachment` contract selects attachment-only;
-  either route returns one strict identity-bound JSON envelope whose output and
-  next-mission strings the host materializes byte-for-byte.
+  and uses read-only DevSpace for design, advice, or review. Its plan gives any
+  mutation or command to a regular `GPT-5.6` `extra-high` stage. A separately
+  explicit immutable-evidence boundary may select `pro-attachment`. The Pro route returns one strict
+  identity-bound JSON envelope whose output and next-mission strings the host
+  materializes byte-for-byte.
 - Genuine Web Multi-GPT uses distinct Oracle sessions. Windows lanes use
   independent throwaway copies of the signed-in Oracle profile, run in waves
   of at most five, and hand compact files to one merger.
@@ -71,10 +82,16 @@ Use this routing in the Codex global `AGENTS.md` after installing the package.
 ## Standalone Pro versus comprehensive
 
 `chatgpt-pro-browser` is the visible standalone Pro skill. It submits one
-explicitly requested, qualified read/write DevSpace Pro session, saves the durable result,
-returns it to the calling Codex task, and stops. An explicit `pro-attachment`
-contract may be used only for its stated evidence boundary. It never starts
-implementation or a comprehensive review-to-implementation chain. Its required
+explicitly requested, qualified read-only DevSpace Pro design, advice, or
+review session, saves the durable result, returns it to the calling Codex task,
+and stops unless the user explicitly requests a bounded follow-up round in the
+same conversation. That round must use the internal runner `followup` command,
+the exact terminal parent run directory, a project-contained UTF-8 mission,
+and a unique round key. Raw Oracle follow-up options remain blocked. Each round
+gets a new Oracle run/slug but must prove the unchanged ChatGPT conversation
+and append hash-bound reservation/result receipts. It never starts
+implementation, edits files, or runs commands. A
+separately explicit immutable-evidence request may use `pro-attachment`. Its required
 `WEB_MULTI_NEEDED` decision may start the ready-to-run advisory Web Multi stage
 after the exact Pro session is terminal; that advisory still returns to the
 calling Codex task rather than implementing.
@@ -107,8 +124,9 @@ Pick `orchestrator` when the goal and approach are settled and one authorized
 pass should finish the work at the lowest local and web cost. Pick comprehensive
 when the plan needs independent review, when Pro or Web Multi must participate,
 or when completion must be proven by a deterministic local gate. Do not hand-chain
-`orchestrator` submissions to imitate staging; same-project submissions stay
-serialized and the workflow engine owns stage identity and recovery.
+`orchestrator` submissions to imitate staging; submissions from the same Codex
+task stay serialized while different task owners remain isolated, and the
+workflow engine owns stage identity and recovery.
 
 The package does not overwrite an existing user `AGENTS.md` automatically.
 Apply this block deliberately so unrelated personal rules are preserved.

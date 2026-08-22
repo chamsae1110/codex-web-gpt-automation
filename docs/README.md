@@ -1,7 +1,7 @@
 # Documentation
 
 This index is the single map for Codex Web GPT Automation documentation.
-`FIRST_INSTALL.md` is the canonical full procedure for installation and ChatGPT
+`FIRST_INSTALL.md` and `FIRST_INSTALL.en.md` are the canonical localized procedures for installation and ChatGPT
 connection. Other guides link to it rather than restating it. `INSTALL_AGENT.md`
 is a deliberate short duplicate for an AI agent that received only the
 repository URL; keep the two in sync when either changes.
@@ -13,6 +13,7 @@ repository URL; keep the two in sync when either changes.
 | [Main README](../README.md) | 한국어 | Product overview, quick install, mode selection |
 | [English README](../README.en.md) | English | English product overview and quick install |
 | [First Install](FIRST_INSTALL.md) | 한국어 | Canonical install-to-ChatGPT connection sequence |
+| [First Install](FIRST_INSTALL.en.md) | English | Canonical install-to-ChatGPT connection sequence |
 | [Install Contract](INSTALL_AGENT.md) | 한국어 | Agent-facing contract when only the repository URL is given |
 | [Contributing](../CONTRIBUTING.md) | English | Development, tests, pull requests, security boundary |
 

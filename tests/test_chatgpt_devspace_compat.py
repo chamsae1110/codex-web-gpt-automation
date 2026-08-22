@@ -634,7 +634,10 @@ def test_trash_file_patch_safety_and_byte_identity_on_temporary_workspace(
 
     server_path = package / "dist" / "server.js"
     server = server_path.read_text(encoding="utf-8")
-    assert result["changed"] == ["dist/server.js"]
+    # The resolved host package may already be the exact verified patched
+    # payload after a managed DevSpace restart.  Copying that payload is an
+    # idempotent no-op; a pristine host copy performs the one expected patch.
+    assert result["changed"] in ([], ["dist/server.js"])
     assert compat.sha256_file(server_path) == compat.PATCHES["dist/server.js"]["patched"]
     assert 'registerAppTool(server, toolNames.delete' in server
     assert 'registerAppTool(server, toolNames.trash' in server

@@ -46,6 +46,9 @@ python onboard.py confirm <stage-id>
 `STAGE_OUT_OF_ORDER_EARLIER_STAGE_PENDING`로 거부합니다. `next`가 가리키는 단계만
 확인합니다. `08_final_gate`가 통과할 때까지 반복합니다.
 
+기존 DevSpace `allowedRoots`는 새 root와 합쳐 보존합니다. 기존 config JSON이
+손상됐거나 root 목록이 유효하지 않으면 조용히 덮어쓰지 말고 실패 폐쇄합니다.
+
 출력은 셸 로케일에 따라 한국어 또는 영어로 자동 선택됩니다. 필요하면 `--lang ko`,
 `--lang en`으로 고정하고, 기계 판독이 필요하면 `--json`을 사용합니다. 모든 명령 앞에는
 `python onboard.py --lang en next`, `python onboard.py --json next`처럼 둘 수 있습니다.
@@ -58,6 +61,10 @@ Tailscale 로그인, DevSpace Owner 암호 입력, Oracle ChatGPT 로그인, Cha
 개발자 모드와 앱 등록, Owner OAuth 승인은 사용자가 직접 합니다. 에이전트는
 ChatGPT 설정을 바꾸거나 앱을 만들고 지우지 않으며, 권한이나 도구를 선택하지
 않습니다.
+
+`06b_local_network_access`는 먼저
+`python onboard.py consent 06b_local_network_access`로 `chatgpt.com` 한정 변경에
+동의받은 뒤에만 적용합니다.
 
 `+`/`만들기`가 없으면 먼저 ChatGPT 웹인지, 개인/관리 워크스페이스인지, 개발자
 모드가 켜졌는지, `앱` 대신 `플러그인` UI인지 확인합니다. 요금제는 마지막 가설이며
@@ -79,13 +86,16 @@ Codex Desktop 내장 DevSpace 플러그인은 다른 연결이므로 증거로 �
 하나 이상의 반복 가능한 `--listing`을 모두 제공합니다.
 
 ```powershell
-python onboard.py record-final-gate --root <프로젝트 폴더> `
+python onboard.py record-final-gate --run-dir <Oracle run 디렉터리> `
+  --root <프로젝트 폴더> `
   --evidence "읽은 경로와 결과 요약" `
   --listing <항목1> `
   --listing <항목2>
 ```
 
-요약이 너무 짧거나 목록이 없으면 `FINAL_GATE_EVIDENCE_INSUFFICIENT`, 일반 비-Pro
+마법사는 run 경로, exact root/app, 일반 GPT-5.6 extra-high, terminal EXECUTED,
+conversation URL, output SHA와 최종 marker를 다시 검증합니다. 임의 설명문은 완료
+증거가 아닙니다. 요약이 너무 짧거나 목록이 없으면 `FINAL_GATE_EVIDENCE_INSUFFICIENT`, 일반 비-Pro
 Oracle 이외의 transport면 `FINAL_GATE_TRANSPORT_MUST_BE_REGULAR_NON_PRO_ORACLE`로
 거부합니다. 온보딩 상태 파일이 손상되면 `ONBOARDING_STATE_CORRUPT`로 실패 폐쇄합니다.
 

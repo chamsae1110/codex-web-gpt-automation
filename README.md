@@ -125,7 +125,7 @@ ChatGPT 앱 `codex` 등록은 준비가 끝난 뒤 **최초 한 번 수동 등�
 | 로컬 비용 최소화 | `ultra-economy` | Luna Max 지휘 + 분리 웹 단계 |
 | Codex Ultra식 웹 분업 | `ultra-gpt` | 웹 planner/reviewer + 병렬 격리 worktree 구현 + merger/검증 |
 | 폐쇄형 Ultra 감사 | `strict-ultra` | 기존 Ultra 실행 + SHA 결속 dependency/authority/Governor/identity/workflow audit |
-| 명시 요청한 Pro 작업 | `pro` | GPT-5.6 Sol Pro + 읽기·쓰기 DevSpace |
+| 명시 요청한 Pro 작업 | `pro` | GPT-5.6 Sol Pro + 읽기 전용 DevSpace 설계·자문·검토 |
 
 자세한 선택 기준은 [전역 라우팅](docs/GLOBAL_CHATGPT_ROUTING.md),
 [초절약모드](docs/ULTRA_ECONOMY_MODE.md),
@@ -150,10 +150,11 @@ python "$env:USERPROFILE\.codex\bin\chatgpt_oracle_dispatch.py" `
 
 ## 안전 계약
 
-- 프로젝트마다 활성 또는 불확실한 Oracle 작업은 하나만 둡니다.
+- 같은 Codex task와 프로젝트 조합에는 활성 또는 불확실한 Oracle 작업을 하나만 둡니다. 서로 다른 task는 같은 프로젝트에서도 별도 소유권으로 동시에 실행할 수 있으며 서로의 실행을 복구·수확·중단하지 않습니다.
 - 새 프로젝트의 첫 DevSpace 제출 전에 exact root 등록을 확인합니다.
 - 일반 웹 작업은 최고 지원 비-Pro 추론 강도가 기본입니다. Pro는 횟수 제한이 있으므로 사용자가 명시적으로 요청할 때만 선택하며 자동 승격하지 않습니다.
-- 명시적으로 선택한 Pro는 exact root 안에서 미션이 허용한 파일 쓰기와 명령 실행이 가능합니다. 저장소 안전 규칙과 `AGENTS.md`는 그대로 적용됩니다.
+- 명시적으로 선택한 신규 Pro는 exact root에서 설계·자문·검토만 수행하는 읽기 전용 DevSpace를 사용합니다. 파일 생성·수정·삭제나 명령 실행은 최고 지원 비-Pro `GPT-5.6` `extra-high` regular DevSpace 단계가 맡습니다. 저장된 legacy `pro-devspace` 쓰기 실행은 정확한 복구 때에만 원래 권한을 보존합니다.
+- 같은 읽기 전용 Pro 대화를 이어갈 때는 task-bound terminal parent에 내부 `followup` 라운드만 추가합니다. 각 라운드는 같은 conversation을 다시 증명하고 mission/state/output/transcript hash 영수증을 남기며, raw Oracle follow-up 인자나 새 대화 fallback은 허용하지 않습니다.
 - 제출 후 오류는 기존 실행 신원으로 정확히 복구하며, 저장된 slug와 대화
   URL만 회수하고 자동 재제출하지 않습니다.
 - 브라우저나 로컬 프로세스 종료만으로 웹 작업 실패를 판정하지 않습니다.

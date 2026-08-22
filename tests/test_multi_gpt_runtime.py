@@ -107,7 +107,9 @@ def test_packaging_and_installer_keep_multi_gpt_opt_in() -> None:
 
     installer = (ROOT / "install.ps1").read_text(encoding="utf-8")
     assert "elseif($pattern.StartsWith('mcp_servers/')){Join-Path $Root 'mcp_servers'}" in installer
-    assert "Local Multi-GPT도 설치할까요? [y/N]" in (ROOT / "install-manifest.json").read_text(encoding="utf-8")
+    manifest_text = (ROOT / "install-manifest.json").read_text(encoding="utf-8")
+    assert "Local Multi-GPT도 설치할까요? [y/N]" in manifest_text
+    assert "Install optional Local Multi-GPT too? [y/N]" in manifest_text
     assert "EnableLocalMultiGpt" in installer
     assert "Console]::IsInputRedirected" in installer
 
