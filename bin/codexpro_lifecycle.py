@@ -23,6 +23,16 @@ from typing import Any, Iterable
 
 RECEIPT_SCHEMA = "codexpro.install-receipt/v3"
 WAL_SCHEMA = "codexpro.install-wal/v1"
+# A journal in any of these states is already settled.  The PowerShell installer
+# skipped ROLLED_BACK_AFTER_ERROR while this path did not, so a journal written
+# by one implementation could be replayed as an interrupted install by the other
+# and fail closed with INSTALL_CRASH_RECOVERY_CONFLICT.
+WAL_TERMINAL_STATUSES = frozenset({
+    "COMPLETE",
+    "ROLLED_BACK_AFTER_CRASH",
+    "ROLLED_BACK_AFTER_ERROR",
+    "ROLLED_BACK_AFTER_FAILURE",
+})
 SUPPORTED_ROOTS = {
     "bin",
     "skills",
@@ -156,7 +166,7 @@ def recover_pending_installs(codex_home: Path) -> list[str]:
     recovered: list[str] = []
     for wal_path in _active_wals(codex_home):
         wal = _read_json(wal_path)
-        if wal.get("schema") != WAL_SCHEMA or wal.get("status") in {"COMPLETE", "ROLLED_BACK_AFTER_CRASH"}:
+        if wal.get("schema") != WAL_SCHEMA or wal.get("status") in WAL_TERMINAL_STATUSES:
             continue
         backup = Path(str(wal.get("backup") or "")).expanduser().resolve()
         if not _is_within((codex_home / "backups").resolve(), backup):

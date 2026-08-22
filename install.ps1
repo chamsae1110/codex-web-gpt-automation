@@ -52,7 +52,7 @@ function Resume-PendingInstallTransactions([string]$Root){
   $backupBase=Join-Path $Root 'backups';if(!(Test-Path -LiteralPath $backupBase)){return}
   foreach($journalPath in @(Get-ChildItem -LiteralPath $backupBase -Filter 'install.wal.json' -File -Recurse -Force -ErrorAction SilentlyContinue|Sort-Object FullName)){
     $journal=Get-Content -LiteralPath $journalPath.FullName -Raw|ConvertFrom-Json
-    if($journal.schema -ne 'codexpro.install-wal/v1' -or $journal.status -in @('COMPLETE','ROLLED_BACK_AFTER_CRASH','ROLLED_BACK_AFTER_ERROR')){continue}
+    if($journal.schema -ne 'codexpro.install-wal/v1' -or $journal.status -in @('COMPLETE','ROLLED_BACK_AFTER_CRASH','ROLLED_BACK_AFTER_ERROR','ROLLED_BACK_AFTER_FAILURE')){continue}
     $conflicts=@();$entries=@($journal.files)
     for($index=$entries.Count-1;$index -ge 0;$index--){
       $entry=$entries[$index];$destination=Get-SafeChild $Root ([string]$entry.path)
