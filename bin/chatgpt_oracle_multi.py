@@ -721,12 +721,16 @@ def _run_lane(
     result = execute(manifest, dry_run=dry_run)
     output = None
     session_locator = None
+    run_state_path = None
+    run_state_sha256 = None
     if not dry_run and result.get("run_dir"):
         run_dir = Path(str(result["run_dir"]))
         source = run_dir / "output.md"
         state_path = run_dir / "state.json"
         if state_path.is_file():
             state = _read_json(state_path)
+            run_state_path = str(state_path.resolve())
+            run_state_sha256 = hashlib.sha256(state_path.read_bytes()).hexdigest()
             oracle = state.get("oracle") if isinstance(state.get("oracle"), dict) else {}
             session_locator = oracle.get("session_locator")
         if source.is_file() and source.read_bytes().strip():
@@ -739,6 +743,12 @@ def _run_lane(
         "run_dir": result.get("run_dir"),
         "output_path": str(output) if output else None,
         "session_locator": session_locator,
+        "receipt": {
+            "run_state_path": run_state_path,
+            "run_state_sha256": run_state_sha256,
+            "output_path": str(output) if output else None,
+            "output_sha256": hashlib.sha256(output.read_bytes()).hexdigest() if output else None,
+        } if config.get("strict") else None,
     }
     if config.get("strict") and lane_result["ok"] and not dry_run:
         try:

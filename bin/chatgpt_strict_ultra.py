@@ -248,12 +248,20 @@ def sync_identity_ledger(config: dict[str, Any], state: dict[str, Any]) -> None:
             if claimed != recalculated:
                 raise StrictUltraError("identity ledger entry hash mismatch")
             previous = claimed
+    run_state: dict[str, Any] = {}
+    run_dir = Path(str(state.get("oracle_run_dir") or ""))
+    if run_dir.is_absolute() and (run_dir / "state.json").is_file():
+        try:
+            run_state = load_json(run_dir / "state.json")
+        except StrictUltraError:
+            run_state = {}
+    oracle = run_state.get("oracle") if isinstance(run_state.get("oracle"), dict) else {}
     identity = {
         "workflow_id": config["workflow_id"],
         "stage": state.get("current_stage") or state.get("next_stage"),
-        "run_id": state.get("oracle_run_id") or state.get("current_attempt_id"),
-        "slug": state.get("oracle_slug"),
-        "conversation": state.get("conversation_url"),
+        "run_id": state.get("oracle_run_id") or state.get("current_attempt_id") or run_state.get("run_id"),
+        "slug": state.get("oracle_slug") or oracle.get("slug"),
+        "conversation": state.get("conversation_url") or oracle.get("conversation_url"),
         "recovery": (state.get("recovery") or {}).get("status") if isinstance(state.get("recovery"), dict) else None,
         "attempt": state.get("current_attempt_id"),
         "status": state.get("status"),
