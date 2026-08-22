@@ -18,6 +18,39 @@ contract for immutable/external evidence or DevSpace-unreadable artifacts, not
 an automatic fallback. CodexPro and all agbrowse creation are frozen; legacy
 files remain only for exact persisted-run recovery.
 
+## Evidence-economical review loop
+
+Minimize redundant verification without lowering the safety floor.
+
+- Freeze one candidate SHA and give the web reviewer the exact diff, direct
+  dependency/risk cone, unresolved finding IDs, and hash-bound prior report.
+  Do not ask it to re-review the whole tree, settled findings, or unchanged
+  operational boundaries unless the new diff can affect them or prior evidence
+  is stale, ambiguous, or missing.
+- During editing, run focused tests for changed behavior. Run the broad local
+  gate once after the candidate is frozen. Reuse an exact-SHA receipt instead of
+  rerunning unchanged suites in the same task; invalidate it when tracked bytes,
+  relevant configuration, runtime prerequisites, or the tested boundary change.
+- Use one web review per coherent candidate by default. Blocking findings may
+  trigger fixes followed by one targeted rereview of those findings and the new
+  diff. `PASS` or `PASS_WITH_NOTES` ends the automatic review loop. Nonblocking
+  notes do not trigger another web review unless the user explicitly asks, the
+  fix changes an authentication, credential, data-loss, deployment, or other
+  high-risk boundary, or the fix materially expands the reviewed scope.
+- Label live browser/provider/task/deployment observations as bounded host
+  evidence. Do not ask a read-only web reviewer to reproduce them or repeat an
+  unchanged canary. Refresh live evidence only when its boundary changed, it is
+  cheap and drift-prone, or it is an explicit completion gate.
+- After a web submission, prefer event-driven terminal output. If a manual
+  status audit is needed, perform the first audit at 20 minutes and later audits
+  at 10-minute intervals. Do not use 30-second or 1-minute audit polling.
+  Explicit terminal/error output or a user interruption is handled immediately;
+  internal liveness and terminal-watch safety probes are not manual audits.
+- Never optimize away the minimum gate: exact root and SHA, clean/diff identity,
+  relevant unresolved findings, focused coverage for changed behavior, one final
+  deterministic local gate, and fail-closed handling of stale or contradictory
+  evidence.
+
 New GPT comprehensive work uses
 `bin/chatgpt_oracle_comprehensive.py` with schema
 `codex.chatgpt.oracle-comprehensive/v1`:
