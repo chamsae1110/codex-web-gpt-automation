@@ -7,14 +7,18 @@ It orders the non-secret setup stages and checks the resulting public contract.
 """
 
 import argparse
+import datetime as dt
 import json
 import os
+import shutil
+import subprocess
+import sys
 import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from chatgpt_chrome_local_network import policy_status
 
@@ -23,6 +27,38 @@ PRODUCT_NAME = "Codex Web GPT Automation"
 APP_NAME = "codex"
 DEFAULT_LOCAL_PORT = 7676
 PROVIDERS = ("tailscale", "cloudflare", "ngrok", "custom")
+STATE_SCHEMA = "codex-web-gpt.onboarding-wizard/v1"
+STATE_RELATIVE = Path("state") / "codex-web-gpt-automation" / "onboarding" / "state.json"
+SETUP_SCRIPT = Path("skills") / "chatgpt-workspace-setup" / "scripts" / "devspace_tailscale_setup.py"
+STAGE_IDS = (
+    "01_install",
+    "02_stable_endpoint",
+    "03_devspace_init",
+    "04_reboot_service",
+    "05_endpoint_check",
+    "06_oracle_login",
+    "06b_local_network_access",
+    "07_chatgpt_app",
+    "08_final_gate",
+)
+USER_OWNED_STAGES = ("03_devspace_init", "06_oracle_login", "07_chatgpt_app")
+FINAL_GATE_TRANSPORTS = ("regular-non-pro-oracle",)
+FINAL_GATE_MIN_EVIDENCE = 16
+COMPLETION_STATES_BY_LANGUAGE = {
+    "ko": {
+        "installed": "프로그램 설치 완료",
+        "awaiting_chatgpt": "ChatGPT 연결 대기",
+        "awaiting_verification": "앱 등록 완료·검증 대기",
+        "verified": "전체 설치 및 실제 프로젝트 연결 검증 완료",
+    },
+    "en": {
+        "installed": "Program install complete",
+        "awaiting_chatgpt": "Awaiting ChatGPT connection",
+        "awaiting_verification": "App registered, awaiting verification",
+        "verified": "Full install and real project-root read verified",
+    },
+}
+COMPLETION_STATES = COMPLETION_STATES_BY_LANGUAGE["ko"]
 
 
 class OnboardingError(ValueError):
@@ -372,8 +408,640 @@ def configure_app_name(*, codex_home: Path | None = None, app_name: str = APP_NA
     return target
 
 
+def _codex_home(codex_home: Path | None = None) -> Path:
+    return (codex_home or Path(os.environ.get("CODEX_HOME") or (Path.home() / ".codex"))).expanduser().resolve()
+
+
+def state_path(*, codex_home: Path | None = None) -> Path:
+    return _codex_home(codex_home) / STATE_RELATIVE
+
+
+def _now() -> str:
+    return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _write_state(state: dict[str, Any], *, codex_home: Path | None = None) -> Path:
+    target = state_path(codex_home=codex_home)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(state, ensure_ascii=False, indent=2) + "\n"
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=str(target.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_name, target)
+    finally:
+        if os.path.exists(temporary_name):
+            os.unlink(temporary_name)
+    return target
+
+
+def load_state(*, codex_home: Path | None = None) -> dict[str, Any]:
+    value = _load_json(state_path(codex_home=codex_home))
+    if not value:
+        raise OnboardingError("ONBOARDING_NOT_STARTED")
+    if value.get("schema") != STATE_SCHEMA:
+        raise OnboardingError("ONBOARDING_STATE_CORRUPT")
+    stages = value.get("stages")
+    if not isinstance(stages, dict) or set(stages) != set(STAGE_IDS):
+        raise OnboardingError("ONBOARDING_STATE_CORRUPT")
+    for name in ("provider", "registration_url", "app_name"):
+        if not isinstance(value.get(name), str) or not value[name].strip():
+            raise OnboardingError("ONBOARDING_STATE_CORRUPT")
+    roots = value.get("allowed_roots")
+    if not isinstance(roots, list) or not roots or not all(isinstance(item, str) and item.strip() for item in roots):
+        raise OnboardingError("ONBOARDING_STATE_CORRUPT")
+    for stage_id, stage in stages.items():
+        if not isinstance(stage, dict):
+            raise OnboardingError("ONBOARDING_STATE_CORRUPT")
+        stage.setdefault("status", "pending")
+        stage.setdefault("verified_at", None)
+        stage.setdefault("evidence", None)
+    return value
+
+
+def _secret_free(state: dict[str, Any]) -> None:
+    dumped = json.dumps(state, ensure_ascii=False).casefold()
+    for banned in ("password", "secret", "token", "cookie", "authorization"):
+        if banned in dumped:
+            raise OnboardingError("ONBOARDING_STATE_MUST_NOT_CARRY_SECRETS")
+
+
+def start_onboarding(
+    *,
+    provider: str,
+    roots: Sequence[str],
+    registration_url: str | None = None,
+    app_name: str = APP_NAME,
+    codex_home: Path | None = None,
+    hostname_discovery: Any = None,
+    enable_local_multi_gpt: bool = False,
+) -> dict[str, Any]:
+    """Create resumable, secret-free onboarding state and return the first step."""
+    if provider not in PROVIDERS:
+        raise OnboardingError("TUNNEL_PROVIDER_UNSUPPORTED")
+    resolved_url = (registration_url or "").strip()
+    if not resolved_url:
+        if provider != "tailscale":
+            raise OnboardingError("PUBLIC_HTTPS_MCP_URL_REQUIRED")
+        discover = hostname_discovery or _discover_tailscale_hostname
+        resolved_url = f"https://{discover()}/mcp"
+    plan = onboarding_plan(
+        provider=provider,
+        registration_url=resolved_url,
+        roots=roots,
+        app_name=app_name,
+    )
+    state = {
+        "schema": STATE_SCHEMA,
+        "product": PRODUCT_NAME,
+        "provider": provider,
+        "registration_url": plan["registration_url"],
+        "public_origin": plan["public_origin"],
+        "allowed_roots": plan["allowed_roots"],
+        "app_name": plan["app_name"],
+        "enable_local_multi_gpt": bool(enable_local_multi_gpt),
+        "started_at": _now(),
+        "updated_at": _now(),
+        "completion_state": "installed",
+        "stages": {
+            stage_id: {"status": "pending", "verified_at": None, "evidence": None}
+            for stage_id in STAGE_IDS
+        },
+    }
+    _secret_free(state)
+    _write_state(state, codex_home=codex_home)
+    return state
+
+
+def _discover_tailscale_hostname() -> str:
+    executable = shutil.which("tailscale")
+    if executable is None:
+        raise OnboardingError("TAILSCALE_NOT_INSTALLED")
+    try:
+        completed = subprocess.run(
+            [executable, "status", "--json"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        value = json.loads(completed.stdout)
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError) as exc:
+        raise OnboardingError("TAILSCALE_HOSTNAME_UNAVAILABLE") from exc
+    hostname = str((value.get("Self") or {}).get("DNSName") or "").strip().casefold().rstrip(".")
+    if not hostname.endswith(".ts.net"):
+        raise OnboardingError("TAILSCALE_HOSTNAME_UNAVAILABLE")
+    return hostname
+
+
+STAGE_VERIFIERS: dict[str, str] = {
+    "01_install": "install_receipt_present",
+    "02_stable_endpoint": "public_mcp_oauth_challenge",
+    "03_devspace_init": "exact_roots_configured",
+    "04_reboot_service": "bootstrap_matches_config",
+    "05_endpoint_check": "local_mcp_oauth_challenge",
+    "06_oracle_login": "oracle_profile_initialized",
+    "06b_local_network_access": "chatgpt_local_network_allowed",
+    "07_chatgpt_app": "app_name_matches_expected",
+    "08_final_gate": "exact_root_read_verified",
+}
+
+
+def _install_receipt_present(codex_home: Path) -> bool:
+    receipts = codex_home / "receipts"
+    if not receipts.is_dir():
+        return False
+    return any(receipts.glob("codexpro-automation-*.json"))
+
+
+def _final_gate_receipt(codex_home: Path, state: dict[str, Any]) -> dict[str, Any] | None:
+    recorded = ((state.get("stages") or {}).get("08_final_gate") or {}).get("evidence")
+    if not isinstance(recorded, dict):
+        return None
+    if recorded.get("transport") not in FINAL_GATE_TRANSPORTS:
+        return None
+    summary = str(recorded.get("evidence") or "").strip()
+    listing = recorded.get("listing_sample")
+    entries = [str(item).strip() for item in listing if str(item).strip()] if isinstance(listing, list) else []
+    root = str(recorded.get("root") or "").strip()
+    identities = _root_identities(state.get("allowed_roots") or [])
+    if not root or os.path.normcase(str(Path(root).expanduser())) not in identities:
+        return None
+    if len(summary) < FINAL_GATE_MIN_EVIDENCE or not entries:
+        return None
+    if not isinstance(recorded.get("recorded_at"), str) or not recorded["recorded_at"].strip():
+        return None
+    return recorded
+
+
+def evaluate_stages(
+    state: dict[str, Any],
+    *,
+    codex_home: Path | None = None,
+    devspace_home: Path | None = None,
+    http_probe: Any = probe_http,
+    oracle_profile_dir: Path | None = None,
+    local_network_policy_probe: Any = policy_status,
+) -> dict[str, Any]:
+    """Recompute every stage from live evidence instead of trusting confirmations."""
+    resolved_home = _codex_home(codex_home)
+    status = readiness_status(
+        provider=state["provider"],
+        registration_url=state["registration_url"],
+        roots=state["allowed_roots"],
+        app_name=state["app_name"],
+        codex_home=resolved_home,
+        devspace_home=devspace_home,
+        http_probe=http_probe,
+        oracle_profile_dir=oracle_profile_dir,
+        local_network_policy_probe=local_network_policy_probe,
+    )
+    checks = dict(status["checks"])
+    checks["install_receipt_present"] = _install_receipt_present(resolved_home)
+    gate = _final_gate_receipt(resolved_home, state)
+    checks["exact_root_read_verified"] = bool(status["ready"]) and bool(gate and gate.get("read_ok"))
+    stages: dict[str, Any] = {}
+    for stage_id in STAGE_IDS:
+        satisfied = bool(checks.get(STAGE_VERIFIERS[stage_id]))
+        stages[stage_id] = {
+            "status": "complete" if satisfied else "pending",
+            "owner": "user" if stage_id in USER_OWNED_STAGES else "agent",
+            "verifier": STAGE_VERIFIERS[stage_id],
+            "verified": satisfied,
+        }
+    return {"checks": checks, "stages": stages, "readiness": status}
+
+
+def _completion_state(stages: dict[str, Any]) -> str:
+    if stages["08_final_gate"]["verified"]:
+        return "verified"
+    if stages["07_chatgpt_app"]["verified"]:
+        return "awaiting_verification"
+    if stages["06b_local_network_access"]["verified"]:
+        return "awaiting_chatgpt"
+    return "installed"
+
+
+def next_step(
+    *,
+    codex_home: Path | None = None,
+    devspace_home: Path | None = None,
+    http_probe: Any = probe_http,
+    oracle_profile_dir: Path | None = None,
+    local_network_policy_probe: Any = policy_status,
+    language: str | None = None,
+) -> dict[str, Any]:
+    """Return exactly one actionable step without skipping or repeating stages."""
+    resolved_language = resolve_language(language)
+    state = load_state(codex_home=codex_home)
+    evaluated = evaluate_stages(
+        state,
+        codex_home=codex_home,
+        devspace_home=devspace_home,
+        http_probe=http_probe,
+        oracle_profile_dir=oracle_profile_dir,
+        local_network_policy_probe=local_network_policy_probe,
+    )
+    stages = evaluated["stages"]
+    completion = _completion_state(stages)
+    for stage_id in STAGE_IDS:
+        state["stages"][stage_id]["status"] = stages[stage_id]["status"]
+        if stages[stage_id]["verified"] and not state["stages"][stage_id]["verified_at"]:
+            state["stages"][stage_id]["verified_at"] = _now()
+    state["completion_state"] = completion
+    state["updated_at"] = _now()
+    _secret_free(state)
+    _write_state(state, codex_home=codex_home)
+    current = next((stage_id for stage_id in STAGE_IDS if not stages[stage_id]["verified"]), None)
+    started = STAGE_IDS.index(current) if current else len(STAGE_IDS)
+    pending = list(STAGE_IDS[started:])
+    plan = onboarding_plan(
+        provider=state["provider"],
+        registration_url=state["registration_url"],
+        roots=state["allowed_roots"],
+        app_name=state["app_name"],
+    )
+    detail = next((stage for stage in plan["stages"] if stage["id"] == current), None)
+    return {
+        "schema": "codex-web-gpt.onboarding-next/v1",
+        "language": resolved_language,
+        "completion_state": completion,
+        "completion_label": COMPLETION_STATES_BY_LANGUAGE[resolved_language][completion],
+        "done": current is None,
+        "current_stage": current,
+        "owner": stages[current]["owner"] if current else None,
+        "needs_user_action": bool(current and stages[current]["owner"] == "user"),
+        "confirm_command": f"onboard.py confirm {current}" if current and stages[current]["owner"] == "user" else None,
+        "instructions": (
+            stage_instructions(current, state, resolved_language)
+            if current
+            else [
+                "모든 단계가 검증되었습니다."
+                if resolved_language == "ko"
+                else "Every stage is verified."
+            ]
+        ),
+        "stage_detail": detail,
+        "checks": evaluated["checks"],
+        "pending_stages": pending,
+        "registration_url": state["registration_url"],
+        "app_name": state["app_name"],
+        "chatgpt_ui_paths": (
+            CHATGPT_UI_PATHS_BY_LANGUAGE[resolved_language] if current == "07_chatgpt_app" else None
+        ),
+        "missing_create_button_triage": (
+            CHATGPT_MISSING_CREATE_TRIAGE_BY_LANGUAGE[resolved_language]
+            if current == "07_chatgpt_app"
+            else None
+        ),
+    }
+
+
+LANGUAGES = ("ko", "en")
+DEFAULT_LANGUAGE = "en"
+CHATGPT_UI_PATHS_BY_LANGUAGE = {
+    "ko": (
+        "설정 → 플러그인 → (맨 아래) 개발자 모드, 이후 왼쪽 메뉴 플러그인 → +",
+        "설정 → 앱 → 고급 설정 → 개발자 모드, 이후 앱 → 만들기",
+        "관리형 워크스페이스: 워크스페이스 설정 → 앱 → 만들기",
+    ),
+    "en": (
+        "Settings > Plugins > (bottom) Developer mode, then left menu Plugins > +",
+        "Settings > Apps > Advanced settings > Developer mode, then Apps > Create",
+        "Managed workspace: Workspace settings > Apps > Create",
+    ),
+}
+CHATGPT_MISSING_CREATE_TRIAGE_BY_LANGUAGE = {
+    "ko": (
+        "ChatGPT 웹에서 접속했는지 확인",
+        "개인 계정과 관리형 워크스페이스 중 어디인지 확인",
+        "개발자 모드 토글이 실제로 켜졌는지 확인",
+        "앱 메뉴 대신 플러그인 메뉴가 제공되는지 확인",
+    ),
+    "en": (
+        "Confirm you are on ChatGPT web",
+        "Confirm whether this is a personal or managed workspace",
+        "Confirm the developer-mode toggle is actually on",
+        "Confirm whether the account exposes Plugins instead of Apps",
+    ),
+}
+CHATGPT_UI_PATHS = CHATGPT_UI_PATHS_BY_LANGUAGE["ko"]
+CHATGPT_MISSING_CREATE_TRIAGE = CHATGPT_MISSING_CREATE_TRIAGE_BY_LANGUAGE["ko"]
+
+
+def resolve_language(explicit: str | None = None, environment: Mapping[str, str] | None = None) -> str:
+    """Pick Korean or English from an explicit flag, then the shell locale."""
+    if explicit:
+        candidate = explicit.strip().casefold()
+        if candidate not in LANGUAGES:
+            raise OnboardingError("ONBOARDING_LANGUAGE_UNSUPPORTED")
+        return candidate
+    source = environment if environment is not None else os.environ
+    for name in ("CODEX_ONBOARDING_LANG", "LC_ALL", "LC_MESSAGES", "LANG", "LANGUAGE"):
+        value = str(source.get(name) or "").strip().casefold()
+        if not value:
+            continue
+        if value.startswith("ko") or "korean" in value:
+            return "ko"
+        if value.startswith("en") or "english" in value:
+            return "en"
+    return _platform_language(source)
+
+
+def _platform_language(source: Mapping[str, str]) -> str:
+    if sys.platform != "win32":
+        return DEFAULT_LANGUAGE
+    try:
+        import ctypes
+
+        language_id = ctypes.windll.kernel32.GetUserDefaultUILanguage()  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 - locale detection must never break onboarding
+        return DEFAULT_LANGUAGE
+    return "ko" if (int(language_id) & 0x3FF) == 0x12 else DEFAULT_LANGUAGE
+
+
+def stage_instructions(stage_id: str, state: dict[str, Any], language: str = "ko") -> list[str]:
+    """Return plain-language instructions so no one has to interpret raw JSON."""
+    if language not in LANGUAGES:
+        raise OnboardingError("ONBOARDING_LANGUAGE_UNSUPPORTED")
+    url = state["registration_url"]
+    origin = state.get("public_origin") or public_origin(url)
+    roots = " ".join(f'--root "{root}"' for root in state["allowed_roots"])
+    host = urllib.parse.urlsplit(url).hostname or ""
+    setup = f"python {SETUP_SCRIPT.as_posix()}"
+    korean: dict[str, list[str]] = {
+        "01_install": [
+            "수명주기 설치를 먼저 끝냅니다.",
+            "python install.py --dry-run",
+            "python install.py",
+            "python doctor.py",
+        ],
+        "02_stable_endpoint": [
+            f"고정 공개 주소 {url} 가 살아 있어야 합니다.",
+            f"{setup} setup {roots} --hostname {host} --dry-run",
+            "계획에 표시된 전체 허용 루트를 확인한 뒤에만 --apply 를 실행합니다.",
+            f"{setup} setup {roots} --hostname {host} --apply",
+        ],
+        "03_devspace_init": [
+            "사용자 작업입니다. DevSpace init 화면이 현재 터미널에 표시됩니다.",
+            f"표시된 전체 exact root 와 public origin {origin} 을 입력합니다.",
+            "public origin 에는 /mcp 를 붙이지 않습니다.",
+            "생성된 Owner 암호는 즉시 암호 관리자에 저장합니다. 에이전트에게 알려주지 않습니다.",
+        ],
+        "04_reboot_service": [
+            "재부팅 후에도 살아나도록 로그인 watchdog 을 확인합니다.",
+            f"{setup} doctor {roots} --hostname {host}",
+            "현재 config roots 와 bootstrap roots 가 완전히 같아야 합니다.",
+        ],
+        "05_endpoint_check": [
+            "로컬 DevSpace endpoint 를 확인합니다.",
+            f"인증 없는 http://127.0.0.1:{DEFAULT_LOCAL_PORT}/mcp 는 HTTP 401 이 정상입니다.",
+            "연결 거부나 timeout 은 정상이 아닙니다.",
+        ],
+        "06_oracle_login": [
+            "사용자 작업입니다. Oracle 전용 브라우저에서 ChatGPT 에 한 번 로그인합니다.",
+            "일상 Chrome 프로필이 아니라 전용 프로필을 사용합니다.",
+            "로그인을 마친 뒤 onboard.py confirm 06_oracle_login 을 실행합니다.",
+        ],
+        "06b_local_network_access": [
+            "chatgpt.com 의 Local network 권한을 영속 등록합니다.",
+            "python bin/chatgpt_chrome_local_network.py enable",
+            "python bin/chatgpt_chrome_local_network.py status",
+            "Windows 정책 쓰기가 거부되면 전용 Oracle 프로필에서 직접 한 번 허용합니다.",
+        ],
+        "07_chatgpt_app": [
+            "사용자 작업입니다. ChatGPT 개발자 모드를 켜고 앱을 직접 등록합니다.",
+            f"앱 이름: {state['app_name']}",
+            f"등록 주소: {url}",
+            "계정에 따라 메뉴가 다르므로 아래 경로를 모두 확인합니다.",
+            *(f"경로: {path}" for path in CHATGPT_UI_PATHS_BY_LANGUAGE["ko"]),
+            "등록과 Owner 승인을 마친 뒤 onboard.py confirm 07_chatgpt_app 을 실행합니다.",
+        ],
+        "08_final_gate": [
+            "마지막으로 실제 프로젝트를 읽을 수 있는지 확인합니다.",
+            f"{setup} post-register {roots} --hostname {host}",
+            f"새 일반 비-Pro Oracle 실행에서 @{state['app_name']} 로 exact root 를 열고 작은 디렉터리를 나열합니다.",
+            "Codex Desktop 내장 DevSpace 플러그인 결과는 증거로 쓰지 않습니다.",
+            "성공하면 onboard.py record-final-gate --root <루트> --evidence <요약> 을 실행합니다.",
+        ],
+    }
+    english: dict[str, list[str]] = {
+        "01_install": [
+            "Finish the lifecycle install first.",
+            "python install.py --dry-run",
+            "python install.py",
+            "python doctor.py",
+        ],
+        "02_stable_endpoint": [
+            f"The stable public URL {url} must be reachable.",
+            f"{setup} setup {roots} --hostname {host} --dry-run",
+            "Review the full allowed-root list in the plan before running --apply.",
+            f"{setup} setup {roots} --hostname {host} --apply",
+        ],
+        "03_devspace_init": [
+            "User step. The DevSpace init prompt appears in this terminal.",
+            f"Enter every exact root shown plus the public origin {origin}.",
+            "Do not append /mcp to the public origin.",
+            "Save the generated Owner password in a password manager. Never share it with the agent.",
+        ],
+        "04_reboot_service": [
+            "Confirm the login watchdog so setup survives a reboot.",
+            f"{setup} doctor {roots} --hostname {host}",
+            "Current config roots and bootstrap roots must match exactly.",
+        ],
+        "05_endpoint_check": [
+            "Check the local DevSpace endpoint.",
+            f"An unauthenticated http://127.0.0.1:{DEFAULT_LOCAL_PORT}/mcp returning HTTP 401 is healthy.",
+            "Connection refused or timeout is not healthy.",
+        ],
+        "06_oracle_login": [
+            "User step. Sign in to ChatGPT once in the dedicated Oracle browser.",
+            "Use the dedicated profile, not your everyday Chrome profile.",
+            "After signing in, run onboard.py confirm 06_oracle_login.",
+        ],
+        "06b_local_network_access": [
+            "Persist the Local Network grant for chatgpt.com.",
+            "python bin/chatgpt_chrome_local_network.py enable",
+            "python bin/chatgpt_chrome_local_network.py status",
+            "If the Windows policy write is denied, grant it once in the dedicated Oracle profile.",
+        ],
+        "07_chatgpt_app": [
+            "User step. Turn on ChatGPT developer mode and register the app yourself.",
+            f"App name: {state['app_name']}",
+            f"Connection URL: {url}",
+            "Menus differ by account, so check every path below.",
+            *(f"Path: {path}" for path in CHATGPT_UI_PATHS_BY_LANGUAGE["en"]),
+            "After registration and Owner approval, run onboard.py confirm 07_chatgpt_app.",
+        ],
+        "08_final_gate": [
+            "Finally confirm the real project root is readable.",
+            f"{setup} post-register {roots} --hostname {host}",
+            f"In a fresh regular non-Pro Oracle run, open the exact root with @{state['app_name']} and list a small directory.",
+            "The built-in Codex Desktop DevSpace plugin is not valid evidence.",
+            "On success run onboard.py record-final-gate --root <root> --evidence <summary>.",
+        ],
+    }
+    guides = korean if language == "ko" else english
+    fallback = "다음 단계 안내를 찾을 수 없습니다." if language == "ko" else "No instructions found for this stage."
+    return guides.get(stage_id, [fallback])
+
+
+def confirm_stage(
+    stage_id: str,
+    *,
+    codex_home: Path | None = None,
+    devspace_home: Path | None = None,
+    http_probe: Any = probe_http,
+    oracle_profile_dir: Path | None = None,
+    local_network_policy_probe: Any = policy_status,
+    language: str | None = None,
+) -> dict[str, Any]:
+    """Accept a user confirmation only when live evidence also proves the stage."""
+    resolved_language = resolve_language(language)
+    if stage_id not in STAGE_IDS:
+        raise OnboardingError("ONBOARDING_STAGE_UNKNOWN")
+    state = load_state(codex_home=codex_home)
+    evaluated = evaluate_stages(
+        state,
+        codex_home=codex_home,
+        devspace_home=devspace_home,
+        http_probe=http_probe,
+        oracle_profile_dir=oracle_profile_dir,
+        local_network_policy_probe=local_network_policy_probe,
+    )
+    blocking = next(
+        (
+            earlier
+            for earlier in STAGE_IDS[: STAGE_IDS.index(stage_id)]
+            if not evaluated["stages"][earlier]["verified"]
+        ),
+        None,
+    )
+    verified = bool(evaluated["stages"][stage_id]["verified"])
+    if blocking is not None:
+        verified = False
+    state["stages"][stage_id]["status"] = "complete" if verified else "pending"
+    state["stages"][stage_id]["confirmed_at"] = _now()
+    if verified:
+        state["stages"][stage_id]["verified_at"] = _now()
+    state["completion_state"] = _completion_state(evaluated["stages"])
+    state["updated_at"] = _now()
+    _secret_free(state)
+    _write_state(state, codex_home=codex_home)
+    return {
+        "schema": "codex-web-gpt.onboarding-confirm/v1",
+        "stage": stage_id,
+        "accepted": verified,
+        "verifier": STAGE_VERIFIERS[stage_id],
+        "reason": (
+            None
+            if verified
+            else "STAGE_OUT_OF_ORDER_EARLIER_STAGE_PENDING"
+            if blocking is not None
+            else "STAGE_CONFIRMATION_NOT_PROVEN_BY_EVIDENCE"
+        ),
+        "blocking_stage": blocking,
+        "checks": evaluated["checks"],
+        "completion_state": state["completion_state"],
+        "completion_label": COMPLETION_STATES_BY_LANGUAGE[resolved_language][state["completion_state"]],
+    }
+
+
+def render_step(step: dict[str, Any]) -> str:
+    """Render one wizard step as a short readable block."""
+    language = step.get("language") if step.get("language") in LANGUAGES else DEFAULT_LANGUAGE
+    words = {
+        "ko": {
+            "user": "사용자 작업 필요",
+            "auto": "자동 진행",
+            "state": "현재 상태",
+            "none_left": "남은 단계가 없습니다.",
+            "triage": "생성 버튼이 없으면 아래 순서로 확인합니다.",
+            "after": "완료 후",
+            "then": "이어서",
+            "remaining": "남은 단계",
+        },
+        "en": {
+            "user": "user action required",
+            "auto": "automatic",
+            "state": "Current state",
+            "none_left": "No stages remain.",
+            "triage": "If the create button is missing, check in this order.",
+            "after": "After finishing",
+            "then": "Next",
+            "remaining": "Remaining",
+        },
+    }[language]
+    total = len(STAGE_IDS)
+    lines: list[str] = []
+    if step.get("done"):
+        lines.append(f"[{total}/{total}] {step['completion_label']}")
+        lines.append(words["none_left"])
+        return "\n".join(lines)
+    current = step["current_stage"]
+    index = STAGE_IDS.index(current) + 1
+    owner = words["user"] if step["needs_user_action"] else words["auto"]
+    lines.append(f"[{index}/{total}] {current}  ({owner})")
+    lines.append(f"{words['state']}: {step['completion_label']}")
+    lines.append("")
+    for instruction in step.get("instructions") or []:
+        lines.append(f"  {instruction}")
+    if step.get("missing_create_button_triage"):
+        lines.append("")
+        lines.append(f"  {words['triage']}")
+        for item in step["missing_create_button_triage"]:
+            lines.append(f"    - {item}")
+    lines.append("")
+    if step.get("confirm_command"):
+        lines.append(f"{words['after']}: python {step['confirm_command']}")
+    else:
+        lines.append(f"{words['then']}: python onboard.py next")
+    remaining = [stage for stage in step.get("pending_stages") or [] if stage != current]
+    if remaining:
+        lines.append(f"{words['remaining']}: {', '.join(remaining)}")
+    return "\n".join(lines)
+
+
+def record_final_gate(
+    *,
+    read_ok: bool,
+    root: str,
+    evidence: str,
+    codex_home: Path | None = None,
+    transport: str = "regular-non-pro-oracle",
+    listing: Sequence[str] | None = None,
+) -> dict[str, Any]:
+    """Record the non-Pro Oracle exact-root read result that closes onboarding."""
+    state = load_state(codex_home=codex_home)
+    identities = _root_identities(state["allowed_roots"])
+    if os.path.normcase(str(Path(root).expanduser().resolve())) not in identities:
+        raise OnboardingError("FINAL_GATE_ROOT_NOT_IN_ALLOWED_ROOTS")
+    if transport not in FINAL_GATE_TRANSPORTS:
+        raise OnboardingError("FINAL_GATE_TRANSPORT_MUST_BE_REGULAR_NON_PRO_ORACLE")
+    summary = evidence.strip()
+    entries = [str(item).strip() for item in (listing or []) if str(item).strip()]
+    if read_ok and (len(summary) < FINAL_GATE_MIN_EVIDENCE or not entries):
+        raise OnboardingError("FINAL_GATE_EVIDENCE_INSUFFICIENT")
+    state["stages"]["08_final_gate"]["evidence"] = {
+        "read_ok": bool(read_ok),
+        "root": str(Path(root).expanduser().resolve()),
+        "evidence": summary[:400],
+        "listing_sample": entries[:10],
+        "recorded_at": _now(),
+        "transport": transport,
+    }
+    state["updated_at"] = _now()
+    _secret_free(state)
+    _write_state(state, codex_home=codex_home)
+    return state["stages"]["08_final_gate"]["evidence"]
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=f"{PRODUCT_NAME} first-install planner")
+    parser.add_argument("--json", action="store_true", help="Print raw JSON instead of the readable summary")
+    parser.add_argument("--lang", choices=LANGUAGES, help="Force Korean or English output; defaults to the shell locale")
     commands = parser.add_subparsers(dest="command", required=True)
     for name in ("plan", "status"):
         current = commands.add_parser(name)
@@ -384,11 +1052,47 @@ def _parser() -> argparse.ArgumentParser:
     configure = commands.add_parser("configure-app-name")
     configure.add_argument("--codex-home", type=Path)
     configure.add_argument("--app-name", default=APP_NAME)
+    start = commands.add_parser("start")
+    start.add_argument("--provider", choices=PROVIDERS, default="tailscale")
+    start.add_argument("--public-url", help="Stable public HTTPS URL ending in /mcp; auto-discovered for tailscale")
+    start.add_argument("--root", action="append", required=True, dest="roots")
+    start.add_argument("--app-name", default=APP_NAME)
+    start.add_argument("--enable-local-multi-gpt", action="store_true")
+    start.add_argument("--reset", action="store_true", help="Discard existing onboarding progress and start over")
+    for name in ("next", "resume"):
+        current = commands.add_parser(name)
+        current.add_argument("--json", action="store_true", dest="json", default=None)
+        current.add_argument("--lang", choices=LANGUAGES, dest="lang", default=None)
+    confirm = commands.add_parser("confirm")
+    confirm.add_argument("stage")
+    confirm.add_argument("--lang", choices=LANGUAGES, dest="lang", default=None)
+    gate = commands.add_parser("record-final-gate")
+    gate.add_argument("--root", required=True)
+    gate.add_argument("--evidence", required=True)
+    gate.add_argument("--listing", action="append", default=[], help="One observed directory entry; repeatable")
+    gate.add_argument("--failed", action="store_true")
     return parser
 
 
+def _global_language_flag(arguments: Sequence[str]) -> str | None:
+    """Recover a pre-subcommand --lang value that a subparser default cleared."""
+    for index, value in enumerate(arguments):
+        if value == "--lang" and index + 1 < len(arguments):
+            candidate = arguments[index + 1].strip().casefold()
+            return candidate if candidate in LANGUAGES else None
+        if value.startswith("--lang="):
+            candidate = value.split("=", 1)[1].strip().casefold()
+            return candidate if candidate in LANGUAGES else None
+    return None
+
+
 def main(argv: list[str] | None = None) -> int:
-    args = _parser().parse_args(argv)
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    args = _parser().parse_args(arguments)
+    if getattr(args, "lang", None) is None:
+        args.lang = _global_language_flag(arguments)
+    if not getattr(args, "json", False):
+        args.json = "--json" in arguments
     try:
         if args.command == "plan":
             result = onboarding_plan(
@@ -404,14 +1108,71 @@ def main(argv: list[str] | None = None) -> int:
                 roots=args.roots,
                 app_name=args.app_name,
             )
+        elif args.command == "start":
+            if not args.reset:
+                try:
+                    load_state()
+                except OnboardingError:
+                    if state_path().exists():
+                        print(
+                            json.dumps(
+                                {
+                                    "ok": False,
+                                    "error": "ONBOARDING_STATE_CORRUPT",
+                                    "hint": "python onboard.py start --reset",
+                                },
+                                ensure_ascii=False,
+                            )
+                        )
+                        return 2
+                else:
+                    print(
+                        json.dumps(
+                            {
+                                "ok": False,
+                                "error": "ONBOARDING_ALREADY_STARTED",
+                                "hint": "python onboard.py resume",
+                            },
+                            ensure_ascii=False,
+                        )
+                    )
+                    return 2
+            start_onboarding(
+                provider=args.provider,
+                registration_url=args.public_url,
+                roots=args.roots,
+                app_name=args.app_name,
+                enable_local_multi_gpt=args.enable_local_multi_gpt,
+            )
+            result = next_step(language=args.lang)
+        elif args.command in ("next", "resume"):
+            result = next_step(language=args.lang)
+        elif args.command == "confirm":
+            result = confirm_stage(args.stage, language=args.lang)
+        elif args.command == "record-final-gate":
+            result = record_final_gate(
+                read_ok=not args.failed,
+                root=args.root,
+                evidence=args.evidence,
+                listing=args.listing,
+            )
         else:
             path = configure_app_name(codex_home=args.codex_home, app_name=args.app_name)
             result = {"ok": True, "app_name": normalize_app_name(args.app_name), "path": str(path)}
     except OnboardingError as exc:
         print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=False))
         return 2
-    print(json.dumps(result, ensure_ascii=False, indent=2))
-    return 0 if result.get("ready", True) else 3
+    if args.command in ("start", "next", "resume") and not args.json:
+        print(render_step(result))
+    else:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    if result.get("ready") is False:
+        return 3
+    if result.get("accepted") is False:
+        return 3
+    if "done" in result and not result["done"]:
+        return 4
+    return 0
 
 
 if __name__ == "__main__":

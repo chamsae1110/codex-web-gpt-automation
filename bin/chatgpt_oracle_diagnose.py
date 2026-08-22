@@ -108,6 +108,30 @@ def _output_is_nonempty(path: Path) -> bool:
         return False
 
 
+def _foreign_connector_search_evidence(evidence_text: str) -> bool:
+    """Detect a run that hunted for another plugin's workspace connector.
+
+    Several ChatGPT plugins expose identically named workspace tools, so a
+    session can abandon the registered app, search the plugin directory for a
+    connector that does not exist there, and burn the run on tool
+    self-diagnosis instead of reading the mission.
+    """
+    text = evidence_text.casefold()
+    searched = any(
+        needle in text
+        for needle in ("search plugins", "search_plugins", "searching \"devspace\"", "plugin directory")
+    )
+    empty = any(
+        needle in text
+        for needle in ("{plugins: }", "{plugins:}", "\"plugins\": []", "plugins: []")
+    )
+    missing_workspace = any(
+        needle in text
+        for needle in ("did not return", "workspaceid", "no usable workspace", "작업공간 호출")
+    )
+    return searched and (empty or missing_workspace)
+
+
 def classify_run(
     state: dict[str, Any],
     *,
@@ -178,6 +202,8 @@ def classify_run(
             signature = "post-submit-recursive-self-observation"
         elif "OAuth token request failed" in evidence_text and "503" in evidence_text:
             signature = "registered-app-oauth-token-request-503"
+        elif _foreign_connector_search_evidence(evidence_text):
+            signature = "foreign-workspace-connector-substituted"
         else:
             signature = (
                 "durable-output-reports-blocked"

@@ -180,7 +180,10 @@ def test_pro_devspace_manifest_is_write_capable_and_stays_inside_project(tmp_pat
     assert prompt.index(str(tmp_path.resolve())) < prompt.index(str(mission.resolve()))
     assert "create, edit, and remove mission-owned files and run commands" in prompt
     assert "Put every citation, footnote, and Markdown reference definition before" in prompt
-    assert prompt.endswith("as the final nonempty line; append nothing after it.")
+    assert "as the final nonempty line; append nothing after it." in prompt
+    assert prompt.index("as the final nonempty line; append nothing after it.") < prompt.index(
+        "Use only the DevSpace app's workspace tools."
+    )
     layout = state.create_layout(config, run_id="20260725T151414Z-a3aeba967d99")
     assert state.state_payload(config, layout, status="prepared", resolved_version="oracle 0.17.1")["task_outcome"] == "pending"
 
@@ -582,3 +585,132 @@ def test_ledger_completion_without_a_durable_artifact_is_not_complete() -> None:
     verdict = state.resolve_lifecycle({"status": "complete"}, output_is_present=False)
 
     assert verdict == {"lifecycle": "needs_attention", "authority_source": "local-ledger"}
+
+
+def test_connector_identity_guard_binds_the_named_app() -> None:
+    state = load_state()
+
+    guard = state.connector_identity_guard("codex")
+
+    assert "codex" in guard
+    assert "never substitute another plugin's connector" in guard
+
+
+def test_connector_identity_guard_omits_blank_app_names() -> None:
+    state = load_state()
+
+    assert state.connector_identity_guard("") == ""
+    assert state.connector_identity_guard(" \t ") == ""
+
+
+@pytest.mark.parametrize("app_name", ["dongju", "my-app"])
+def test_connector_identity_guard_interpolates_arbitrary_app_names(app_name: str) -> None:
+    state = load_state()
+
+    assert app_name in state.connector_identity_guard(app_name)
+
+
+@pytest.mark.parametrize(
+    ("transport", "extra"),
+    [
+        (
+            "pro-devspace",
+            {
+                "model": "gpt-5.6-sol",
+                "model_strategy": "select",
+                "thinking_time": "heavy",
+                "research": "off",
+                "task_outcome_contract": "v1",
+            },
+        ),
+        (
+            "pro-devspace-readonly",
+            {
+                "model": "gpt-5.6-sol",
+                "model_strategy": "select",
+                "thinking_time": "heavy",
+                "research": "off",
+                "task_outcome_contract": "v1",
+            },
+        ),
+        ("devspace", {}),
+    ],
+)
+def test_composer_prompt_includes_connector_identity_guard_for_workspace_transports(
+    tmp_path: Path,
+    transport: str,
+    extra: dict,
+) -> None:
+    state = load_state()
+    mission = tmp_path / "mission.md"
+    mission.write_text("work", encoding="utf-8")
+    config = state.load_manifest(
+        manifest(
+            tmp_path,
+            mission.resolve(),
+            transport=transport,
+            app_name="dongju",
+            **extra,
+        )
+    )
+
+    prompt = state.composer_prompt(config)
+
+    assert state.connector_identity_guard(config.app_name) in prompt
+    assert prompt.startswith(f"@{config.app_name}")
+
+
+def test_attachment_prompt_omits_connector_identity_guard(tmp_path: Path) -> None:
+    state = load_state()
+    mission = tmp_path / "mission.md"
+    mission.write_text("work", encoding="utf-8")
+    config = state.load_manifest(
+        manifest(
+            tmp_path,
+            mission.resolve(),
+            transport="pro-attachment-only",
+            app_name=None,
+            model="gpt-5.6-sol",
+            thinking_time="heavy",
+            attachments=[str(mission.resolve())],
+        )
+    )
+
+    prompt = state.composer_prompt(config)
+
+    assert "never substitute another plugin's connector" not in prompt
+
+
+def test_composer_prompt_combines_connector_and_self_observation_guards(tmp_path: Path) -> None:
+    state = load_state()
+    mission = tmp_path / "mission.md"
+    mission.write_text("work", encoding="utf-8")
+    config = state.load_manifest(manifest(tmp_path, mission.resolve()))
+
+    prompt = state.composer_prompt(config, run_id="run-123", slug="oracle-test-run")
+
+    assert state.connector_identity_guard(config.app_name) in prompt
+    assert "run run-123 or slug oracle-test-run" in prompt
+
+
+def test_pro_devspace_connector_guard_prompt_stays_single_line(tmp_path: Path) -> None:
+    state = load_state()
+    mission = tmp_path / "mission.md"
+    mission.write_text("work", encoding="utf-8")
+    config = state.load_manifest(
+        manifest(
+            tmp_path,
+            mission.resolve(),
+            transport="pro-devspace",
+            model="gpt-5.6-sol",
+            model_strategy="select",
+            thinking_time="heavy",
+            research="off",
+            task_outcome_contract="v1",
+        )
+    )
+
+    prompt = state.composer_prompt(config)
+
+    assert "\n" not in prompt
+    assert "\r" not in prompt

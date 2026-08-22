@@ -1,5 +1,52 @@
 # 기술 변경 기록
 
+## 1.17.0 - 재개 가능한 최초 설치 마법사와 커넥터 신원 가드
+
+- `onboard.py`에 `start`, `next`, `resume`, `confirm`, `record-final-gate`를
+  추가해 최초 설치를 중단·재개 가능한 상태 기계로 만들었습니다. 상태는
+  `~/.codex/state/codex-web-gpt-automation/onboarding/state.json`에 저장되며
+  암호·token·cookie·OAuth secret을 담지 않도록 저장 시점에 검사합니다.
+- `next`는 완료 단계를 다시 실행하거나 다음 단계로 건너뛰지 않고 현재 단계
+  하나만 반환합니다. 사용자 소유 단계의 `confirm`은 실제 증거로 재검증되며,
+  증거가 없으면 `STAGE_CONFIRMATION_NOT_PROVEN_BY_EVIDENCE`로 거부합니다.
+- 완료 표시를 프로그램 설치 완료, ChatGPT 연결 대기, 앱 등록 완료·검증 대기,
+  전체 설치 및 실제 프로젝트 연결 검증 완료로 분리했습니다. `08_final_gate`는
+  일반 비-Pro Oracle exact-root 읽기 증거를 함께 요구하고, exact allowed root가
+  아닌 경로는 거부합니다.
+- 앱 등록 단계에서 계정별 `플러그인`과 `앱` UI 경로를 모두 안내하고, 생성
+  버튼이 없을 때의 확인 순서를 제공합니다. 요금제는 마지막 가설로만 다룹니다.
+- 저장소 주소만 받은 에이전트를 위해 `INSTALL_AGENT.md` 설치 계약을 추가하고
+  `AGENTS.md`, README, 수명주기 설치 manifest에 연결했습니다.
+- `start`, `next`, `resume`이 JSON 대신 읽기 쉬운 단계 요약을 출력합니다. 셸
+  로케일에 따라 한국어와 영어를 자동 선택하고 `--lang`으로 고정할 수 있으며,
+  기계 판독용 원본은 `--json`으로 얻습니다.
+- 마법사 회귀 테스트가 늘어나 fast gate wall-clock 예산을 60초에서 100초로
+  조정했습니다. 테스트 대상과 실패 판정 기준은 그대로입니다.
+- 단계는 `06b_local_network_access`를 포함한 9개입니다.
+- 진행 중인 유효한 상태에서 `start`를 다시 실행하면
+  `ONBOARDING_ALREADY_STARTED`로 멈추고 `resume`을 안내합니다. 기존 진행 상태를 버릴
+  때만 `start --reset`으로 새 상태를 기록합니다.
+- `--lang`, `--json`은 모든 하위 명령 앞에서 받습니다. `next`와 `resume`은 명령 뒤에서도
+  두 플래그를 받고, `confirm`은 명령 뒤에서 `--lang`만 받습니다.
+- `confirm`은 앞선 단계가 미검증이면 `accepted: false`와
+  `STAGE_OUT_OF_ORDER_EARLIER_STAGE_PENDING`, 막힌 단계 ID를 반환합니다.
+- 여러 ChatGPT 플러그인이 `open_workspace`, `read` 같은 동일한 도구 이름을
+  노출하면 `@앱이름` 멘션만으로는 커넥터가 고정되지 않았습니다. Oracle composer
+  프롬프트에 `connector_identity_guard`를 추가해 등록된 앱의 도구만 사용하고,
+  미션을 읽기 전에 어느 앱의 도구를 호출해 어떤 workspace id를 받았는지 한 줄로
+  밝히도록 요구합니다.
+- 첫 workspace 호출이 실패해도 자체 도구 배선을 조사하거나 웹을 검색하거나 다른
+  커넥터로 대체하지 않고, 같은 루트를 한 번만 재시도한 뒤 구체적 blocker를 보고하고
+  멈추도록 명시합니다.
+- incident classifier에 `foreign-workspace-connector-substituted` 시그니처를
+  추가했습니다. 플러그인 검색 흔적과 빈 결과 또는 workspace 미발급 흔적이 함께
+  있을 때만 분류하며 기존 자기관찰·OAuth 503 시그니처가 우선합니다.
+- `record-final-gate`는 `--root`, `--evidence`, 반복 가능한 `--listing`을 요구합니다.
+  증거 요약이 너무 짧거나 목록이 없으면 `FINAL_GATE_EVIDENCE_INSUFFICIENT`로, 일반
+  비-Pro Oracle 이외의 transport면
+  `FINAL_GATE_TRANSPORT_MUST_BE_REGULAR_NON_PRO_ORACLE`로 거부합니다.
+- 온보딩 상태 구조가 맞지 않으면 `ONBOARDING_STATE_CORRUPT`로 실패 폐쇄합니다.
+
 ## 1.16.1 - Strict Ultra 설치 문서 동기화
 
 - `strict-ultra` 전역 skill이 참조하는 `docs/STRICT_ULTRA.md`를 수명주기

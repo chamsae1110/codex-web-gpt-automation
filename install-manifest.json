@@ -1,6 +1,6 @@
 {
   "schema": "codexpro.install-manifest/v1",
-  "version": "1.16.1",
+  "version": "1.17.0",
   "include": [
     "bin/chatgpt_agbrowse_bridge.py",
     "bin/chatgpt_agbrowse_composer.py",
@@ -114,6 +114,7 @@
     "scripts/start_devspace_bootstrap.ps1",
     "scripts/run_harness_canary.py",
     "docs/FIRST_INSTALL.md",
+    "INSTALL_AGENT.md",
     "docs/ULTRA_ECONOMY_MODE.md",
     "docs/ULTRA_GPT_MODE.md",
     "docs/STRICT_ULTRA.md",

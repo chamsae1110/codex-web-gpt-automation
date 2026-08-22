@@ -1,6 +1,6 @@
 {
   "name": "codex-web-gpt-automation",
-  "version": "1.16.1",
+  "version": "1.17.0",
   "private": false,
   "description": "Guarded, recoverable web ChatGPT automation for local Codex projects on Windows and macOS",
   "license": "MIT",
@@ -27,6 +27,7 @@
     "README.md",
     "README.en.md",
     "CONTRIBUTING.md",
+    "INSTALL_AGENT.md",
     "onboard.py",
     "bin/codex_web_gpt_onboarding.py",
     "bin/codex_global_agents_setup.py",

@@ -5,7 +5,7 @@ The full suite takes many minutes, which pushed every repair into one-incident-
 at-a-time edits.  This gate covers the contracts that actually broke runs before
 submission - launch arguments, lifecycle authority, incident ownership,
 compatibility patch shape, and release packaging - and must finish well inside
-one minute so it can run after every batch of edits.
+its wall-clock budget so it can run after every batch of edits.
 """
 
 from __future__ import annotations
@@ -37,7 +37,11 @@ FAST_TARGETS = [
     "tests/test_ultra_economy_mode.py",
 ]
 
-DEFAULT_BUDGET_SECONDS = 60.0
+# The onboarding wizard added resumable-state, language, fail-closed
+# confirmation, and forged-evidence coverage to this gate, so the wall-clock
+# ceiling moved from 60s to 100s.  It must still finish fast enough to run
+# after every batch of edits.
+DEFAULT_BUDGET_SECONDS = 100.0
 
 
 def _hidden_process_kwargs() -> dict[str, object]:

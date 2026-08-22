@@ -16,6 +16,112 @@
 `codexpro-*` 파일명, 상태 스키마, 설치 영수증은 기존 실행 복구와 롤백을 위해
 내부 호환 ID로 유지합니다. 새 작업을 CodexPro 엔진으로 보내는 뜻이 아닙니다.
 
+## 자동 설치 마법사 (권장)
+
+아래 수동 절차를 한 단계씩 해석하기보다 마법사 상태를 기준으로 진행합니다. Windows
+PowerShell에서는 `python`, macOS에서는 `python3`을 사용합니다.
+
+```powershell
+python onboard.py start --root <프로젝트 폴더>
+python onboard.py next
+python onboard.py confirm <stage-id>
+python onboard.py status --provider <p> --public-url <url> --root <r>
+```
+
+`start`는 비밀값 없이 온보딩 상태를 기록하고 첫 행동을 출력합니다. `--provider`의
+기본값은 `tailscale`, `--app-name`의 기본값은 `codex`입니다. `--root`는 여러 번
+지정할 수 있습니다. Tailscale은 hostname을 자동 발견하므로 `--public-url`이
+선택 사항입니다. cloudflare, ngrok, custom은 고정 `https://.../mcp` 주소를
+반드시 제공합니다.
+
+이미 진행 중인 유효한 온보딩이 있으면 `start`는 `ONBOARDING_ALREADY_STARTED`로
+멈춥니다. 계속하려면 `python onboard.py resume`을 사용합니다. 처음부터 다시 할 때만
+`python onboard.py start --reset --root <프로젝트 폴더>`를 사용합니다. `--reset`은
+기존 진행 상태를 버리고 새 상태로 덮어씁니다.
+
+`next`는 현재 단계 하나만 출력합니다. 자동으로 실행할 일과 사용자가 browser/TTY에서
+직접 할 일을 구분하며, 완료 단계를 다시 실행하거나 다음 단계로 건너뛰지 않습니다.
+사용자 소유 단계는 `confirm <stage-id>`로 확인합니다. 단, 확인만으로 통과하지
+않습니다. 마법사가 실제 검사를 다시 수행하며 실패하면 진행을 거부합니다. 앞선 단계가
+아직 미검증이면 `accepted: false`, `STAGE_OUT_OF_ORDER_EARLIER_STAGE_PENDING`와
+막힌 단계 ID를 돌려줍니다. 앞서 확인하지 말고 `next`가 가리키는 단계를 따릅니다.
+
+출력 언어는 셸 로케일을 따라 한국어 또는 영어로 자동 선택됩니다. 강제로 바꿀 때는
+`--lang ko` 또는 `--lang en`을 사용하고, 원본 JSON이 필요하면 `--json`을 붙입니다.
+모든 하위 명령에서는 전역 위치인 `python onboard.py --lang en next`와
+`python onboard.py --json next`를 쓸 수 있습니다. `next`와 `resume`은 명령 뒤에도
+두 플래그를 받습니다. 예: `python onboard.py next --lang en`,
+`python onboard.py resume --json`. `confirm` 뒤에는 `--lang`만 받습니다.
+
+상태 파일은 Windows에서
+`%USERPROFILE%\.codex\state\codex-web-gpt-automation\onboarding\state.json`,
+macOS에서 `~/.codex/state/...`입니다. provider, 등록 URL, exact allowed roots, 앱
+이름, 단계 상태와 시각만 저장합니다. 암호, token, cookie, OAuth secret은 저장하지
+않습니다. 상태 구조가 맞지 않으면 `ONBOARDING_STATE_CORRUPT`로 실패 폐쇄합니다.
+
+단계 ID는 아래와 같습니다.
+
+```text
+01_install, 02_stable_endpoint, 03_devspace_init, 04_reboot_service,
+05_endpoint_check, 06_oracle_login, 06b_local_network_access,
+07_chatgpt_app, 08_final_gate
+```
+
+완료 표시는 네 가지를 구분합니다.
+
+- 프로그램 설치 완료
+- ChatGPT 연결 대기
+- 앱 등록 완료·검증 대기
+- 전체 설치 및 실제 프로젝트 연결 검증 완료
+
+마지막 상태만 설치 완료입니다.
+
+### 사용자가 직접 하는 단계
+
+Tailscale 로그인, DevSpace Owner 암호 입력, Oracle ChatGPT 로그인, ChatGPT 개발자
+모드와 앱 등록, Owner OAuth 승인은 사용자가 직접 완료합니다. 자동화는 ChatGPT
+설정을 바꾸거나 앱을 만들고 지우지 않으며, 권한·도구를 고르거나 Owner 암호를
+입력하지 않습니다.
+
+앱 등록 단계에서 마법사는 앱 이름과 정확한 `https://<고정호스트>/mcp` URL을
+출력합니다. 계정 UI가 다르므로 둘 다 확인합니다.
+
+1. `설정 → 플러그인 → (맨 아래) 개발자 모드`를 켠 뒤 왼쪽 `플러그인 → +`
+2. `설정 → 앱 → 고급 설정 → 개발자 모드`를 켠 뒤 `앱 → 만들기`
+
+관리 워크스페이스는 `워크스페이스 설정 → 앱 → 만들기`를 사용합니다. `+` 또는
+`만들기`가 없으면 다음 순서로 확인합니다.
+
+1. ChatGPT 웹인지 확인
+2. 개인/관리 워크스페이스 확인
+3. 개발자 모드 토글 확인
+4. `앱` 대신 `플러그인` UI인지 확인
+
+Plus/Pro에서도 보통 등록할 수 있으므로 요금제는 마지막 가설입니다.
+
+### 실제 연결 확인
+
+인증 없는 local/public `/mcp`의 HTTP `401`은 정상입니다. 연결 거부 또는 timeout은
+정상이 아닙니다. 최종 단계 `08_final_gate`는 마법사 상태가 `ready`이고, 새 일반
+(non-Pro) Oracle `@<앱이름>` 읽기 전용 검사가 exact 프로젝트 root를 열어 작은
+디렉터리 목록을 읽을 때만 통과합니다. Codex Desktop 내장 DevSpace 플러그인은 다른
+연결이므로 이 검증 증거로 사용하지 않으며, 첫 검증에 Pro 세션을 쓰지 않습니다.
+
+일반 비-Pro Oracle에서 실제 읽기를 확인한 뒤에만 gate를 기록합니다. 요약은 충분히
+구체적으로 쓰고, 관찰한 디렉터리 항목을 하나 이상 넣습니다. `--listing`은 반복할 수
+있습니다.
+
+```powershell
+python onboard.py record-final-gate --root <프로젝트 폴더> `
+  --evidence "읽은 경로와 결과 요약" `
+  --listing <항목1> `
+  --listing <항목2>
+```
+
+증거 요약이 너무 짧거나 목록이 없으면 `FINAL_GATE_EVIDENCE_INSUFFICIENT`로 거부합니다.
+일반 비-Pro Oracle 이외의 transport는
+`FINAL_GATE_TRANSPORT_MUST_BE_REGULAR_NON_PRO_ORACLE`로 거부합니다.
+
 ## 0. 공개 경로 선택
 
 | 경로 | 권장 상황 | 완료 조건 | 주의점 |
@@ -94,7 +200,7 @@ python onboard.py plan `
   --root D:\projects\beta
 ```
 
-계획은 설치부터 최종 gate까지 8개 단계를 JSON으로 출력합니다. 암호나 토큰을
+계획은 설치부터 최종 gate까지 9개 단계를 JSON으로 출력합니다. 암호나 토큰을
 인자로 받지 않습니다. Cloudflare, ngrok, 기존 프록시는 `--provider`만 바꾸고
 고정 `/mcp` URL을 제공합니다.
 

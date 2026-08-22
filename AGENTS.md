@@ -14,6 +14,27 @@
 - Put reusable third-party source checkouts under `%LOCALAPPDATA%\Codex\Sources`, not a drive root. An explicitly user-approved project root is not temporary storage and must not be repurposed.
 - Before cleaning an existing drive-root item, classify its ownership and active references. Preserve user projects, system folders, credentials, and ambiguous items; move confirmed automation artifacts to a recoverable archive instead of deleting them.
 
+## First-install onboarding contract
+
+- When a user only supplies this repository and asks for installation, run the
+  lifecycle install and then continue into `python onboard.py start`. Ask at most
+  three setup questions: project folders, stable-URL provider, and whether the
+  optional Local Multi-GPT component is wanted.
+- Drive remaining setup through `onboard.py next` and `onboard.py confirm
+  <stage-id>`. Never skip a pending stage, re-run a verified stage, or accept a
+  user confirmation that live evidence does not prove.
+- Onboarding state is non-secret by contract. Never write Owner passwords,
+  tokens, cookies, or OAuth secrets into it, and never ask the user to paste the
+  DevSpace Owner password to the agent.
+- Do not report installation complete before `08_final_gate` verifies a fresh
+  regular non-Pro Oracle read of the exact project root. Report the precise
+  pending completion state instead. The Codex Desktop DevSpace plugin is a
+  different connection and is never that proof.
+- ChatGPT developer mode, custom app creation, permission and tool selection,
+  and Owner approval stay manual. When the create button is missing, triage the
+  surface, workspace type, developer-mode toggle, and Apps/Plugins UI before
+  ever concluding that a plan upgrade is required.
+
 ## Comprehensive-mode ownership
 
 - macOS new-work support uses the portable Python lifecycle, POSIX identity,

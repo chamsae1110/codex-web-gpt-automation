@@ -605,6 +605,27 @@ def self_observation_guard(run_id: str, slug: str) -> str:
     )
 
 
+def connector_identity_guard(app_name: str) -> str:
+    """Bind the run to one exact registered app.
+
+    Several ChatGPT plugins can expose identically named workspace tools such as
+    ``open_workspace`` and ``read``.  An ``@app`` mention alone does not select
+    one of them, so a session could silently open a different plugin's connector,
+    fail with an internal error, and burn the whole run on tool self-diagnosis.
+    """
+    name = str(app_name or "").strip()
+    if not name:
+        return ""
+    return (
+        f" Use only the {name} app's workspace tools. If more than one connector exposes a workspace tool of the "
+        f"same name, select the one provided by {name} and never substitute another plugin's connector. "
+        f"Before reading the mission, state in one line which app provided the workspace tool you called and the "
+        "workspace id it returned. If the first workspace call fails, do not investigate your own tool wiring, "
+        "search the web, or try another connector; retry the same exact root once with the same app, then report "
+        "that concrete blocker and stop."
+    )
+
+
 def composer_prompt(
     config: OracleConfig,
     mission_path: Path | None = None,
@@ -636,6 +657,7 @@ def composer_prompt(
             "Put every citation, footnote, and Markdown reference definition before the outcome marker. "
             "End the final response with exactly one of TASK_OUTCOME: EXECUTED, TASK_OUTCOME: NOT_EXECUTED, or "
             "TASK_OUTCOME: BLOCKED as the final nonempty line; append nothing after it."
+            + connector_identity_guard(config.app_name)
             + self_observation_guard(run_id, slug)
         )
     if is_pro_readonly_transport(config.transport):
@@ -648,6 +670,7 @@ def composer_prompt(
             "Put every citation, footnote, and Markdown reference definition before the outcome marker. "
             "End the final response with exactly one of TASK_OUTCOME: EXECUTED, TASK_OUTCOME: NOT_EXECUTED, or "
             "TASK_OUTCOME: BLOCKED as the final nonempty line; append nothing after it."
+            + connector_identity_guard(config.app_name)
             + self_observation_guard(run_id, slug)
         )
     # Keep the Windows npx.cmd prompt in one argument line. A literal newline
@@ -664,6 +687,7 @@ def composer_prompt(
             if config.task_outcome_contract == "v1"
             else ""
         )
+        + connector_identity_guard(config.app_name)
         + self_observation_guard(run_id, slug)
     )
 

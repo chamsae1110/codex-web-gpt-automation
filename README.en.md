@@ -35,6 +35,11 @@ dedicated Oracle browser, manually register the ChatGPT app as `codex`, then
 run an ordinary non-Pro connection probe. Before updating an existing install,
 read the [latest release notes](https://github.com/ventianima-lab/codex-web-gpt-automation/releases/latest).
 
+When you hand only the repository URL to an AI coding agent, have it read the
+[install contract](INSTALL_AGENT.md) too. After installation the
+`python onboard.py start` wizard walks the remaining stages one at a time and
+reports completion only after the real project-root read check passes.
+
 ## Why use it?
 
 | Guarded | Recoverable | Web-first | Cross-platform |
