@@ -342,6 +342,7 @@ def test_final_gate_requires_recorded_non_pro_exact_root_read(tmp_path: Path) ->
     after = module.next_step(
         codex_home=environment["codex_home"],
         devspace_home=environment["devspace_home"],
+        language="ko",
         **environment["probes"],
     )
     assert after["done"] is True
@@ -385,6 +386,7 @@ def test_chatgpt_stage_exposes_both_ui_paths_and_triage(tmp_path: Path) -> None:
     step = module.next_step(
         codex_home=environment["codex_home"],
         devspace_home=environment["devspace_home"],
+        language="ko",
         **environment["probes"],
     )
     assert step["current_stage"] == "07_chatgpt_app"
