@@ -37,6 +37,27 @@ def test_resolver_skips_cli_that_cannot_parse_active_config(tmp_path, monkeypatc
     assert version == "codex-cli 1"
 
 
+def test_resolver_requires_luna_max_no_run_canary(tmp_path, monkeypatch) -> None:
+    module = load_module()
+    cli = tmp_path / "codex"
+    cli.write_text("current", encoding="utf-8")
+    monkeypatch.setattr(module, "_candidate_codex_commands", lambda: [cli])
+    captured = []
+
+    def fake_run(argv, *, codex_home):
+        captured.append(list(argv))
+        if argv[1:] == ["--version"]:
+            return subprocess.CompletedProcess(argv, 0, stdout="codex-cli 1\n", stderr="")
+        return subprocess.CompletedProcess(argv, 0, stdout="[]", stderr="")
+
+    monkeypatch.setattr(module, "_run", fake_run)
+    assert module.resolve_codex_cli(tmp_path) == (cli, "codex-cli 1")
+    assert captured[1][1:] == [
+        "--model", "gpt-5.6-luna", "-c", 'model_reasoning_effort="max"',
+        "mcp", "list", "--json",
+    ]
+
+
 def test_exact_registration_requires_server_and_cli_paths(tmp_path) -> None:
     module = load_module()
     server = (tmp_path / "server.mjs").resolve()
@@ -53,6 +74,21 @@ def test_exact_registration_requires_server_and_cli_paths(tmp_path) -> None:
     assert module._matches(value, server, cli) is True
     value["transport"]["args"] = [str(tmp_path / "other.mjs")]
     assert module._matches(value, server, cli) is False
+
+
+def test_stale_cli_registration_is_owned_only_for_exact_server(tmp_path) -> None:
+    module = load_module()
+    server = (tmp_path / "server.mjs").resolve()
+    value = {
+        "enabled": True,
+        "transport": {
+            "type": "stdio", "command": "node", "args": [str(server)],
+            "env": {"MULTI_GPT_CODEX_CLI_PATH": str(tmp_path / "old-codex")},
+        },
+    }
+    assert module._registration_owns_server(value, server) is True
+    value["transport"]["args"] = [str(tmp_path / "other.mjs")]
+    assert module._registration_owns_server(value, server) is False
 
 
 def test_manifest_and_portable_lifecycle_default_to_no_local_multi_gpt() -> None:

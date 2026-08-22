@@ -55,6 +55,7 @@ function resolveCodexCommand() {
 }
 
 const CODEX_COMMAND = resolveCodexCommand();
+let EXECUTION_CONTRACT_CANARY = null;
 const MAX_ERROR_TEXT = 4000;
 const JOBS_DIR = path.join(process.env.CODEX_HOME || path.join(homedir(), '.codex'), 'mcp_servers', 'multi-gpt', 'jobs');
 const JOBS = new Map();
@@ -205,6 +206,7 @@ function canceledJob(job, canceledAt = new Date().toISOString()) {
 
 async function startMultiGptJob(args = {}) {
   const options = normalizeOptions(args);
+  const launchCanary = assertCodexCliAcceptsExecutionContract();
   if (runningJobCount() >= MAX_RUNNING_JOBS) throw new Error('too many running Multi GPT jobs; limit is ' + MAX_RUNNING_JOBS);
   const job = {
     job_id: randomUUID(),
@@ -215,6 +217,7 @@ async function startMultiGptJob(args = {}) {
     reasoning_effort: options.reasoningEffort,
     requested_contract: options.requestedContract,
     enforced_launch_contract: options.enforcedLaunchContract,
+    launch_contract_canary: launchCanary,
     max_iterations: options.maxIterations,
     file_count: options.files.length,
     result: null,
@@ -334,6 +337,35 @@ function assertExecutionContract(model, reasoningEffort) {
   if (reasoningEffort !== EXECUTION_CONTRACT.reasoning_effort) {
     throw new Error(`Multi GPT execution-contract violation: reasoning_effort must be exactly ${EXECUTION_CONTRACT.reasoning_effort}; received ${JSON.stringify(reasoningEffort)}`);
   }
+}
+
+function assertCodexCliAcceptsExecutionContract() {
+  if (EXECUTION_CONTRACT_CANARY?.ok) return EXECUTION_CONTRACT_CANARY;
+  const args = [
+    '--model', EXECUTION_CONTRACT.model,
+    '-c', `model_reasoning_effort="${EXECUTION_CONTRACT.reasoning_effort}"`,
+    'mcp', 'list', '--json',
+  ];
+  const completed = spawnSync(CODEX_COMMAND, args, {
+    windowsHide: true,
+    shell: process.platform === 'win32',
+    encoding: 'utf8',
+    timeout: 30_000,
+  });
+  let parsed = null;
+  try { parsed = JSON.parse(String(completed.stdout || '')); } catch {}
+  if (completed.status !== 0 || !Array.isArray(parsed)) {
+    const detail = truncateText(String(completed.stderr || completed.error?.message || '').trim());
+    throw new Error(`LUNA_MAX_UNSUPPORTED_BY_CODEX_CLI: ${CODEX_COMMAND} rejected gpt-5.6-luna/max${detail ? `: ${detail}` : ''}`);
+  }
+  EXECUTION_CONTRACT_CANARY = {
+    ok: true,
+    command: CODEX_COMMAND,
+    model: EXECUTION_CONTRACT.model,
+    reasoning_effort: EXECUTION_CONTRACT.reasoning_effort,
+    probe: 'mcp-list-no-run',
+  };
+  return EXECUTION_CONTRACT_CANARY;
 }
 
 async function readContextFiles(files) {

@@ -2389,7 +2389,12 @@ def settle_user_confirmed_no_submission(
         "transport_status": "not_submitted_user_confirmed",
         "task_outcome": "pending",
         "task_outcome_reason": (
-            "user-confirmed-no-submission-after-devspace-restart-required"
+            (
+                "user-confirmed-no-submission-after-devspace-restart-required"
+                if evidence.get("host_failure", {}).get("failure_reason")
+                == "devspace-service-restart-required"
+                else "user-confirmed-no-submission-after-oracle-version-resolution-failure"
+            )
             if evidence.get("settlement_eligibility") == "oracle-pre-submit-host/v1"
             else "user-confirmed-no-submission-after-model-selector-failure"
             if evidence.get("pre_submit_marker")
@@ -2880,6 +2885,34 @@ def proven_pre_submit_host_failure(state_path: Path) -> dict[str, Any] | None:
             return None
         failure_reason = "devspace-service-restart-required"
         code = "DEVSPACE_SERVICE_RESTART_PRELAUNCH_FAILED"
+    elif normalized_error.strip() == (
+        "version resolution failed: ORACLE_VERSION_FAILED: "
+        "Oracle version could not be resolved"
+    ):
+        lifecycle_shape = (
+            (state.get("status"), str(state.get("transport_status") or ""))
+            in {
+                ("failed", "prepared"),
+                ("attention_required", "failed_pre_submit"),
+                ("attention_required", "not_submitted_user_confirmed"),
+            }
+        )
+        command = tuple(str(item) for item in (oracle.get("command") or []))
+        locator = str(oracle.get("session_locator") or oracle.get("slug") or "").strip()
+        if (
+            authority != "pre_submit"
+            or not lifecycle_shape
+            or state.get("terminal_harvested") is not False
+            or not is_devspace_transport(str(state.get("transport") or ""))
+            or str(state.get("mode") or "") != "browser"
+            or str(state.get("task_outcome") or "") != "pending"
+            or stdout_bytes
+            or command != default_oracle_command(platform_name="nt" if command and command[0].casefold().endswith(".cmd") else None)
+            or not locator
+        ):
+            return None
+        failure_reason = "oracle-version-command-failed-before-launch"
+        code = "ORACLE_VERSION_RESOLUTION_PRELAUNCH_FAILED"
     elif "Oracle compatibility is validated only for the tested version" in normalized_error:
         failure_reason = "compatibility-version-drift"
         code = "ORACLE_VERSION_RESOLUTION_PRELAUNCH_FAILED"
@@ -2904,11 +2937,14 @@ def proven_pre_submit_host_failure(state_path: Path) -> dict[str, Any] | None:
 
 
 def _pre_submit_host_no_submission_evidence(state_path: Path) -> dict[str, Any] | None:
-    """Bind the exact DevSpace restart preflight failure without reading project files."""
+    """Bind an exact pre-submit host failure without reading project files."""
     failure = proven_pre_submit_host_failure(state_path)
     if (
         failure is None
-        or failure.get("code") != "DEVSPACE_SERVICE_RESTART_PRELAUNCH_FAILED"
+        or failure.get("code") not in {
+            "DEVSPACE_SERVICE_RESTART_PRELAUNCH_FAILED",
+            "ORACLE_VERSION_RESOLUTION_PRELAUNCH_FAILED",
+        }
     ):
         return None
     state = load_state(state_path)
@@ -2928,6 +2964,7 @@ def _pre_submit_host_no_submission_evidence(state_path: Path) -> dict[str, Any] 
         or transport_path.resolve() != (run_dir / "mission.md").resolve()
         or transport_path.is_symlink()
         or transcript_record is None
+        or not is_devspace_transport(str(state.get("transport") or ""))
     ):
         return None
     transcript_path, transcript_bytes = transcript_record
@@ -2948,7 +2985,7 @@ def _pre_submit_host_no_submission_evidence(state_path: Path) -> dict[str, Any] 
         "settlement_eligibility": "oracle-pre-submit-host/v1",
         "project_root": str(project_root),
         "run_id": run_id,
-        "transport": "devspace",
+        "transport": str(state.get("transport") or ""),
         "transport_mission_path": str(transport_path),
         "transport_mission_sha256": mission_sha256,
         "mission_sha256": mission_sha256,

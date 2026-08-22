@@ -1,5 +1,17 @@
 # 기술 변경 기록
 
+## 1.15.12 - Luna Max CLI 및 Oracle 버전 해석 복구
+
+- Local Multi-GPT 등록이 Codex Desktop 업데이트로 사라진 구버전 CLI를
+  가리키면, exact server ownership을 확인한 뒤 최신 CLI로 원자 갱신합니다.
+  setup과 runtime 모두 `gpt-5.6-luna` / `max` no-run 구성 canary를 통과해야
+  하며, 지원하지 않는 CLI에서는 child나 job을 만들기 전에 실패 폐쇄합니다.
+- pinned Oracle 0.17.1의 `npx --version`이 일시 실패해도 정확한 로컬 npx
+  캐시 package version을 확인해 브라우저 생성 전 버전 해석을 복구합니다.
+- exact `ORACLE_VERSION_FAILED` pre-submit 상태는 빈 stdout/output, 대화 URL
+  부재, pinned command 및 lifecycle을 모두 검증한 경우에만 공식
+  no-submission 정산 대상이 됩니다. 유사 오류와 모순 증거는 거부합니다.
+
 ## 1.15.11 - DevSpace restart pre-submit 공식 정산
 
 - direct Oracle의 exact `DEVSPACE_SERVICE_RESTART_REQUIRED` 오류를 출력·대화

@@ -96,12 +96,33 @@ def test_version_resolution_allows_a_bounded_slow_valid_oracle_0161() -> None:
         captured["timeout"] = kwargs["timeout"]
         return subprocess.CompletedProcess(command, 0, stdout="oracle 0.17.1\n", stderr="")
 
-    assert runner.resolve_oracle_version(["npx.cmd", "-y", "@steipete/oracle@0.17.1"], run_factory=slow_valid) == "oracle 0.17.1"
+    assert runner.resolve_oracle_version(
+        ["npx.cmd", "-y", "@steipete/oracle@0.17.1"],
+        run_factory=slow_valid,
+        cache_resolver=lambda command: None,
+    ) == "oracle 0.17.1"
     assert captured == {
         "command": ["npx.cmd", "-y", "@steipete/oracle@0.17.1", "--version"],
         "timeout": runner.ORACLE_VERSION_RESOLUTION_TIMEOUT_SECONDS,
     }
     assert runner.ORACLE_VERSION_RESOLUTION_TIMEOUT_SECONDS == 90
+
+
+def test_version_resolution_recovers_from_npx_failure_with_exact_cached_package() -> None:
+    runner = load_runner()
+    calls = []
+
+    def failed_npx(*args, **kwargs):
+        calls.append((args, kwargs))
+        return subprocess.CompletedProcess(args[0], 1, stdout="", stderr="network unavailable")
+
+    resolved = runner.resolve_oracle_version(
+        ["npx.cmd", "-y", "@steipete/oracle@0.17.1"],
+        run_factory=failed_npx,
+        cache_resolver=lambda command: "oracle 0.17.1",
+    )
+    assert resolved == "oracle 0.17.1"
+    assert len(calls) == 1
 
 
 def test_default_oracle_command_is_pinned_to_the_hash_validated_version() -> None:
@@ -2194,6 +2215,100 @@ def test_version_resolution_timeout_is_proven_pre_submit_and_releases_project(tm
         runner.STATE.load_manifest(manifest(tmp_path)).run_root,
         tmp_path,
     ) == []
+
+
+def test_exact_oracle_version_failure_is_settleable_pre_submit_without_retry(
+    tmp_path: Path,
+) -> None:
+    runner = load_runner()
+
+    def failed_version(*args, **kwargs):
+        raise runner.OracleRunError(
+            "ORACLE_VERSION_FAILED", "Oracle version could not be resolved"
+        )
+
+    result = execute_run(
+        runner,
+        pro_readonly_manifest(
+            tmp_path,
+            run_id="f" * 32,
+            oracle_command=["npx.cmd", "-y", "@steipete/oracle@0.17.1"],
+        ),
+        version_resolver=failed_version,
+        popen_factory=lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("Oracle must not launch after version failure")
+        ),
+    )
+    run_dir = Path(result["run_dir"])
+    state = runner.STATE.load_state(run_dir / "state.json")
+    assert result["status"] == "pre_submit_failed"
+    assert result["safe_for_fresh_run"] is True
+    assert state["pre_submit_failure"]["code"] == "ORACLE_VERSION_RESOLUTION_PRELAUNCH_FAILED"
+    assert state["pre_submit_failure"]["failure_reason"] == (
+        "oracle-version-command-failed-before-launch"
+    )
+
+    settled = runner.settle_user_confirmed_no_submission(
+        run_dir,
+        confirmation=runner.STATE.USER_CONFIRMED_NO_SUBMISSION,
+        reason="exact pinned Oracle version command failed before browser launch",
+    )
+    assert settled["safe_for_fresh_run"] is True
+    assert settled["unresolved_owners"] == []
+    assert settled["result"]["task_outcome_reason"] == (
+        "user-confirmed-no-submission-after-oracle-version-resolution-failure"
+    )
+    receipt = json.loads(
+        (run_dir / "user-confirmed-no-submission.json").read_text(encoding="utf-8")
+    )
+    assert receipt["settlement_eligibility"] == "oracle-pre-submit-host/v1"
+    assert receipt["transport"] == "pro-devspace"
+
+
+@pytest.mark.parametrize("mutation", ["similar-error", "output", "conversation-url"])
+def test_oracle_version_failure_settlement_rejects_contradictory_evidence(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    runner = load_runner()
+
+    def failed_version(*args, **kwargs):
+        raise runner.OracleRunError(
+            "ORACLE_VERSION_FAILED", "Oracle version could not be resolved"
+        )
+
+    result = execute_run(
+        runner,
+        pro_readonly_manifest(
+            tmp_path,
+            run_id={"similar-error": "a", "output": "b", "conversation-url": "c"}[mutation] * 32,
+            oracle_command=["npx.cmd", "-y", "@steipete/oracle@0.17.1"],
+        ),
+        version_resolver=failed_version,
+    )
+    run_dir = Path(result["run_dir"])
+    if mutation == "similar-error":
+        for name in ("stderr.log", "transcript.md"):
+            path = run_dir / name
+            path.write_text(
+                path.read_text(encoding="utf-8").replace("could not", "might not"),
+                encoding="utf-8",
+            )
+    elif mutation == "output":
+        (run_dir / "output.md").write_text("unexpected output", encoding="utf-8")
+    else:
+        state_path = run_dir / "state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["oracle"]["conversation_url"] = "https://chatgpt.com/c/unexpected"
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    with pytest.raises(runner.STATE.OracleStateError):
+        runner.settle_user_confirmed_no_submission(
+            run_dir,
+            confirmation=runner.STATE.USER_CONFIRMED_NO_SUBMISSION,
+            reason="contradictory evidence must fail closed",
+        )
+    assert not (run_dir / "user-confirmed-no-submission.json").exists()
 
 
 def test_recovery_repairs_legacy_version_timeout_authority_without_oracle_call(tmp_path: Path) -> None:

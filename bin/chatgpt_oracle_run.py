@@ -319,7 +319,29 @@ def terminate_owned_oracle_process_tree(
 ORACLE_VERSION_RESOLUTION_TIMEOUT_SECONDS = 90
 
 
-def resolve_oracle_version(command: Sequence[str], *, run_factory=subprocess.run, platform_name: str | None = None) -> str:
+def cached_oracle_version(command: Sequence[str]) -> str | None:
+    """Resolve the pinned Oracle from its validated npx cache without npm I/O."""
+    normalized = tuple(str(item) for item in command)
+    executable = Path(normalized[0]).name.casefold() if normalized else ""
+    if executable not in {"npx", "npx.cmd", "npx.exe"} or normalized[1:] not in {
+        ("-y", "@steipete/oracle@0.17.1"),
+        ("--yes", "@steipete/oracle@0.17.1"),
+        ("@steipete/oracle@0.17.1",),
+    }:
+        return None
+    try:
+        package_root = COMPAT.resolve_package_root("0.17.1")
+        version = COMPAT.package_version(package_root)
+    except Exception:
+        return None
+    return f"oracle {version}" if version == "0.17.1" else None
+
+
+def resolve_oracle_version(
+    command: Sequence[str], *, run_factory=subprocess.run,
+    platform_name: str | None = None,
+    cache_resolver: Callable[[Sequence[str]], str | None] = cached_oracle_version,
+) -> str:
     """Resolve Oracle before launch with a bounded cold-cache allowance.
 
     The returned value is still passed immediately to the exact 0.17.1
@@ -336,6 +358,9 @@ def resolve_oracle_version(command: Sequence[str], *, run_factory=subprocess.run
         **STATE.windows_subprocess_kwargs(platform_name=platform_name),
     )
     if completed.returncode != 0:
+        cached = cache_resolver(command)
+        if cached is not None:
+            return cached
         raise OracleRunError("ORACLE_VERSION_FAILED", "Oracle version could not be resolved", {"exit_code": completed.returncode})
     lines = [line.strip() for line in f"{completed.stdout or ''}\n{completed.stderr or ''}".splitlines() if line.strip()]
     if not lines:
@@ -807,6 +832,7 @@ def execute_run(
     run_factory: Callable[..., subprocess.CompletedProcess[Any]] = subprocess.run,
     popen_factory: Callable[..., Any] = subprocess.Popen,
     platform_name: str | None = None,
+    version_resolver: Callable[..., str] = resolve_oracle_version,
     compat_factory: Callable[[str], dict[str, Any]] = COMPAT.ensure_oracle_compatibility,
     devspace_compat_factory: Callable[[], dict[str, Any]] = (
         DEVSPACE_COMPAT.ensure_devspace_compatibility
@@ -869,7 +895,11 @@ def execute_run(
     oracle_process_pid: int | None = None
     prior_audit_observations: dict[str, dict[str, Any]] = {}
     try:
-        version = resolve_oracle_version(config.oracle_command, run_factory=run_factory, platform_name=platform_name)
+        version = version_resolver(
+            config.oracle_command,
+            run_factory=run_factory,
+            platform_name=platform_name,
+        )
         compat_factory(version)
         if STATE.is_devspace_transport(config.transport):
             devspace_compat = devspace_compat_factory()

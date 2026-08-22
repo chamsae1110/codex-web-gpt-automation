@@ -74,6 +74,11 @@ def test_runtime_defaults_reject_overrides_and_pin_every_stage_argv() -> None:
     assert "'-c', 'responses_websockets=false'" in launcher
     assert "args.splice" not in launcher
 
+    assert "assertCodexCliAcceptsExecutionContract()" in source
+    assert "LUNA_MAX_UNSUPPORTED_BY_CODEX_CLI" in source
+    assert "'mcp', 'list', '--json'" in source
+    assert "launch_contract_canary: launchCanary" in source
+
     assert "function resolveCodexCommand()" in source
     assert "process.env.MULTI_GPT_CODEX_CLI_PATH" in source
     assert "process.env.CODEX_CLI_PATH" in source
