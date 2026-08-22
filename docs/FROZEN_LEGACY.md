@@ -9,7 +9,10 @@
 
 - 신규 제출 경로는 Oracle뿐입니다. 일반·계획·검토·수정·지휘·심층
   리서치·종합모드·Web Multi는 Oracle + 수동 등록 DevSpace 앱을 쓰고,
-  Pro는 Oracle 첨부 전용으로 앱을 쓰지 않습니다.
+  명시적으로 요청된 Pro도 같은 수동 등록 DevSpace 앱을 `pro-devspace`로
+  사용합니다. Pro는 exact root 안에서 미션이 허용한 읽기·쓰기·명령을
+  수행합니다. `pro-attachment`는 DevSpace가 읽을 수 없는 불변 증거에만
+  쓰는 별도 명시 경로이며 자동 fallback이 아닙니다.
 - Oracle 실패는 다른 백엔드로 전환할 권한을 만들지 않습니다.
   agbrowse·CodexPro·in-app Browser·`@chrome`·Playwright/CDP·Proxima는
   fallback이 아닙니다.
@@ -58,7 +61,7 @@
 | `bin/chatgpt_oracle_state.py` | 프로젝트 잠금·신원·상태 장부 |
 | `bin/chatgpt_oracle_comprehensive.py` | 종합모드 단계 실행기 |
 | `bin/chatgpt_oracle_multi.py` | 진짜 Web Multi-GPT wave 실행 |
-| `bin/chatgpt_oracle_compat.py` | Oracle 0.17.1 해시 검증 호환 패치 |
+| `bin/chatgpt_oracle_compat.py` | 기본 Oracle 0.17.1 해시 검증과 명시적 WebJjonku Linux 0.18.0 범위 제한 호환 패치 |
 | `bin/chatgpt_oracle_profiles.py` | lane별 throwaway 프로필 |
 | `bin/chatgpt_oracle_diagnose.py` | 실패 서명 분류 |
 | `bin/chatgpt_oracle_incident.py` | 단일 수리 소유자 인계 패킷 |

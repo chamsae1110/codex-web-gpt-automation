@@ -1,8 +1,10 @@
 # Documentation
 
 This index is the single map for Codex Web GPT Automation documentation.
-Operational commands live in one authoritative guide and are linked instead of
-being copied into several files.
+`FIRST_INSTALL.md` is the canonical full procedure for installation and ChatGPT
+connection. Other guides link to it rather than restating it. `INSTALL_AGENT.md`
+is a deliberate short duplicate for an AI agent that received only the
+repository URL; keep the two in sync when either changes.
 
 ## Start here
 

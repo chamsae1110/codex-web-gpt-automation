@@ -45,10 +45,10 @@ contract-validate agbrowse for an old persisted run.
 ## macOS Ultrawork 1.7
 
 - Exercise the portable lifecycle in a temporary `CODEX_HOME`, including update rollback and the original install uninstall.
-- Verify OMO Codex Light only, `features.multi_agent_v2.max_concurrent_threads_per_session = 5`, telemetry opt-out, and direct smoke calls for ultrawork/ulw-loop/start-work/reviewer hooks.
+- Verify OMO Codex Light only, telemetry opt-out, and direct smoke calls for ultrawork/ulw-loop/start-work/reviewer hooks. Native subagents use the supported `[agents]` block with `max_concurrent_threads_per_session = 3`; `multi_agent_v2` stays disabled while it is unstable.
 - Run `python3 scripts/run_harness_canary.py`; use `--real-time` for the release-host 85-minute canary and retain its SHA-256 receipt.
 - Validate all three managed plists with `plutil`; force-restart the supervisor and verify only `com.ventianima.codexpro-automation.*` labels are touched.
-- Require exactly one persisted DevSpace allowed root. Tailscale login, Funnel approval, macOS security approval, ChatGPT Developer Mode registration, and Owner approval remain manual gates.
+- Require the persisted DevSpace allowed roots to match the approved exact-root set with nothing dropped or substituted; multiple roots are supported. Tailscale login, Funnel approval, macOS security approval, ChatGPT Developer Mode registration, and Owner approval remain manual gates.
 
 ## Parallel implementation v3
 
