@@ -52,6 +52,30 @@ On the current Power-slider UI, Oracle verifies `Power 4 of 5` for regular
 verified `GPT-5.6 Sol` model. `heavy` is only Oracle's internal compatibility
 token for Pro, never a claimed UI label.
 
+## Decision and evidence gates
+
+Apply these gates in order. A later gate never repairs a failed earlier gate.
+
+| Observation | Required action | Never do |
+| --- | --- | --- |
+| The exact project root is absent from current DevSpace `allowedRoots` | Stop before Oracle/browser creation and route to read-only `chatgpt-workspace-setup` diagnosis | Substitute a parent, child, similarly named, active, or shell-visible root |
+| The selected model or visible Power value is missing or mismatched before prompt send | Fail closed as pre-submit; preserve the evidence and do not send the prompt | Infer the value, silently downgrade, or switch app/transport |
+| Oracle returns nonzero or times out after submission is true or uncertain | Keep project ownership and recover only the recorded exact slug with `live` or `harvest` | Submit the mission again or create a replacement conversation |
+| Output is empty, stale, or not proven fresh for this run | Keep the run attention-required and harvest the same slug | Treat a UI completion label, old output, or exit code alone as success |
+| A Pro DevSpace run ends with `TASK_OUTCOME: NOT_EXECUTED` | Accept it only as terminal non-execution; a fresh retry is allowed only when the runtime releases the lock and reuses identical mission bytes and SHA-256 | Loop retries, change the mission, manipulate app settings, or attach the mission |
+
+Before reporting success, retain evidence for the exact root, requested mode,
+selected model, visible Power value, recorded slug, submission state, and fresh
+output path. Regular completion requires exit zero plus fresh nonempty output.
+When the resolved transport is Pro DevSpace, successful execution additionally
+requires exactly one terminal `TASK_OUTCOME: EXECUTED` marker under the runtime's
+v1 footer rules. `NOT_EXECUTED` and `BLOCKED` are terminal evidence, not success.
+
+Keep the high-risk blacklist compact and absolute: no ordinary attachments, no
+ChatGPT app/settings automation, no root substitution, no shared manual profile,
+no duplicate submission, and no new CodexPro or agbrowse run. Cosmetic wording
+changes never justify weakening one of these controls.
+
 Every new run copies the manually signed-in Oracle profile into a throwaway
 per-run profile and asks Oracle to hide its owned window. This isolates
 different projects: one completed run cannot close another run's live Chrome.

@@ -134,6 +134,28 @@ def test_oracle_runs_use_isolated_profile_copies_and_owned_hidden_windows() -> N
     assert "hide its owned window" in value
 
 
+def test_thinking_skill_has_ordered_fail_closed_evidence_gates() -> None:
+    value = text(THINKING)
+    flat = " ".join(value.split())
+    assert "## Decision and evidence gates" in value
+    assert "A later gate never repairs a failed earlier gate" in flat
+    assert "absent from current DevSpace `allowedRoots`" in flat
+    assert "Stop before Oracle/browser creation" in flat
+    assert "Substitute a parent, child, similarly named, active, or shell-visible root" in flat
+    assert "missing or mismatched before prompt send" in flat
+    assert "Fail closed as pre-submit" in flat
+    assert "after submission is true or uncertain" in flat
+    assert "recover only the recorded exact slug" in flat
+    assert "Submit the mission again" in flat
+    assert "empty, stale, or not proven fresh" in flat
+    assert "exit zero plus fresh nonempty output" in flat
+    assert "exactly one terminal `TASK_OUTCOME: EXECUTED`" in flat
+    assert "`NOT_EXECUTED` and `BLOCKED` are terminal evidence, not success" in flat
+    assert "no ordinary attachments" in flat
+    assert "no shared manual profile" in flat
+    assert "no duplicate submission" in flat
+
+
 def test_install_inventory_contains_new_active_runtime_and_keeps_legacy_recovery() -> None:
     manifest = json.loads((ROOT / "install-manifest.json").read_text(encoding="utf-8"))
     include = set(manifest["include"])

@@ -40,6 +40,12 @@ route, then open a specialized guide only when that mode applies.
 | [Security policy](../SECURITY.md) | Supported versions and private reporting |
 | [Third-party notices](../THIRD_PARTY_NOTICES.md) | Upstream licenses and provenance |
 
+## Research and evaluation
+
+| Document | Purpose |
+|---|---|
+| [SkillOpt experiment for chatgpt-thinking-browser](research/skillopt-chatgpt-thinking-browser/README.md) | Pinned, reviewed, non-adopting skill-optimization scenarios and runner |
+
 ## Frozen legacy reference
 
 [Frozen Legacy](FROZEN_LEGACY.md) defines the exact recovery-only boundary.
