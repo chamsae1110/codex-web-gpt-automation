@@ -2202,6 +2202,11 @@ def test_awaiting_receipt_preserves_source_and_augmented_mission_bindings(tmp_pa
 
 def _user_stop_fixture(module, tmp_path: Path) -> dict[str, object]:
     path = manifest(tmp_path)
+    owner = os.environ.get("CODEX_THREAD_ID") or "11111111-1111-4111-8111-111111111111"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["source_thread_id"] = owner
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    os.environ["CODEX_THREAD_ID"] = owner
     config = module.load_manifest(path)
     config["_review_policy"] = module._default_review_policy()
     workflow_id = str(config["workflow_id"])
