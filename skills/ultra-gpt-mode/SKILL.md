@@ -107,5 +107,6 @@ gate.
   deterministic gate with exit code zero.
 
 When the user explicitly requires closed, hash-bound workflow provenance,
-select the opt-in `strict-ultra` profile and follow `docs/STRICT_ULTRA.md`.
+select the opt-in `strict-ultra` profile and follow the installed
+`~/.codex/docs/STRICT_ULTRA.md` guide.
 Do not silently upgrade ordinary `ultra-gpt` runs to the strict profile.

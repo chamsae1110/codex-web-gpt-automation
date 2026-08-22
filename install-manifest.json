@@ -1,6 +1,6 @@
 {
   "schema": "codexpro.install-manifest/v1",
-  "version": "1.16.0",
+  "version": "1.16.1",
   "include": [
     "bin/chatgpt_agbrowse_bridge.py",
     "bin/chatgpt_agbrowse_composer.py",
@@ -116,6 +116,7 @@
     "docs/FIRST_INSTALL.md",
     "docs/ULTRA_ECONOMY_MODE.md",
     "docs/ULTRA_GPT_MODE.md",
+    "docs/STRICT_ULTRA.md",
     "docs/templates/codex-agents/scout.toml",
     "docs/templates/codex-agents/implementer.toml",
     "docs/templates/codex-agents/verifier.toml",

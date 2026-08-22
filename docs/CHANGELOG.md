@@ -1,5 +1,10 @@
 # 기술 변경 기록
 
+## 1.16.1 - Strict Ultra 설치 문서 동기화
+
+- `strict-ultra` 전역 skill이 참조하는 `docs/STRICT_ULTRA.md`를 수명주기
+  설치 manifest에 포함하고 설치본 경로를 명확히 했습니다.
+
 ## 1.16.0 - Strict Ultra 감사와 안전한 DevSpace 파일 제거
 
 - 기존 Oracle Multi v2 스케줄러를 그대로 사용하는 선택형
