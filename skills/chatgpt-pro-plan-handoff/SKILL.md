@@ -51,6 +51,29 @@ Minimize redundant verification without lowering the safety floor.
   deterministic local gate, and fail-closed handling of stale or contradictory
   evidence.
 
+## Trajectory-gated review-skill evolution
+
+This is a maintenance gate, not another web stage. Ordinary runs do not edit
+their own skill and incur no extra provider call for it.
+
+- Base an explicitly requested skill change on raw exact-run trajectories and
+  receipts from this `GPT-5.6 Sol` Pro + Oracle + DevSpace consumer. Separate
+  successful and failed task behavior; do not train on transport-uncertain or
+  stale evidence as if it were a model failure.
+- Encode concrete recurring failure mechanisms, executable remedies, and an
+  explicit high-risk action blacklist. Reject generic caution, formatting-only
+  rewrites, and prose preference as improvement evidence.
+- Limit one candidate to at most two coherent add/delete/replace edits. Preserve
+  successful behavior and retain rejected edit directions in the source-side
+  evaluation record instead of the deployed skill.
+- Accept a candidate only when disjoint held-out cases show strict task-outcome
+  improvement, no safety regression, and no unjustified increase in web calls,
+  repeated audits, or broad test work. Require manual review and source/install
+  byte parity; never auto-adopt from the optimizer output.
+- Evaluate transfer to another model, transport, or harness separately. It does
+  not replace the acceptance gate for the exact consumer that will load this
+  skill.
+
 New GPT comprehensive work uses
 `bin/chatgpt_oracle_comprehensive.py` with schema
 `codex.chatgpt.oracle-comprehensive/v1`:

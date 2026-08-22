@@ -73,6 +73,24 @@ def test_qualified_pro_has_ordered_fail_closed_evidence_gates() -> None:
     assert "no review-to-implementation chain" in flat
 
 
+def test_pro_skill_improvement_is_trajectory_and_utility_gated() -> None:
+    pro = text(PRO)
+    handoff = text(HANDOFF)
+    combined = " ".join((pro + "\n" + handoff).split())
+    assert "observed failure mechanism" in combined
+    assert "smallest executable remedy" in combined
+    assert "high-risk actions that must remain forbidden" in combined
+    assert "at most two coherent add/delete/replace edits" in combined
+    assert "strict held-out improvement" in combined
+    assert "zero safety regressions" in combined
+    assert "prose-only model judge" in combined
+    assert "do not train on transport-uncertain" in combined
+    assert "no extra provider call" in combined
+    assert "never auto-adopt" in combined
+    assert "source/install\n  byte parity" in handoff
+    assert "another model, transport, or harness as transfer evidence only" in combined
+
+
 def test_qualified_pro_fails_closed_when_devspace_tools_are_not_exposed() -> None:
     value = text(PRO)
     flat = " ".join(value.split())

@@ -62,6 +62,24 @@ app/settings automation, no root substitution, no automatic attachment fallback,
 no shared manual profile, no duplicate submission, no route/model/effort change
 during recovery, and no review-to-implementation chain from this standalone skill.
 
+## Utility-gated mission and skill quality
+
+Require a Pro review or repair recommendation to name the observed failure
+mechanism, the smallest executable remedy, and the high-risk actions that must
+remain forbidden. Generic advice, surface polish, and a prose-only model judge
+are not evidence that a mission or skill improved.
+
+Ordinary Pro runs never self-edit this skill. When the user explicitly requests
+a skill improvement, use raw successful and failed trajectories from the same
+`GPT-5.6 Sol` Pro + Oracle + DevSpace consumer. Propose at most two coherent
+add/delete/replace edits, preserve working rules, and score task outcome,
+safety, and avoidable web/test cost on disjoint validation cases. Adopt only a
+strict held-out improvement with zero safety regressions and manual review.
+Keep rejected edits in the source-side evaluation record so they are not
+repeated, but do not bloat the deployed skill or add runtime model calls. Treat
+another model, transport, or harness as transfer evidence only, never as the
+acceptance gate for this consumer.
+
 ## Explicit attachment route
 
 `pro-attachment` is attachment-only through Oracle. Use it only when the
