@@ -304,7 +304,14 @@ def write_prompt_timeout_oracle_meta(
     browser_temp = Path(state["artifacts"]["browser_temp"]).resolve()
     runtime_profile = browser_temp / "oracle-browser-prompt-timeout"
     runtime_profile.mkdir(parents=True, exist_ok=True)
-    copy_profile = Path(state["profile"]["copy_profile"]).resolve()
+    copy_profile_raw = str(state["profile"].get("copy_profile") or "").strip()
+    if not copy_profile_raw:
+        copy_profile = (session_root.parent / "browser-profile-seed").resolve()
+        copy_profile.mkdir(parents=True, exist_ok=True)
+        state["profile"]["copy_profile"] = str(copy_profile)
+        runner.STATE.write_json_atomic(run_dir / "state.json", state)
+    else:
+        copy_profile = Path(copy_profile_raw).resolve()
     prompt = (
         f"@codex Then read the read-only mission file: "
         f"{Path(state['mission']['path']).resolve()}. Read the mission fully."
