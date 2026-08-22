@@ -1,5 +1,20 @@
 # 기술 변경 기록
 
+## 1.17.1 - 미인증 브라우저 pre-submit 정산
+
+- Oracle 전용 브라우저 프로필의 ChatGPT 로그인이 만료되면 컴포저 이전 단계에서
+  종료되어 대화가 생성되지 않습니다. 그런데 이 조합이 `settle-no-submission`의
+  인정 유형에 없어 제출 부재가 실증됐는데도 정산이 거부되고 프로젝트 락이
+  영구히 유지됐습니다. `oracle-browser-session-absent-pre-submit/v1` 유형을
+  추가했습니다.
+- 판별은 좁게 유지합니다. stdout이 세션 미검출과 쿠키 미적용을 함께 기록하고,
+  output이 없고, stdout과 모든 recovery 로그에 `chatgpt.com/c/` 대화 URL이 없고,
+  mission 해시·경로·프로젝트 루트가 일치할 때만 인정합니다. 대화 URL이 있거나
+  harvest가 실제 탭을 찾은 run은 그대로 거부됩니다.
+- 정산이 `transport_status`와 `session_authority`를 다시 쓰기 때문에 기록 시점
+  값만 인정하면 기록된 정산을 재검증할 수 없어 락이 풀리지 않았습니다. 정산 후
+  상태도 함께 인정해 기록·재검증·소유자 판정 세 경로가 같은 결론을 냅니다.
+
 ## 1.17.0 - 재개 가능한 최초 설치 마법사와 커넥터 신원 가드
 
 - `onboard.py`에 `start`, `next`, `resume`, `confirm`, `record-final-gate`를

@@ -2226,6 +2226,9 @@ def _user_confirmable_no_submission_evidence(state_path: Path) -> dict[str, Any]
     pre_submit_host = _pre_submit_host_no_submission_evidence(state_path)
     if pre_submit_host is not None:
         return pre_submit_host
+    browser_session_absent = _browser_session_absent_no_submission_evidence(state_path)
+    if browser_session_absent is not None:
+        return browser_session_absent
     direct_devspace = _direct_devspace_no_submission_evidence(
         state_path, require_persisted_recovery=True
     )
@@ -2957,6 +2960,110 @@ def proven_pre_submit_host_failure(state_path: Path) -> dict[str, Any] | None:
         "conversation_url_absent": True,
         "resolved_version": "unresolved",
         "failure_reason": failure_reason,
+    }
+
+
+ORACLE_BROWSER_SESSION_ABSENT_RE = re.compile(
+    r"ChatGPT session not detected\.\s*Login button detected on page\.",
+    re.IGNORECASE,
+)
+ORACLE_BROWSER_COOKIES_ABSENT_RE = re.compile(
+    r"No ChatGPT cookies were applied",
+    re.IGNORECASE,
+)
+
+
+def _browser_session_absent_no_submission_evidence(state_path: Path) -> dict[str, Any] | None:
+    """Bind a pre-submit failure caused by an unauthenticated Oracle browser.
+
+    Oracle stops before the composer when its dedicated profile has no ChatGPT
+    session, so no conversation can exist.  Without this eligibility type the
+    project lock survived forever: the run holds ``submitted_unknown`` authority
+    while every other detector rejects it, and no recovery binding can ever be
+    backfilled because the provider was never reached.
+    """
+    state = load_state(state_path)
+    run_dir = state_path.parent
+    run_id = str(state.get("run_id") or "")
+    if (
+        not run_id
+        or run_dir.name != run_id
+        # Settlement rewrites both fields, so revalidation must accept the
+        # settled pair as well.  Otherwise a recorded settlement can never be
+        # reproven and the project lock survives forever.
+        or str(state.get("transport_status") or "") not in {"failed", "not_submitted_user_confirmed"}
+        or str(state.get("session_authority") or "") not in {"submitted_unknown", "pre_submit"}
+        or bool(state.get("terminal_harvested"))
+        or _artifact_bytes(state, "output") is not None
+    ):
+        return None
+    if _settlement_logs_have_conversation_url(state_path):
+        return None
+    stdout_record = _artifact_bytes(state, "stdout")
+    if stdout_record is None:
+        return None
+    stdout_path, stdout_bytes = stdout_record
+    try:
+        stdout_text = stdout_bytes.decode("utf-8", errors="strict")
+    except UnicodeDecodeError:
+        return None
+    if (
+        stdout_path.resolve() != (run_dir / "stdout.log").resolve()
+        or stdout_path.is_symlink()
+        or ORACLE_BROWSER_SESSION_ABSENT_RE.search(stdout_text) is None
+        or ORACLE_BROWSER_COOKIES_ABSENT_RE.search(stdout_text) is None
+        or "chatgpt.com/c/" in stdout_text
+    ):
+        return None
+    mission = state.get("mission") if isinstance(state.get("mission"), dict) else {}
+    transport_path = Path(str(mission.get("transport_path") or ""))
+    mission_sha256 = str(mission.get("sha256") or "").casefold()
+    oracle = state.get("oracle") if isinstance(state.get("oracle"), dict) else {}
+    locator = str(oracle.get("session_locator") or oracle.get("slug") or "").strip()
+    if (
+        not locator
+        or not re.fullmatch(r"[a-f0-9]{64}", mission_sha256)
+        or transport_path.resolve() != (run_dir / "mission.md").resolve()
+        or transport_path.is_symlink()
+    ):
+        return None
+    try:
+        transport_bytes = transport_path.read_bytes()
+        project_root = Path(str(state.get("project_root") or "")).resolve(strict=True)
+    except OSError:
+        return None
+    if (
+        not project_root.is_dir()
+        or hashlib.sha256(transport_bytes).hexdigest() != mission_sha256
+    ):
+        return None
+    recovery: list[dict[str, Any]] = []
+    for recovery_stdout in sorted(run_dir.glob("recovery-*-stdout.log"), key=lambda item: item.name):
+        try:
+            recovery_bytes = recovery_stdout.read_bytes()
+            recovery_text = recovery_bytes.decode("utf-8", errors="strict")
+        except (OSError, UnicodeDecodeError):
+            return None
+        if recovery_stdout.is_symlink() or "chatgpt.com/c/" in recovery_text:
+            return None
+        recovery.append({
+            "stdout_name": recovery_stdout.name,
+            "stdout_sha256": hashlib.sha256(recovery_bytes).hexdigest(),
+        })
+    return {
+        "settlement_eligibility": "oracle-browser-session-absent-pre-submit/v1",
+        "project_root": str(project_root),
+        "run_id": run_id,
+        "transport": str(state.get("transport") or ""),
+        "transport_mission_path": str(transport_path),
+        "transport_mission_sha256": mission_sha256,
+        "mission_sha256": mission_sha256,
+        "oracle_locator": locator,
+        "stdout_sha256": hashlib.sha256(stdout_bytes).hexdigest(),
+        "recovery_evidence": recovery,
+        "output_absent": True,
+        "conversation_url_absent": True,
+        "browser_session_absent": True,
     }
 
 

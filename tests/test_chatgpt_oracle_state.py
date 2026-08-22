@@ -714,3 +714,264 @@ def test_pro_devspace_connector_guard_prompt_stays_single_line(tmp_path: Path) -
 
     assert "\n" not in prompt
     assert "\r" not in prompt
+
+
+def browser_session_absent_run(
+    tmp_path: Path,
+    state,
+    *,
+    stdout_text: str = (
+        "ERROR: ChatGPT session not detected. Login button detected on page.\n"
+        "No ChatGPT cookies were applied\n"
+    ),
+) -> tuple[Path, Path]:
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    mission = project_root / "mission.md"
+    mission.write_text("perform no work", encoding="utf-8")
+    manifest_path = manifest(project_root, mission.resolve())
+    host_state = tmp_path / "h"
+    os.environ["CODEX_ORACLE_STATE_ROOT"] = str(host_state.resolve())
+    manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest_payload["run_root"] = str((host_state / "r").resolve())
+    manifest_path.write_text(json.dumps(manifest_payload), encoding="utf-8")
+    config = state.load_manifest(manifest_path)
+    layout = state.create_layout(config, run_id="run-1234")
+    layout.run_dir.mkdir(parents=True)
+    transport_mission = layout.run_dir / "mission.md"
+    transport_mission.write_bytes(mission.read_bytes())
+    layout.stdout_path.write_text(stdout_text, encoding="utf-8")
+
+    payload = state.state_payload(
+        config, layout, status="failed", resolved_version="0.17.1", exit_code=1
+    )
+    payload["transport_status"] = "failed"
+    payload["session_authority"] = "submitted_unknown"
+    payload["terminal_harvested"] = False
+    state.write_json_atomic(layout.state_path, payload)
+    return layout.state_path, layout.run_dir
+
+
+def test_browser_session_absent_pre_submit_evidence_is_hash_bound(
+    tmp_path: Path,
+) -> None:
+    state = load_state()
+    state_path, run_dir = browser_session_absent_run(tmp_path, state)
+
+    evidence = state._browser_session_absent_no_submission_evidence(state_path)
+
+    assert evidence is not None
+    assert evidence["settlement_eligibility"] == (
+        "oracle-browser-session-absent-pre-submit/v1"
+    )
+    assert evidence["browser_session_absent"] is True
+    assert evidence["output_absent"] is True
+    assert evidence["conversation_url_absent"] is True
+    assert evidence["stdout_sha256"] == state.sha256_file(run_dir / "stdout.log")
+
+
+def test_user_confirmable_evidence_includes_browser_session_absent_detector(
+    tmp_path: Path,
+) -> None:
+    state = load_state()
+    state_path, _ = browser_session_absent_run(tmp_path, state)
+
+    direct = state._browser_session_absent_no_submission_evidence(state_path)
+    adjudicated = state._user_confirmable_no_submission_evidence(state_path)
+
+    assert direct is not None
+    assert adjudicated == direct
+
+
+@pytest.mark.parametrize(
+    "rejection",
+    [
+        "missing-session-marker",
+        "missing-cookies-marker",
+        "conversation-url-in-stdout",
+        "transport-status",
+        "session-authority",
+        "terminal-harvested",
+        "output-present",
+        "mission-sha256-mismatch",
+        "mission-transport-outside-run",
+        "empty-oracle-locator",
+        "missing-project-root",
+        "conversation-url-in-recovery",
+    ],
+)
+def test_browser_session_absent_pre_submit_rejects_inconsistent_evidence(
+    tmp_path: Path,
+    rejection: str,
+) -> None:
+    state = load_state()
+    state_path, run_dir = browser_session_absent_run(tmp_path, state)
+    payload = state.load_state(state_path)
+
+    if rejection == "missing-session-marker":
+        (run_dir / "stdout.log").write_text(
+            "No ChatGPT cookies were applied\n", encoding="utf-8"
+        )
+    elif rejection == "missing-cookies-marker":
+        (run_dir / "stdout.log").write_text(
+            "ERROR: ChatGPT session not detected. Login button detected on page.\n",
+            encoding="utf-8",
+        )
+    elif rejection == "conversation-url-in-stdout":
+        (run_dir / "stdout.log").write_text(
+            "ERROR: ChatGPT session not detected. Login button detected on page.\n"
+            "No ChatGPT cookies were applied\n"
+            "https://chatgpt.com/c/conversation-may-exist\n",
+            encoding="utf-8",
+        )
+    elif rejection == "transport-status":
+        payload["transport_status"] = "prepared"
+    elif rejection == "session-authority":
+        # `pre_submit` is a legitimate post-settlement authority, so the
+        # rejection case must use one that implies a reachable provider.
+        payload["session_authority"] = "terminal"
+    elif rejection == "terminal-harvested":
+        payload["terminal_harvested"] = True
+    elif rejection == "output-present":
+        (run_dir / "output.md").write_text("provider output", encoding="utf-8")
+    elif rejection == "mission-sha256-mismatch":
+        payload["mission"]["sha256"] = "0" * 64
+    elif rejection == "mission-transport-outside-run":
+        outside = tmp_path / "outside-mission.md"
+        outside.write_text("perform no work", encoding="utf-8")
+        payload["mission"]["transport_path"] = str(outside.resolve())
+    elif rejection == "empty-oracle-locator":
+        payload["oracle"]["session_locator"] = ""
+        payload["oracle"]["slug"] = ""
+    elif rejection == "missing-project-root":
+        payload["project_root"] = str((tmp_path / "missing-project").resolve())
+    elif rejection == "conversation-url-in-recovery":
+        (run_dir / "recovery-20260822-stdout.log").write_text(
+            "https://chatgpt.com/c/conversation-may-exist\n", encoding="utf-8"
+        )
+    else:
+        raise AssertionError(f"unexpected rejection case: {rejection}")
+    state.write_json_atomic(state_path, payload)
+
+    assert state._browser_session_absent_no_submission_evidence(state_path) is None
+
+
+def test_browser_session_absent_markers_are_case_insensitive(tmp_path: Path) -> None:
+    state = load_state()
+    stdout = (
+        "error: cHATgpt SESSION NOT DETECTED. lOGIN BUTTON DETECTED ON PAGE.\n"
+        "nO cHATgpt COOKIES WERE APPLIED\n"
+    )
+    state_path, _ = browser_session_absent_run(tmp_path, state, stdout_text=stdout)
+
+    evidence = state._browser_session_absent_no_submission_evidence(state_path)
+
+    assert evidence is not None
+    assert evidence["browser_session_absent"] is True
+
+
+@pytest.mark.parametrize(
+    ("transport_status", "session_authority"),
+    [
+        ("failed", "submitted_unknown"),
+        ("not_submitted_user_confirmed", "pre_submit"),
+    ],
+)
+def test_browser_session_absent_evidence_accepts_initial_and_settled_states(
+    tmp_path: Path,
+    transport_status: str,
+    session_authority: str,
+) -> None:
+    state = load_state()
+    state_path, _ = browser_session_absent_run(tmp_path, state)
+    payload = state.load_state(state_path)
+    payload["transport_status"] = transport_status
+    payload["session_authority"] = session_authority
+    state.write_json_atomic(state_path, payload)
+
+    evidence = state._browser_session_absent_no_submission_evidence(state_path)
+
+    assert evidence is not None
+    assert evidence["settlement_eligibility"] == (
+        "oracle-browser-session-absent-pre-submit/v1"
+    )
+
+
+@pytest.mark.parametrize(
+    ("transport_status", "session_authority"),
+    [
+        ("complete", "pre_submit"),
+        ("failed", "terminal"),
+        ("not_submitted_user_confirmed", "terminal"),
+    ],
+)
+def test_browser_session_absent_evidence_rejects_other_settlement_states(
+    tmp_path: Path,
+    transport_status: str,
+    session_authority: str,
+) -> None:
+    state = load_state()
+    state_path, _ = browser_session_absent_run(tmp_path, state)
+    payload = state.load_state(state_path)
+    payload["transport_status"] = transport_status
+    payload["session_authority"] = session_authority
+    state.write_json_atomic(state_path, payload)
+
+    assert state._browser_session_absent_no_submission_evidence(state_path) is None
+
+
+def test_browser_session_absent_settlement_round_trip_revalidates(
+    tmp_path: Path,
+) -> None:
+    state = load_state()
+    state_path, _ = browser_session_absent_run(tmp_path, state)
+
+    settled = state.settle_user_confirmed_no_submission(
+        state_path,
+        confirmation=state.USER_CONFIRMED_NO_SUBMISSION,
+        reason="browser profile had no ChatGPT session before the composer",
+    )
+
+    settlement_path = state_path.parent / "user-confirmed-no-submission.json"
+    assert settlement_path.is_file()
+    assert settled["user_confirmed_no_submission"]["path"] == str(settlement_path)
+    assert state.proven_user_confirmed_no_submission(state_path)
+
+
+def test_browser_session_absent_settlement_revalidation_rejects_recovery_url(
+    tmp_path: Path,
+) -> None:
+    state = load_state()
+    state_path, run_dir = browser_session_absent_run(tmp_path, state)
+    state.settle_user_confirmed_no_submission(
+        state_path,
+        confirmation=state.USER_CONFIRMED_NO_SUBMISSION,
+        reason="browser profile had no ChatGPT session before the composer",
+    )
+    (run_dir / "recovery-20260822-stdout.log").write_text(
+        "https://chatgpt.com/c/conversation-invalidates-settlement\n",
+        encoding="utf-8",
+    )
+
+    assert state.proven_user_confirmed_no_submission(state_path) is None
+
+
+def test_browser_session_absent_settlement_releases_project_ownership(
+    tmp_path: Path,
+) -> None:
+    state = load_state()
+    state_path, _ = browser_session_absent_run(tmp_path, state)
+    payload = state.load_state(state_path)
+    run_root = state_path.parent.parent
+    project_root = Path(payload["project_root"])
+
+    before_settlement = state.unresolved_project_sessions(run_root, project_root)
+    state.settle_user_confirmed_no_submission(
+        state_path,
+        confirmation=state.USER_CONFIRMED_NO_SUBMISSION,
+        reason="browser profile had no ChatGPT session before the composer",
+    )
+    after_settlement = state.unresolved_project_sessions(run_root, project_root)
+
+    assert [owner["run_id"] for owner in before_settlement] == ["run-1234"]
+    assert after_settlement == []
