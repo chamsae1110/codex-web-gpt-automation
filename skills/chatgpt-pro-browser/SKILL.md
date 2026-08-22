@@ -43,6 +43,25 @@ explicitly authorizes that action. It may not substitute a parent, child,
 similarly named, active, or shell-boundary workspace, and may retry only the
 same root once after a timeout.
 
+## Ordered decision and evidence gates
+
+Apply every gate in order. A later observation never repairs an earlier failure.
+
+| Gate | Required evidence or action | Failure classification |
+| --- | --- | --- |
+| Exact-root gate | The normalized root equals one current DevSpace `allowedRoots` entry under the qualified config hash | `DEVSPACE_EXACT_ROOT_UNAVAILABLE` before Oracle/browser creation; never substitute another root |
+| Runtime gate | The exact Oracle 0.17.1 compatibility hashes and same-project mutex pass | Pre-submit failure; do not create or send a prompt |
+| Visible Pro gate | Oracle records `GPT-5.6 Sol`, the visible `Pro` choice, `Power 5 of 5`, and the `pro-devspace` transport before send | Pre-submit failure; never infer, downgrade, or change transport |
+| Capability gate | The submitted session exposes callable DevSpace tools and reads the exact mission/root | Otherwise record terminal `TASK_OUTCOME: NOT_EXECUTED`, never success |
+| Fresh-output gate | Exit zero, immutable run identity, refreshed transcript, fresh nonempty `output.md`, and one valid terminal outcome marker agree | Missing, stale, malformed, or contradictory evidence remains `attention_required` or `unknown` |
+| Recovery gate | Any timeout or nonzero exit after submission retains the project lock and recorded slug | Permit only same-slug `live` or `harvest`; never resubmit or create a replacement conversation |
+| Handoff gate | The exact Pro run is terminal and its durable answer contains the required Web Multi decision block | Do not start Web Multi or another stage from partial, stale, or nonterminal output |
+
+Keep the high-risk blacklist absolute: no inferred Pro upgrade, no ChatGPT
+app/settings automation, no root substitution, no automatic attachment fallback,
+no shared manual profile, no duplicate submission, no route/model/effort change
+during recovery, and no review-to-implementation chain from this standalone skill.
+
 ## Explicit attachment route
 
 `pro-attachment` is attachment-only through Oracle. Use it only when the

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the pinned chatgpt-thinking-browser SkillOpt experiment in isolation.
+"""Run a pinned ChatGPT browser-skill SkillOpt experiment in isolation.
 
 The authoritative source skill is copied below .codex-tmp. Even a staged,
 accepted proposal targets only that copy; this runner never adopts and never
@@ -20,8 +20,10 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
-CONFIG_PATH = HERE / "config.v1.json"
-TASKS_PATH = HERE / "tasks.v1.json"
+PROFILE_FILES = {
+    "thinking": (HERE / "config.v1.json", HERE / "tasks.v1.json"),
+    "pro": (HERE / "config.pro.v1.json", HERE / "tasks.pro.v1.json"),
+}
 
 
 def sha256(path: Path) -> str:
@@ -41,7 +43,7 @@ def pinned_head(skillopt_repo: Path, expected: str) -> str:
     if actual != expected.casefold():
         raise SystemExit(
             f"SkillOpt source mismatch: expected {expected}, found {actual}. "
-            "Review and repin config.v1.json before running."
+            "Review and repin the selected profile config before running."
         )
     return actual
 
@@ -49,6 +51,7 @@ def pinned_head(skillopt_repo: Path, expected: str) -> str:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--skillopt-repo", required=True, type=Path)
+    parser.add_argument("--profile", choices=tuple(PROFILE_FILES), default="thinking")
     parser.add_argument("--backend", choices=("mock", "codex"), default="mock")
     parser.add_argument("--model", default="")
     parser.add_argument("--codex-path", default="")
@@ -68,7 +71,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    spec = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    config_path, tasks_path = PROFILE_FILES[args.profile]
+    spec = json.loads(config_path.read_text(encoding="utf-8"))
     if args.backend != "mock" and not args.allow_provider_calls:
         raise SystemExit(
             "Refusing real backend without --allow-provider-calls; SkillOpt dry-run "
@@ -85,7 +89,7 @@ def main() -> int:
     from skillopt_sleep.tasks_file import load_tasks_file
 
     source_skill = (ROOT / spec["target_skill_path"]).resolve(strict=True)
-    tasks, metadata = load_tasks_file(str(TASKS_PATH))
+    tasks, metadata = load_tasks_file(str(tasks_path))
     if metadata.get("reviewed") is not True:
         raise SystemExit("Refusing an unreviewed SkillOpt tasks file")
 
@@ -93,11 +97,11 @@ def main() -> int:
     work_root = (
         args.work_root.expanduser().resolve()
         if args.work_root
-        else ROOT / ".codex-tmp" / "skillopt-chatgpt-thinking-browser" / run_id
+        else ROOT / ".codex-tmp" / f"skillopt-{args.profile}" / run_id
     )
     if work_root == ROOT or ROOT not in work_root.parents:
         raise SystemExit("work root must be a contained directory below the repository")
-    candidate_dir = work_root / "candidate" / "chatgpt-thinking-browser"
+    candidate_dir = work_root / "candidate" / source_skill.parent.name
     candidate_dir.mkdir(parents=True, exist_ok=False)
     candidate_skill = candidate_dir / "SKILL.md"
     shutil.copy2(source_skill, candidate_skill)
@@ -129,6 +133,7 @@ def main() -> int:
     report = outcome.report
     payload = {
         "schema": "codex-web-gpt-automation.skillopt-run.v1",
+        "profile": args.profile,
         "skillopt_commit": actual_commit,
         "backend": args.backend,
         "model": args.model,

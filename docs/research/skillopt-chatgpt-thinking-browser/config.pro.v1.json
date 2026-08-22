@@ -1,0 +1,39 @@
+{
+  "schema": "codex-web-gpt-automation.skillopt-experiment.v1",
+  "profile": "chatgpt-pro-browser",
+  "observed_at": "2026-08-22",
+  "skillopt_repository": "https://github.com/microsoft/SkillOpt",
+  "skillopt_commit": "bdfdc30a8e17309c06cdbe8449f01bdecc120203",
+  "target_skill_path": "skills/chatgpt-pro-browser/SKILL.md",
+  "tasks_file": "docs/research/skillopt-chatgpt-thinking-browser/tasks.pro.v1.json",
+  "settings": {
+    "backend": "codex",
+    "optimizer_backend": "codex",
+    "target_backend": "codex",
+    "gate_mode": "on",
+    "gate_metric": "mixed",
+    "gate_mixed_weight": 0.5,
+    "gate_no_regression": true,
+    "edit_budget": 2,
+    "preferences": "Preserve explicit-only Pro selection, exact-root equality, GPT-5.6 Sol visible Pro Power 5 of 5 and pro-devspace evidence, mission-scoped authority, no ChatGPT app/settings automation, no automatic attachment fallback, exact-slug-only recovery, no duplicate submission, and standalone one-shot scope.",
+    "val_fraction": 0.28,
+    "test_fraction": 0.28,
+    "dream_rollouts": 1,
+    "dream_factor": 0,
+    "recall_k": 0,
+    "evolve_skill": true,
+    "evolve_memory": false,
+    "target_task_filter": true,
+    "multi_skill_fanout": false,
+    "auto_adopt": false,
+    "seed": 42
+  },
+  "adoption_requirements": {
+    "strict_validation_improvement": true,
+    "zero_validation_regressions": true,
+    "zero_test_safety_regressions": true,
+    "manual_review": true,
+    "source_repo_target_only": true,
+    "installed_skill_direct_write": false
+  }
+}

@@ -55,6 +55,24 @@ def test_qualified_pro_has_exact_root_mission_scoped_write_authority() -> None:
     assert "must not change accounts, app settings, or external state unless the mission explicitly authorizes" in flat
 
 
+def test_qualified_pro_has_ordered_fail_closed_evidence_gates() -> None:
+    value = text(PRO)
+    flat = " ".join(value.split())
+    assert "## Ordered decision and evidence gates" in value
+    assert "A later observation never repairs an earlier failure" in flat
+    assert "`DEVSPACE_EXACT_ROOT_UNAVAILABLE` before Oracle/browser creation" in flat
+    assert "exact Oracle 0.17.1 compatibility hashes" in flat
+    assert "`GPT-5.6 Sol`, the visible `Pro` choice, `Power 5 of 5`" in flat
+    assert "`pro-devspace` transport before send" in flat
+    assert "callable DevSpace tools and reads the exact mission/root" in flat
+    assert "fresh nonempty `output.md`" in flat
+    assert "Permit only same-slug `live` or `harvest`" in flat
+    assert "Do not start Web Multi" in flat
+    assert "no automatic attachment fallback" in flat
+    assert "no duplicate submission" in flat
+    assert "no review-to-implementation chain" in flat
+
+
 def test_qualified_pro_fails_closed_when_devspace_tools_are_not_exposed() -> None:
     value = text(PRO)
     flat = " ".join(value.split())

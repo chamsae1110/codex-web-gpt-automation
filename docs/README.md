@@ -44,7 +44,7 @@ route, then open a specialized guide only when that mode applies.
 
 | Document | Purpose |
 |---|---|
-| [SkillOpt experiment for chatgpt-thinking-browser](research/skillopt-chatgpt-thinking-browser/README.md) | Pinned, reviewed, non-adopting skill-optimization scenarios and runner |
+| [SkillOpt experiments for ChatGPT browser skills](research/skillopt-chatgpt-thinking-browser/README.md) | Pinned, reviewed, non-adopting scenarios for regular/host-Pro and standalone Pro |
 
 ## Frozen legacy reference
 

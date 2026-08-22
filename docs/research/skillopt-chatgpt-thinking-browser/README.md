@@ -1,7 +1,8 @@
-# SkillOpt experiment for `chatgpt-thinking-browser`
+# SkillOpt experiments for ChatGPT browser skills
 
 This directory is a reviewed, public-safe experiment contract for improving
-`skills/chatgpt-thinking-browser/SKILL.md`. It was derived from Microsoft
+`skills/chatgpt-thinking-browser/SKILL.md` and
+`skills/chatgpt-pro-browser/SKILL.md`. It was derived from Microsoft
 SkillOpt `main` at commit `bdfdc30a8e17309c06cdbe8449f01bdecc120203`
 on 2026-08-22.
 
@@ -9,8 +10,11 @@ on 2026-08-22.
 
 - `tasks.v1.json` provides 24 policy-decision scenarios: 12 train, 6
   validation, and 6 held-out adversarial tests.
+- `tasks.pro.v1.json` provides 18 standalone-Pro scenarios: 8 train, 5
+  validation, and 5 held-out adversarial tests.
 - `config.v1.json` pins the source revision and the conservative settings that
-  must govern a real candidate run.
+  must govern a regular/host-Pro candidate run; `config.pro.v1.json` owns the
+  standalone-Pro profile.
 - `run_experiment.py` applies those settings without reading or changing the
   user's global SkillOpt configuration. It copies the source skill below
   `.codex-tmp` and can stage only against that isolated copy.
@@ -66,17 +70,21 @@ Run the provider-free integration check from this repository:
 ```powershell
 python docs/research/skillopt-chatgpt-thinking-browser/run_experiment.py `
   --skillopt-repo "$env:LOCALAPPDATA\Codex\Sources\SkillOpt"
+
+python docs/research/skillopt-chatgpt-thinking-browser/run_experiment.py `
+  --profile pro `
+  --skillopt-repo "$env:LOCALAPPDATA\Codex\Sources\SkillOpt"
 ```
 
 The JSON result must report the pinned commit, `backend: mock`,
 `gate_no_regression: true`, `adopted: false`, and matching source/candidate
 hashes. The mock score is deliberately not a quality claim.
 
-For a separately authorized real experiment, add `--backend codex`, an
-explicitly verified model when required, and `--allow-provider-calls`. Add
-`--stage` only when an accepted proposal should be written into the isolated
-work root for review. The source and installed skill are never adoption
-targets.
+For a separately authorized real experiment, select `--profile thinking` or
+`--profile pro`, then add `--backend codex`, an explicitly verified model when
+required, and `--allow-provider-calls`. Add `--stage` only when an accepted
+proposal should be written into the isolated work root for review. The source
+and installed skill are never adoption targets.
 
 An offline SkillOpt plumbing check may use `--backend mock`; it performs no
 provider calls and should not be interpreted as a quality score. A real
