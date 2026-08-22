@@ -149,7 +149,19 @@ replace or resubmit it.
 Oracle's `Prompt did not appear in conversation before timeout (send may have
 failed)` message is likewise submission-uncertain. No-live-tab plus missing
 saved-URL recovery evidence does not mechanically prove non-submission. A
-maintenance owner may release that exact run only after explicit user
+task-bound qualified-Pro run can fail before its conversation-bound browser
+receipt exists. In that exact case only, `harvest --dry-run` may report
+`bounded-prompt-timeout-harvest` after validating the immutable task/run/mission
+ownership receipt, Oracle 0.17.1 zero-turn commit probe, root composer, dynamic
+CDP port, isolated profile and target, and absence of output or conversation.
+Only prompt-free `harvest` is allowed; `live`, a foreign task, and any URL,
+probe, port, profile, target, or output contradiction remain blocked. Run the
+same exact-slug harvest once to create the normal no-tab/no-URL recovery
+evidence; it does not release ownership.
+A task-bound mission may have been edited after the failed run. In that case
+the immutable run copy and ownership receipt must still bind the same original
+mission SHA-256; legacy-unbound runs continue to require current source bytes.
+A maintenance owner may release that exact run only after explicit user
 confirmation through `chatgpt_oracle_run.py settle-no-submission` with the
 exact run directory, `--confirmation user-confirmed-no-submission`, and a
 concise reason. The settlement is hash-bound to the comprehensive stage,

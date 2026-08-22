@@ -598,16 +598,33 @@ def require_current_task_owns_run(
         )
 
 
-def require_bound_browser_identity(state_path: Path, state: dict[str, Any]) -> None:
+def require_bound_browser_identity(
+    state_path: Path,
+    state: dict[str, Any],
+    *,
+    recovery_action: str,
+) -> str:
     if STATE.source_thread_id_from_state(state) is None:
-        return
+        return "legacy-unbound"
     receipt = STATE.proven_browser_identity_receipt(state_path)
-    if receipt is None:
-        raise OracleRunError(
-            "BROWSER_IDENTITY_RECEIPT_REQUIRED",
-            "bound task recovery requires the exact persisted Chrome identity receipt",
-            {"run_id": state.get("run_id"), "slug": (state.get("oracle") or {}).get("slug")},
-        )
+    if receipt is not None:
+        return "browser-identity-receipt"
+    bounded = (
+        STATE.bounded_task_owned_prompt_timeout_harvest_evidence(state_path)
+        if recovery_action == "harvest"
+        else None
+    )
+    if bounded is not None:
+        return "bounded-prompt-timeout-harvest"
+    raise OracleRunError(
+        "BROWSER_IDENTITY_RECEIPT_REQUIRED",
+        "bound task recovery requires the exact persisted Chrome identity receipt",
+        {
+            "run_id": state.get("run_id"),
+            "slug": (state.get("oracle") or {}).get("slug"),
+            "recovery_action": recovery_action,
+        },
+    )
 
 
 def post_submit_response_timed_out(*paths: Path) -> bool:
@@ -1370,7 +1387,11 @@ def _recover_run_locked(
             "action": "none",
             "result": pre_submit_failure,
         }
-    require_bound_browser_identity(directory / "state.json", state)
+    browser_identity_mode = require_bound_browser_identity(
+        directory / "state.json",
+        state,
+        recovery_action=action,
+    )
     historical_authority = historical_session_authority(directory, state)
     historical_url = historical_conversation_url(directory, state)
     terminal_evidence_revoked = (
@@ -1442,7 +1463,14 @@ def _recover_run_locked(
     argv_output = directory / f"recovery-{action}-candidate.md"
     argv = recovery_argv(command, locator, action, argv_output)
     if dry_run:
-        return {"ok": True, "status": "dry-run", "run_dir": str(directory), "action": action, "argv": STATE.command_for_display(argv)}
+        return {
+            "ok": True,
+            "status": "dry-run",
+            "run_dir": str(directory),
+            "action": action,
+            "argv": STATE.command_for_display(argv),
+            "browser_identity_mode": browser_identity_mode,
+        }
     stdout_path = directory / f"recovery-{action}-stdout.log"
     stderr_path = directory / f"recovery-{action}-stderr.log"
     recovery_browser_temp = directory / f"recovery-{action}-browser-temp"

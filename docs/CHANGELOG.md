@@ -1,5 +1,23 @@
 # 기술 변경 기록
 
+## 1.18.3 - task-bound Pro 프롬프트 미관찰 교착 수리
+
+- `pro-devspace-readonly` 실행이 프롬프트 commit 확인 전에 실패해 conversation
+  URL 기반 browser identity receipt를 만들지 못한 경우에도, 같은 Codex task가
+  exact slug에 대해 prompt-free `harvest` 한 번을 수행할 수 있게 했습니다.
+- 이 예외는 서명된 task/run/mission ownership receipt, GPT-5.6 Sol Pro 읽기 전용
+  프로필, Oracle 0.17.1의 `submit-prompt/prompt-commit-timeout`, 0개 turn과 모두
+  false인 commit probe, ChatGPT 루트 composer, 출력·대화 URL 부재, exact 동적
+  CDP port·격리 profile·target 결속이 모두 맞을 때만 열립니다. `live`, 새 prompt,
+  외부 task, 일반 Chrome, 모순된 URL·probe·port·profile·target은 계속 거부됩니다.
+- task-bound run의 프로젝트 mission 파일이 실행 뒤 합법적으로 수정돼도, immutable
+  run mission 사본과 ownership receipt가 같은 원래 mission hash를 봉인하면 수확과
+  사용자 확인 정산을 재검증할 수 있습니다. legacy-unbound run은 기존처럼 현재 source
+  bytes 일치를 요구합니다.
+- 수확은 소유권을 자동 해제하지 않습니다. exact no-tab/no-URL recovery 증거가 생성된
+  뒤에도 사용자의 명시적 `user-confirmed-no-submission` 정산이 있어야만 프로젝트 lock이
+  해제됩니다.
+
 ## 1.18.2 - 종결 Pro 후속 대화 신원 검증 수정
 
 - Oracle이 실행 종료 과정에서 `meta.json`에 archive와 prompt 상태를 추가해도

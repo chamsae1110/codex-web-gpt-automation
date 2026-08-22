@@ -146,6 +146,18 @@ run. Only then may an explicitly authorized single retry reuse the identical
 mission bytes; no output, URL, mismatched hash, conflicting recovery state, or
 ordinary trailing browser error may be treated as proof.
 
+If the task-bound failure occurred before a conversation-bound browser receipt
+could be sealed, preview the same exact slug with `recover --action harvest
+--dry-run`. The preview may use `bounded-prompt-timeout-harvest` only when the
+ownership receipt, qualified-Pro profile, Oracle 0.17.1 zero-turn commit probe,
+root composer, dynamic CDP port, isolated profile/target, and absent output/URL
+all match. Remove only `--dry-run` for that one prompt-free harvest. `live`, a
+foreign task, or any contradictory identity stays blocked. The harvest still
+does not unlock the project; the explicit user confirmation command remains
+mandatory. A later project-mission edit is acceptable only when the immutable
+run copy and task ownership receipt bind the same original mission SHA-256;
+legacy-unbound runs do not receive this compatibility path.
+
 The same user-confirmed, fail-closed settlement is available to a
 `pro-attachment` run only when Oracle 0.17.1 reports the exact attachment-upload
 timeout before prompt submission. It binds every attachment path, size, and

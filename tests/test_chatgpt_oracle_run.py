@@ -291,6 +291,116 @@ def prompt_not_observed_popen(command, **kwargs):
     return Process(1, [])
 
 
+def write_prompt_timeout_oracle_meta(
+    runner,
+    run_dir: Path,
+    session_root: Path,
+    *,
+    mutation: str | None = None,
+) -> Path:
+    state = runner.STATE.load_state(run_dir / "state.json")
+    slug = state["oracle"]["slug"]
+    expected_port = state["browser_identity"]["expected_cdp_port"]
+    browser_temp = Path(state["artifacts"]["browser_temp"]).resolve()
+    runtime_profile = browser_temp / "oracle-browser-prompt-timeout"
+    runtime_profile.mkdir(parents=True, exist_ok=True)
+    copy_profile = Path(state["profile"]["copy_profile"]).resolve()
+    prompt = (
+        f"@codex Then read the read-only mission file: "
+        f"{Path(state['mission']['path']).resolve()}. Read the mission fully."
+    )
+    meta = {
+        "id": slug,
+        "status": "error",
+        "model": "gpt-5.6-sol",
+        "mode": "browser",
+        "cwd": str(Path(state["project_root"]).resolve()),
+        "completedAt": "2026-08-23T00:00:00Z",
+        "errorMessage": runner.STATE.ORACLE_PROMPT_NOT_OBSERVED_MARKER,
+        "error": {
+            "category": "browser-automation",
+            "message": runner.STATE.ORACLE_PROMPT_NOT_OBSERVED_MARKER,
+            "details": {
+                "stage": "submit-prompt",
+                "code": "prompt-commit-timeout",
+                "promptLength": len(prompt),
+                "commitProbe": {
+                    "baseline": 0,
+                    "turnsCount": 0,
+                    "userMatched": False,
+                    "prefixMatched": False,
+                    "lastMatched": False,
+                    "hasNewTurn": False,
+                    "stopVisible": False,
+                    "assistantVisible": False,
+                    "composerCleared": False,
+                    "inConversation": False,
+                    "editorLength": len(prompt),
+                    "lastTurnLength": 0,
+                },
+            },
+        },
+        "browser": {
+            "config": {
+                "debugPort": expected_port,
+                "copyProfileSource": str(copy_profile),
+                "desiredModel": "GPT-5.6 Sol",
+                "modelStrategy": "select",
+                "thinkingTime": "heavy",
+            },
+            "runtime": {
+                "chromePid": 41001,
+                "controllerPid": 41002,
+                "chromePort": expected_port,
+                "chromeTargetId": "EXACT_PROMPT_TIMEOUT_TARGET",
+                "tabUrl": "https://chatgpt.com/",
+                "conversationId": None,
+                "promptSubmitted": True,
+                "userDataDir": str(runtime_profile),
+            },
+            "archive": None,
+        },
+        "options": {
+            "prompt": prompt,
+            "model": "gpt-5.6-sol",
+            "slug": slug,
+            "writeOutputPath": str(Path(state["artifacts"]["output"]).resolve()),
+            "browserConfig": {
+                "debugPort": expected_port,
+                "copyProfileSource": str(copy_profile),
+                "desiredModel": "GPT-5.6 Sol",
+                "modelStrategy": "select",
+                "thinkingTime": "heavy",
+            },
+        },
+    }
+    if mutation == "conversation-url":
+        meta["browser"]["runtime"]["tabUrl"] = "https://chatgpt.com/c/foreign"
+        meta["browser"]["runtime"]["conversationId"] = "foreign"
+    elif mutation == "probe-user-match":
+        meta["error"]["details"]["commitProbe"]["userMatched"] = True
+    elif mutation == "prompt-not-submitted":
+        meta["browser"]["runtime"]["promptSubmitted"] = False
+    elif mutation == "turn-observed":
+        meta["error"]["details"]["commitProbe"]["turnsCount"] = 1
+    elif mutation == "assistant-visible":
+        meta["error"]["details"]["commitProbe"]["assistantVisible"] = True
+    elif mutation == "archive-conversation":
+        meta["browser"]["archive"] = {
+            "conversationUrl": "https://chatgpt.com/c/archived-conversation"
+        }
+    elif mutation == "wrong-port":
+        meta["browser"]["runtime"]["chromePort"] = expected_port + 1
+    elif mutation == "outside-profile":
+        meta["browser"]["runtime"]["userDataDir"] = str(session_root / "other-profile")
+    elif mutation == "missing-target":
+        meta["browser"]["runtime"]["chromeTargetId"] = ""
+    meta_path = session_root / slug / "meta.json"
+    meta_path.parent.mkdir(parents=True)
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+    return meta_path
+
+
 def attachment_upload_timeout_popen(command, **kwargs):
     slug = command[command.index("--slug") + 1]
     kwargs["stdout"].write(
@@ -2740,6 +2850,171 @@ def test_standalone_qualified_pro_prompt_timeout_can_be_user_settled_and_unlocks
     assert proof["transport"] == "pro-devspace-readonly"
     assert proof["oracle_version"] == "0.17.1"
     assert proof["source_mission_sha256"] == proof["transport_mission_sha256"]
+
+
+def test_task_bound_readonly_prompt_timeout_can_harvest_without_browser_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = load_runner()
+    owner = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    session_root = tmp_path / "oracle-sessions"
+    monkeypatch.setenv("CODEX_THREAD_ID", owner)
+    monkeypatch.setenv("ORACLE_SESSION_ROOT", str(session_root))
+    initial = execute_run(
+        runner,
+        pro_readonly_manifest(tmp_path, run_id="c" * 32),
+        run_factory=version_0171_runner,
+        popen_factory=prompt_not_observed_popen,
+    )
+    run_dir = Path(initial["run_dir"])
+    state_path = run_dir / "state.json"
+    write_prompt_timeout_oracle_meta(runner, run_dir, session_root)
+    # The task may legitimately revise the project mission after this run. The
+    # immutable run copy plus ownership receipt still pin the submitted bytes.
+    Path(runner.STATE.load_state(state_path)["mission"]["path"]).write_text(
+        "later project mission revision",
+        encoding="utf-8",
+    )
+
+    evidence = runner.STATE.bounded_task_owned_prompt_timeout_harvest_evidence(state_path)
+    assert evidence is not None
+    assert evidence["source_thread_id"] == owner
+    assert evidence["commit_probe_turns"] == 0
+    assert evidence["conversation_url_absent"] is True
+    assert runner.STATE.proven_browser_identity_receipt(state_path) is None
+    with pytest.raises(runner.OracleRunError) as live_exc:
+        runner.recover_run(run_dir, action="live", dry_run=True, oracle_command=["oracle"])
+    assert live_exc.value.code == "BROWSER_IDENTITY_RECEIPT_REQUIRED"
+
+    dry_run = runner.recover_run(
+        run_dir,
+        action="harvest",
+        dry_run=True,
+        oracle_command=["oracle"],
+    )
+    assert dry_run["browser_identity_mode"] == "bounded-prompt-timeout-harvest"
+    assert "--harvest" in dry_run["argv"]
+    assert "--prompt" not in dry_run["argv"]
+    with pytest.raises(runner.STATE.OracleStateError) as unsettled_exc:
+        runner.settle_user_confirmed_no_submission(
+            run_dir,
+            confirmation=runner.STATE.USER_CONFIRMED_NO_SUBMISSION,
+            reason="recovery evidence does not exist yet",
+        )
+    assert unsettled_exc.value.code == "NO_SUBMISSION_EVIDENCE_INCOMPLETE"
+
+    recovered = runner.recover_run(
+        run_dir,
+        action="harvest",
+        oracle_command=["oracle"],
+        popen_factory=recovery_binding_unavailable_popen,
+    )
+    assert recovered["status"] == "recovery_binding_unavailable"
+    assert runner.STATE.bounded_task_owned_prompt_timeout_harvest_evidence(state_path) is None
+    settled = runner.settle_user_confirmed_no_submission(
+        run_dir,
+        confirmation=runner.STATE.USER_CONFIRMED_NO_SUBMISSION,
+        reason="user inspected the exact ChatGPT history and confirmed no prompt or response",
+    )
+    proof = runner.STATE.proven_user_confirmed_no_submission(state_path)
+    assert settled["safe_for_fresh_run"] is True
+    assert settled["unresolved_owners"] == []
+    assert proof is not None
+    assert proof["settlement_eligibility"] == "oracle-standalone-qualified-pro/v1"
+    recovery_stdout = run_dir / "recovery-harvest-stdout.log"
+    original_recovery_stdout = recovery_stdout.read_text(encoding="utf-8")
+    recovery_stdout.write_text(
+        original_recovery_stdout + "https://chatgpt.com/c/contradiction-after-settlement\n",
+        encoding="utf-8",
+    )
+    assert runner.STATE.proven_user_confirmed_no_submission(state_path) is None
+    recovery_stdout.write_text(original_recovery_stdout, encoding="utf-8")
+    meta_path = session_root / runner.STATE.load_state(state_path)["oracle"]["slug"] / "meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["browser"]["runtime"]["tabUrl"] = "https://chatgpt.com/c/late-contradiction"
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+    assert runner.STATE.proven_user_confirmed_no_submission(state_path) is None
+    owners = runner.STATE.unresolved_project_sessions(
+        run_dir.parent,
+        tmp_path,
+        source_thread_id=owner,
+    )
+    assert [item["run_id"] for item in owners] == ["c" * 32]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "conversation-url", "probe-user-match", "prompt-not-submitted", "turn-observed",
+        "assistant-visible", "archive-conversation", "wrong-port", "outside-profile",
+        "missing-target",
+    ),
+)
+def test_task_bound_prompt_timeout_harvest_exception_rejects_identity_contradictions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    runner = load_runner()
+    owner = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    session_root = tmp_path / "oracle-sessions"
+    monkeypatch.setenv("CODEX_THREAD_ID", owner)
+    monkeypatch.setenv("ORACLE_SESSION_ROOT", str(session_root))
+    initial = execute_run(
+        runner,
+        pro_readonly_manifest(tmp_path, run_id="d" * 32),
+        run_factory=version_0171_runner,
+        popen_factory=prompt_not_observed_popen,
+    )
+    run_dir = Path(initial["run_dir"])
+    write_prompt_timeout_oracle_meta(runner, run_dir, session_root, mutation=mutation)
+
+    assert runner.STATE.bounded_task_owned_prompt_timeout_harvest_evidence(
+        run_dir / "state.json"
+    ) is None
+    with pytest.raises(runner.OracleRunError) as exc:
+        runner.recover_run(run_dir, action="harvest", dry_run=True, oracle_command=["oracle"])
+    assert exc.value.code == "BROWSER_IDENTITY_RECEIPT_REQUIRED"
+
+
+def test_foreign_task_cannot_use_prompt_timeout_harvest_exception(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = load_runner()
+    owner = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    caller = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+    session_root = tmp_path / "oracle-sessions"
+    monkeypatch.setenv("CODEX_THREAD_ID", owner)
+    monkeypatch.setenv("ORACLE_SESSION_ROOT", str(session_root))
+    initial = execute_run(
+        runner,
+        pro_readonly_manifest(tmp_path, run_id="e" * 32),
+        run_factory=version_0171_runner,
+        popen_factory=prompt_not_observed_popen,
+    )
+    run_dir = Path(initial["run_dir"])
+    write_prompt_timeout_oracle_meta(runner, run_dir, session_root)
+    monkeypatch.setenv("CODEX_THREAD_ID", caller)
+    state_path = run_dir / "state.json"
+    before = {
+        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in run_dir.iterdir()
+        if path.is_file()
+    }
+
+    with pytest.raises(runner.OracleRunError) as exc:
+        runner.recover_run(run_dir, action="harvest", dry_run=True, oracle_command=["oracle"])
+    assert exc.value.code == "FOREIGN_TASK_SESSION"
+    after = {
+        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in run_dir.iterdir()
+        if path.is_file()
+    }
+    assert after == before
+    assert not (run_dir / "recovery-harvest-stdout.log").exists()
+    assert runner.STATE.load_state(state_path)["session_authority"] == "submitted_unknown"
 
 
 def test_standalone_pro_attachment_upload_timeout_is_hash_bound_and_user_settled(tmp_path: Path) -> None:
