@@ -297,24 +297,26 @@ def _child_manifest(config: dict[str, Any], lane: dict[str, Any], parent_id: str
         "access": lane.get("access", "read-only"),
         "owned_paths": list(lane.get("owned_paths") or []),
     })
-    _write_json(
-        manifest,
-        {
-            "schema": STATE.SCHEMA,
-            "project_root": str(lane.get("project_root") or config["project_root"]),
-            "mission_path": str(effective_mission),
-            "app_name": config["app_name"],
-            "mode": "browser",
-            "model": config["model"],
-            "model_strategy": "select",
-            "thinking_time": "extra-high",
-            "copy_profile": str(config["copy_profile"]),
-            "research": "off",
-            "archive": "auto",
-            "parallel_parent_id": parent_id,
-            "web_multi_child_provenance_path": str(provenance),
-        },
-    )
+    configured_pro = WORKSPACE_CONFIG.configured_regular_web_mode() == "pro"
+    payload: dict[str, Any] = {
+        "schema": STATE.SCHEMA,
+        "project_root": str(lane.get("project_root") or config["project_root"]),
+        "mission_path": str(effective_mission),
+        "app_name": config["app_name"],
+        "mode": "browser",
+        "model": "gpt-5.6-sol" if configured_pro else config["model"],
+        "model_strategy": "select",
+        "thinking_time": "heavy" if configured_pro else "extra-high",
+        "copy_profile": str(config["copy_profile"]),
+        "research": "off",
+        "archive": "auto",
+        "parallel_parent_id": parent_id,
+        "web_multi_child_provenance_path": str(provenance),
+    }
+    if configured_pro:
+        payload["transport"] = "pro-devspace"
+        payload["task_outcome_contract"] = "v1"
+    _write_json(manifest, payload)
     return manifest
 
 

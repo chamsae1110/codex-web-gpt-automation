@@ -1,6 +1,6 @@
 ---
 name: chatgpt-oracle-runtime
-description: "Current Oracle runtime path for new ChatGPT work: regular modes use highest-tier non-Pro DevSpace, explicitly requested qualified Pro uses read/write DevSpace, and explicit Pro attachments remain for bounded evidence."
+description: "Current Oracle runtime path for new ChatGPT work: ordinary modes honor an explicit host-level regular or Pro preference through DevSpace, and explicit Pro attachments remain available for bounded evidence."
 ---
 
 # ChatGPT Oracle Runtime
@@ -22,8 +22,11 @@ project root recorded in that mission, read the mission and applicable
 `AGENTS.md` completely first, and may retry that same root once after a timeout.
 It must not substitute a parent, child, active workspace, or shell boundary
 workaround. Regular routes default to `gpt-5.6` with `extra-high`, the highest
-supported non-Pro reasoning tier, and never auto-upgrade to Pro. Only explicit
-`pro` mode selects `GPT-5.6 Sol` at the Pro effort. It uses DevSpace at the same
+supported non-Pro reasoning tier. Never infer Pro from task difficulty. An
+explicit user request may select one `pro` mode run or persist
+`regular_web_mode: pro` in host-only `chatgpt-workspace.json`; the latter makes
+ordinary, comprehensive, and Web Multi routes select `GPT-5.6 Sol` at the Pro
+effort. Deep Research remains its separate non-Pro research mode. Pro uses DevSpace at the same
 exact root and may perform mission-authorized writes and commands under the
 repository safety policy. Explicit
 `pro-attachment` sends one short instruction plus exact attachment files.

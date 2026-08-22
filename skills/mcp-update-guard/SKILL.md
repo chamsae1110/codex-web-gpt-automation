@@ -22,8 +22,10 @@ preserve unrelated local customizations.
    - regular modes, Deep Research, comprehensive stages, and Web Multi use
      Oracle plus the manually registered DevSpace app;
    - regular web work defaults to the highest supported non-Pro reasoning tier;
-     only explicit user opt-in selects qualified Pro with `GPT-5.6 Sol` at the
-     Pro effort and read/write DevSpace; explicit `pro-attachment` is limited to immutable or
+     explicit user opt-in selects qualified Pro with `GPT-5.6 Sol` at the Pro
+     effort and read/write DevSpace either for one run or durably through host-only
+     `chatgpt-workspace.json` `regular_web_mode: pro`; Deep Research remains its
+     separate non-Pro research mode; explicit `pro-attachment` is limited to immutable or
      DevSpace-unreadable evidence and is never an automatic fallback;
    - CodexPro/agbrowse may be used only for exact recovery of an already
      persisted legacy run and never as a fallback.

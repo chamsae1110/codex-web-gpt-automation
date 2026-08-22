@@ -25,6 +25,8 @@ def test_new_regular_modes_route_only_to_oracle_devspace() -> None:
     assert "never attaches files" in value
     assert "create a new agbrowse run" in value
     assert "app picker" not in value.casefold()
+    assert "`regular_web_mode: pro`" in value
+    assert "`Power 5 of 5`" in value
 
 
 def test_qualified_pro_requires_explicit_opt_in_and_uses_read_write_devspace() -> None:
@@ -181,7 +183,8 @@ def test_english_readme_maps_modes_to_the_same_oracle_routes() -> None:
     assert "`deep-research` / deep research" in value
     assert "comprehensive mode" in value
     assert "Web Multi-GPT" in value
-    assert "Pro is quota-limited, never auto-selected" in value
+    assert "Pro is quota-limited and requires explicit one-run or durable host opt-in" in value
+    assert '"regular_web_mode": "pro"' in value
     assert "Oracle + read/write DevSpace" in value
     assert "never resubmits the task" in value
 

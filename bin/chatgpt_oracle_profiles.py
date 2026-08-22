@@ -170,6 +170,8 @@ def build_launch_contract(
     attachment-only transport for frozen external evidence.
     """
     profile = resolve_profile(mode)
+    configured_regular_web_mode = WORKSPACE_CONFIG.configured_regular_web_mode()
+    configured_pro = configured_regular_web_mode == "pro" and not profile.research
     resolved_app_name = WORKSPACE_CONFIG.normalize_app_name(
         app_name or WORKSPACE_CONFIG.configured_app_name()
     )
@@ -183,7 +185,12 @@ def build_launch_contract(
         "attachments": [],
         "app_picker": False,
         "app_settings_automation": False,
-        "pro_selection_policy": "explicit-only",
+        "configured_regular_web_mode": configured_regular_web_mode,
+        "pro_selection_policy": (
+            "host-configured-pro"
+            if configured_pro and profile.mode != "pro"
+            else "explicit-only"
+        ),
     }
     if not profile.oracle_launch:
         result.update({
@@ -216,7 +223,7 @@ def build_launch_contract(
             "composer_prompt": PRO_COMPOSER_PROMPT,
         })
         return result
-    if profile.mode == "pro":
+    if profile.mode == "pro" or configured_pro:
         if attachment_paths:
             raise OracleProfileError(
                 "PRO_DEVSPACE_ATTACHMENTS_FORBIDDEN",

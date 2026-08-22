@@ -1,6 +1,6 @@
 ---
 name: chatgpt-thinking-browser
-description: Run new regular ChatGPT direct, plan, review, edit, and orchestrator work through Oracle plus the manually registered DevSpace workspace app; use legacy agbrowse only to recover an exact persisted old run.
+description: Run new ChatGPT direct, plan, review, edit, and orchestrator work through Oracle plus the manually registered DevSpace workspace app, honoring an explicit host-level regular or Pro default; use legacy agbrowse only to recover an exact persisted old run.
 ---
 
 # Regular ChatGPT through Oracle + DevSpace
@@ -11,7 +11,7 @@ For new work, create one absolute UTF-8 mission file inside the project and
 resolve the requested mode through:
 
 ```powershell
-python "$env:USERPROFILE\.codex\bin\chatgpt_oracle_dispatch.py" --mode <direct|plan|review|edit|orchestrator> --project-root C:\project --mission-path C:\project\mission.md --manifest-output C:\project\.ai-bridge\oracle.json --reasoning-level "Very High" --dry-run
+python "$env:USERPROFILE\.codex\bin\chatgpt_oracle_dispatch.py" --mode <direct|plan|review|edit|orchestrator> --project-root C:\project --mission-path C:\project\mission.md --manifest-output C:\project\.ai-bridge\oracle.json --dry-run
 ```
 
 Remove `--dry-run` only for an explicitly authorized live web run. The runtime
@@ -37,15 +37,20 @@ deterministic local gate.
 CodexPro is frozen for new work. Never mention it in a new mission, probe its
 endpoint, repair/register/delete its app, or use it as a DevSpace fallback.
 
-Oracle explicitly selects `GPT-5.6 Sol` and `extra-high`, verifies the visible
-`Extra High` tier before prompt send, and records both in Oracle evidence. The exact 0.17.1
+Without a host override, Oracle explicitly selects `GPT-5.6 Sol` and
+`extra-high`, verifies the visible `Extra High` tier before prompt send, and
+records both in Oracle evidence. When the user has explicitly persisted
+`regular_web_mode: pro` in `%USERPROFILE%\.codex\chatgpt-workspace.json`, every
+new direct, plan, review, edit, orchestrator, comprehensive, and Web Multi
+session instead selects `GPT-5.6 Sol` with the visible `Pro` choice. Deep
+Research remains its separate research mode. The exact 0.17.1
 compatibility layer is hash-gated and fails closed on an unknown version or
 third-party file. Never invent xhigh or silently downgrade.
 
 On the current Power-slider UI, Oracle verifies `Power 4 of 5` for regular
-`extra-high`; attachment-only Pro uses the same verified `GPT-5.6 Sol` model
-with `Power 5 of 5` (the visible `Pro` choice). `heavy` is only Oracle's
-internal compatibility token for that latter choice, never a claimed UI label.
+`extra-high` and `Power 5 of 5` for the visible `Pro` choice. Both use the
+verified `GPT-5.6 Sol` model. `heavy` is only Oracle's internal compatibility
+token for Pro, never a claimed UI label.
 
 Every new run copies the manually signed-in Oracle profile into a throwaway
 per-run profile and asks Oracle to hide its owned window. This isolates

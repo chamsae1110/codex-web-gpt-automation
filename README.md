@@ -121,6 +121,18 @@ ChatGPT 앱 `codex` 등록은 준비가 끝난 뒤 **최초 한 번 수동 등�
 | Codex Ultra식 웹 분업 | `ultra-gpt` | 웹 planner/reviewer + 병렬 격리 worktree 구현 + merger/검증 |
 | 명시 요청한 Pro 작업 | `pro` | GPT-5.6 Sol Pro + 읽기·쓰기 DevSpace |
 
+일반 웹 작업 전체를 Pro로 고정하라는 사용자의 명시 요청은 호스트 전용
+`%USERPROFILE%\.codex\chatgpt-workspace.json`에 아래처럼 보존할 수 있습니다.
+이 설정은 direct, plan, review, edit, orchestrator, comprehensive, Web Multi에
+적용되며 Deep Research는 별도 연구 모드로 유지됩니다.
+
+```json
+{
+  "app_name": "codex",
+  "regular_web_mode": "pro"
+}
+```
+
 자세한 선택 기준은 [전역 라우팅](docs/GLOBAL_CHATGPT_ROUTING.md),
 [초절약모드](docs/ULTRA_ECONOMY_MODE.md),
 [울트라 GPT 모드](docs/ULTRA_GPT_MODE.md)를 참고하세요.
@@ -135,7 +147,6 @@ python "$env:USERPROFILE\.codex\bin\chatgpt_oracle_dispatch.py" `
   --project-root C:\project `
   --mission-path C:\project\mission.md `
   --manifest-output C:\project\.ai-bridge\oracle.json `
-  --reasoning-level "Very High" `
   --dry-run
 ```
 
@@ -145,7 +156,7 @@ python "$env:USERPROFILE\.codex\bin\chatgpt_oracle_dispatch.py" `
 
 - 프로젝트마다 활성 또는 불확실한 Oracle 작업은 하나만 둡니다.
 - 새 프로젝트의 첫 DevSpace 제출 전에 exact root 등록을 확인합니다.
-- 일반 웹 작업은 최고 지원 비-Pro 추론 강도가 기본입니다. Pro는 횟수 제한이 있으므로 사용자가 명시적으로 요청할 때만 선택하며 자동 승격하지 않습니다.
+- 일반 웹 작업은 최고 지원 비-Pro 추론 강도가 기본입니다. 사용자가 한 번의 Pro 실행 또는 호스트 전역 `regular_web_mode: pro`를 명시적으로 요청했을 때만 Pro를 사용하며, 작업 난이도로 자동 추론하지 않습니다.
 - 명시적으로 선택한 Pro는 exact root 안에서 미션이 허용한 파일 쓰기와 명령 실행이 가능합니다. 저장소 안전 규칙과 `AGENTS.md`는 그대로 적용됩니다.
 - 제출 후 오류는 기존 실행 신원으로 정확히 복구하며, 저장된 slug와 대화
   URL만 회수하고 자동 재제출하지 않습니다.

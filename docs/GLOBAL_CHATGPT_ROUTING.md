@@ -13,17 +13,20 @@ Use this routing in the Codex global `AGENTS.md` after installing the package.
   the manually registered DevSpace app.
 - Regular web work selects `gpt-5.6` with Oracle `extra-high`, the highest
   supported non-Pro reasoning tier. It does not silently fall back to a lower
-  tier or upgrade to Pro.
+  tier or infer Pro from task difficulty. A user may persist the explicit
+  host-only opt-in `regular_web_mode: pro` in `chatgpt-workspace.json`; later
+  ordinary, comprehensive, and Web Multi sessions then select `GPT-5.6 Sol`
+  with the Pro effort. Deep Research remains its separate non-Pro research mode.
 - The regular composer contains only the configured app mention (default `@codex`), the exact UTF-8 project root,
   and the absolute UTF-8 mission path. It tells DevSpace to open the exact root
   before reading the mission, never the mission directory, a parent, a child,
   or the active workspace as a substitute. It does not attach the task body and
   does not inspect or mutate ChatGPT app settings per question.
-- Pro is quota-limited and explicit-only. Ordinary modes, comprehensive plans,
-  and recovery logic must never select or upgrade to Pro automatically. A
-  standard comprehensive manifest must contain `allow_pro: true`, supplied
-  only after an explicit user request; selecting Ultra Economy Mode is itself
-  an explicit Pro-design request.
+- Pro is quota-limited and explicit-only. The explicit authority may be scoped
+  to one run or durably recorded as the host-level ordinary-web preference.
+  Recovery logic must never change it. A distinct optional Pro stage in a
+  standard comprehensive manifest must still contain `allow_pro: true`;
+  selecting Ultra Economy Mode is itself an explicit Pro-design request.
 - Qualified Pro uses Oracle, `GPT-5.6 Sol` at the Pro effort, and the manually
   registered DevSpace app. It binds the exact project root and may inspect,
   create, edit, and remove mission-owned files and run commands there as the
@@ -65,8 +68,9 @@ Use this routing in the Codex global `AGENTS.md` after installing the package.
   review, two to five parallel isolated-worktree Web Multi implementers with
   host-validated disjoint project-relative ownership and concurrency at most
   three, an all-lanes audit barrier, merger/integration, and a final web gate.
-  The profile cannot select Pro internally. One pre-workflow Pro design advisory
-  is allowed only after a separate explicit user authorization.
+  The profile does not add a separate Pro stage internally. Its ordinary web
+  stages honor the durable host web-power preference; one pre-workflow Pro
+  design advisory still requires separate explicit authorization.
 
 ## Standalone Pro versus comprehensive
 

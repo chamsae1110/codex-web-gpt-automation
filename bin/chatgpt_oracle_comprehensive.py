@@ -538,29 +538,30 @@ def _oracle_manifest(
 ) -> Path:
     pro_attachments = tuple(pro_attachments)
     path = stage_dir / "oracle.json"
+    configured_pro = WORKSPACE_CONFIG.configured_regular_web_mode() == "pro"
+    use_pro = stage == "pro" or configured_pro
     payload: dict[str, Any] = {
         "schema": RUNNER.STATE.SCHEMA,
         "project_root": str(config["project_root"]),
         "mission_path": str(mission),
         "mode": "browser",
-        "model": "gpt-5.6-sol" if stage == "pro" else config["model"],
+        "model": "gpt-5.6-sol" if use_pro else config["model"],
         "model_strategy": "select",
-        # Pro is the explicit highest effort in the current GPT-5.6 Sol UI;
-        # regular comprehensive stages use the separately verified Extra High.
-        "thinking_time": "heavy" if stage == "pro" else "extra-high",
+        # A durable host-level Pro preference is itself explicit user opt-in.
+        # Otherwise regular stages keep the separately verified Extra High.
+        "thinking_time": "heavy" if use_pro else "extra-high",
         "research": "off",
         "archive": "auto",
         "parallel_parent_id": config["_parallel_parent_id"],
         "run_id": run_id,
     }
-    if stage == "pro":
-        if pro_attachments:
-            payload["transport"] = "pro-attachment-only"
-            payload["attachments"] = [str(mission), *(str(item) for item in pro_attachments)]
-        else:
-            payload["transport"] = "pro-devspace"
-            payload["app_name"] = config["app_name"]
-            payload["task_outcome_contract"] = "v1"
+    if stage == "pro" and pro_attachments:
+        payload["transport"] = "pro-attachment-only"
+        payload["attachments"] = [str(mission), *(str(item) for item in pro_attachments)]
+    elif use_pro:
+        payload["transport"] = "pro-devspace"
+        payload["app_name"] = config["app_name"]
+        payload["task_outcome_contract"] = "v1"
     else:
         payload["transport"] = "devspace"
         payload["app_name"] = config["app_name"]

@@ -158,6 +158,30 @@ def test_web_authored_relay_reaches_complete_without_host_semantic_rewrite(tmp_p
     assert result["status"] == "complete"
 
 
+def test_host_configured_pro_applies_to_regular_comprehensive_stages(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CODEX_CHATGPT_REGULAR_WEB_MODE", "pro")
+    module = load()
+    config = module.load_manifest(manifest(tmp_path))
+    config["_parallel_parent_id"] = "b" * 64
+    stage_dir = tmp_path / "stage"
+    stage_dir.mkdir()
+    mission = stage_dir / "mission.md"
+    mission.write_text("plan", encoding="utf-8")
+
+    value = json.loads(
+        module._oracle_manifest(
+            config, mission, stage_dir, "run-pro-default", stage="plan"
+        ).read_text(encoding="utf-8")
+    )
+
+    assert value["transport"] == "pro-devspace"
+    assert value["model"] == "gpt-5.6-sol"
+    assert value["thinking_time"] == "heavy"
+    assert value["task_outcome_contract"] == "v1"
+
+
 def test_explicit_pro_stage_runs_writable_devspace_and_materializes_bound_receipt(tmp_path: Path) -> None:
     module = load()
     stages = []

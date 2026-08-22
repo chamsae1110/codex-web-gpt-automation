@@ -50,11 +50,15 @@ artifact:
 ```text
 one-time exact-root qualification
   -> qualified Pro design (design-only mission on write-capable DevSpace)
-  -> regular web design review and implementation-mission authoring
-  -> regular web implementation and project tests
-  -> separate regular web final verification or repair handoff
+  -> configured-power web design review and implementation-mission authoring
+  -> configured-power web implementation and project tests
+  -> separate configured-power web final verification or repair handoff
   -> one local deterministic gate
 ```
+
+Configured-power stages honor the durable host `regular_web_mode` preference;
+`pro` keeps them on `GPT-5.6 Sol` Pro, while the unset/default value uses the
+highest supported non-Pro tier.
 
 Use `bin/chatgpt_oracle_comprehensive.py` with these manifest fields:
 

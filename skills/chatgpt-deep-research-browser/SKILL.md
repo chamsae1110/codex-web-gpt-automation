@@ -16,7 +16,8 @@ The compiled Oracle manifest uses `gpt-5.6`, model strategy `select`, Oracle
 attachment and performs no app picker or settings action. Remove `--dry-run`
 only for an explicitly authorized live run.
 
-Do not silently replace Deep Research with ordinary search or Pro. Existing
+Deep Research is a separate research mode and does not inherit the ordinary
+`regular_web_mode: pro` preference. Do not silently replace Deep Research with ordinary search or Pro. Existing
 agbrowse Deep Research records may be recovered only by their exact old run
 directory; never create a new agbrowse research run. CodexPro is frozen and is
 not a fallback.

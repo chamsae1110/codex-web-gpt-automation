@@ -7,7 +7,10 @@ description: Run staged work with explicitly authorized read/write DevSpace Pro 
 
 Pro uses Oracle and is quota-limited. A standard comprehensive workflow may
 select it only when its manifest has `allow_pro: true` after an explicit user
-request; regular work remains at the highest supported non-Pro reasoning tier.
+request. Ordinary comprehensive sessions honor the durable host
+`regular_web_mode` preference: `pro` uses `GPT-5.6 Sol` at the Pro effort,
+while the unset/default value remains at the highest supported non-Pro tier.
+This power preference does not create the distinct optional Pro design stage.
 The qualified `GPT-5.6 Sol` Pro stage uses read/write DevSpace at the exact
 project root and may perform mission-authorized edits and commands under the
 repository safety policy. `pro-attachment` remains an explicit attachment-only
@@ -34,7 +37,7 @@ repeat that question later in the same task. Follow
 subagent contract.
 
 The optional `ultra-gpt` profile replaces every semantic native Codex
-subagent role with a separate regular web GPT session. Local Codex remains a
+subagent role with a separate configured-power web GPT session. Local Codex remains a
 deterministic controller only. The enforced path is plan, independent web
 review and partitioning, bounded parallel isolated-worktree Web Multi lanes plus
 merger, final web verification, and the local deterministic gate. Pro is not a
@@ -76,7 +79,7 @@ closed `[PRO_ATTACHMENT_CONTRACT]` block. The JSON body uses schema
 absolute project-root-contained regular non-symlink paths with optional
 SHA-256 values. The host attaches only the mission and these declared files; it
 never discovers ZIPs from prose. An authorized Pro mission without the block
-uses the read/write DevSpace route. Regular non-Pro DevSpace stages reject this block.
+uses the read/write DevSpace route. Ordinary DevSpace stages reject this block.
 
 Plan receipts should use `PLAN_READY`. For compatibility, `completed` is
 accepted only when the plan receipt is otherwise a fully ready, blocker-free,

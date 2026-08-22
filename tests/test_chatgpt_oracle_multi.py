@@ -130,6 +130,31 @@ def test_multi_uses_unique_child_manifests_waves_and_merger(tmp_path: Path) -> N
     assert merger_text.count(".md") == 7
 
 
+def test_host_configured_pro_applies_to_every_web_multi_child(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CODEX_CHATGPT_REGULAR_WEB_MODE", "pro")
+    module = load()
+    calls = []
+
+    def fake_execute(path: Path, *, dry_run: bool):
+        value = json.loads(path.read_text(encoding="utf-8"))
+        calls.append(value)
+        run_dir = path.parent / "fake-run"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "output.md").write_text("answer\nTASK_OUTCOME: EXECUTED\n", encoding="utf-8")
+        return {"ok": True, "run_dir": str(run_dir)}
+
+    result = module.run_multi(make_manifest(tmp_path, 2), execute=fake_execute)
+
+    assert result["ok"] is True
+    assert len(calls) == 3
+    assert all(item["transport"] == "pro-devspace" for item in calls)
+    assert all(item["model"] == "gpt-5.6-sol" for item in calls)
+    assert all(item["thinking_time"] == "heavy" for item in calls)
+    assert all(item["task_outcome_contract"] == "v1" for item in calls)
+
+
 def test_multi_preserves_partial_results_and_rejects_over_capacity(tmp_path: Path) -> None:
     module = load()
     manifest = make_manifest(tmp_path, 3)

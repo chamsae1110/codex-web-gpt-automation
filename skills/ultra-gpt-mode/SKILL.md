@@ -12,13 +12,16 @@ native Codex subagents for semantic work.
 
 ## Authority and activation
 
-- The user's request for Ultra GPT Mode authorizes regular web GPT stages, not
-  Pro. Regular stages use the highest supported non-Pro reasoning tier.
+- The user's request for Ultra GPT Mode authorizes its web GPT stages. They use
+  the durable host `regular_web_mode` preference: `pro` selects `GPT-5.6 Sol`
+  at the Pro effort, while the unset/default value uses the highest supported
+  non-Pro reasoning tier. Never infer Pro from task difficulty.
 - Pro remains quota-limited and explicit-only. When the user separately
   authorizes Pro and architecture uncertainty genuinely warrants it, run at
   most one design-only Pro advisory before the workflow. Freeze its durable
-  output into the initial mission; never let the `ultra-gpt` workflow select
-  Pro internally.
+  output into the initial mission. That advisory is a distinct workflow stage;
+  it is not created merely because ordinary Ultra GPT sessions use the durable
+  Pro power preference.
 - Do not change the user's local model, global subagent configuration, ChatGPT
   settings, or registered app.
 
@@ -37,12 +40,12 @@ native Codex subagents for semantic work.
 
 ```text
 one-time exact-root qualification
-  -> regular web root planner
-  -> separate regular web review and work partition
+  -> configured-power web root planner
+  -> separate configured-power web review and work partition
   -> Oracle Web Multi: 2..5 parallel worktree-write web implementers, concurrency <= 3
   -> all-lanes barrier and host audit
   -> web merger inspects the combined canonical result
-  -> separate regular web final verification
+  -> separate configured-power web final verification
   -> one local deterministic gate
 ```
 

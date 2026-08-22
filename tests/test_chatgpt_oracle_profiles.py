@@ -58,6 +58,45 @@ def test_deep_research_is_only_a_mode_flag() -> None:
     assert contract["pro_selection_policy"] == "explicit-only"
 
 
+@pytest.mark.parametrize("mode", ["direct", "plan", "review", "edit", "orchestrator"])
+def test_durable_host_pro_opt_in_upgrades_regular_modes_without_losing_task_kind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    monkeypatch.setenv("CODEX_CHATGPT_REGULAR_WEB_MODE", "pro")
+    profiles = load_profiles()
+    mission = (tmp_path / "mission.md").resolve()
+
+    contract = profiles.build_launch_contract(mode, mission_path=mission)
+
+    assert contract["mode"] == mode
+    assert contract["task_kind"] == mode
+    assert contract["route"] == "oracle-pro-devspace"
+    assert contract["model"] == "gpt-5.6-sol"
+    assert contract["reasoning_level"] == "Pro"
+    assert contract["thinking_time"] == "heavy"
+    assert contract["configured_regular_web_mode"] == "pro"
+    assert contract["pro_selection_policy"] == "host-configured-pro"
+    assert contract["composer_prompt"].startswith(
+        f"@DevSpace Read and execute the mission file: {mission}."
+    )
+
+
+def test_durable_host_pro_opt_in_does_not_replace_deep_research(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CODEX_CHATGPT_REGULAR_WEB_MODE", "pro")
+    profiles = load_profiles()
+
+    contract = profiles.build_launch_contract(
+        "deep-research", mission_path=(tmp_path / "research.md").resolve()
+    )
+
+    assert contract["route"] == "oracle-devspace"
+    assert "model" not in contract
+    assert contract["thinking_time"] == "extra-high"
+    assert contract["research"] is True
+
+
 @pytest.mark.parametrize("level", ["low", "Pro"])
 def test_regular_reasoning_rejects_unsupported_level_without_downgrade(tmp_path: Path, level: str) -> None:
     profiles = load_profiles()

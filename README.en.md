@@ -119,8 +119,21 @@ new exact folder. Do not inspect or automate ChatGPT app settings per task.
 | Codex Ultra-style web delegation | `ultra-gpt` | Web plan/review + parallel isolated-worktree writers + merge/verification |
 | Explicitly requested Pro work | `pro` | GPT-5.6 Sol Pro + read/write DevSpace |
 
+An explicit user request to keep ordinary web work on Pro can be persisted in
+the host-only `%USERPROFILE%\.codex\chatgpt-workspace.json`:
+
+```json
+{
+  "app_name": "codex",
+  "regular_web_mode": "pro"
+}
+```
+
+The setting covers direct, plan, review, edit, orchestrator, comprehensive, and
+Web Multi sessions. Deep Research remains its separate research mode.
+
 Natural-language aliases use the same routes: `orchestrator` / orchestrator and
-`deep-research` / deep research. Regular web work defaults to the highest supported non-Pro reasoning tier. Pro is quota-limited, never auto-selected, and runs only after an explicit request. Qualified Pro uses Oracle + read/write DevSpace; explicit `pro-attachment` is reserved for immutable evidence that the approved workspace cannot read.
+`deep-research` / deep research. Regular web work defaults to the highest supported non-Pro reasoning tier. Pro is quota-limited and requires explicit one-run or durable host opt-in; it is never inferred from task difficulty. Qualified Pro uses Oracle + read/write DevSpace; explicit `pro-attachment` is reserved for immutable evidence that the approved workspace cannot read.
 
 See [Global Routing](docs/GLOBAL_CHATGPT_ROUTING.md) for selection rules,
 [Ultra Economy Mode](docs/ULTRA_ECONOMY_MODE.md), and
@@ -136,7 +149,6 @@ python "$env:USERPROFILE\.codex\bin\chatgpt_oracle_dispatch.py" `
   --project-root C:\project `
   --mission-path C:\project\mission.md `
   --manifest-output C:\project\.ai-bridge\oracle.json `
-  --reasoning-level "Very High" `
   --dry-run
 ```
 
@@ -146,7 +158,7 @@ Remove `--dry-run` only when live execution is authorized.
 
 - Allow one active or uncertain Oracle workflow per project.
 - Qualify the exact root before the first DevSpace submission for a new project.
-- Regular web work defaults to the highest supported non-Pro reasoning tier. Pro requires explicit opt-in and is never an automatic upgrade.
+- Regular web work defaults to the highest supported non-Pro reasoning tier. Pro requires explicit one-run or durable host opt-in and is never inferred from task difficulty.
 - Explicit Pro may perform mission-authorized writes and commands inside the exact root, under the repository safety policy.
 - Post-submit failure recovers the existing slug and URL and never resubmits the task.
 - Browser or local-process exit alone is not evidence that web work failed.

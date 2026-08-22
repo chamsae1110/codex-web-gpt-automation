@@ -63,8 +63,9 @@ def test_ultra_economy_skill_forces_fresh_luna_max_workers_and_web_stages() -> N
     assert "fresh `default`" in text
     assert "Do not use the globally configured scout" in text
     assert "qualified Pro design" in text
-    assert "regular web implementation" in text
-    assert "separate regular web final verification" in text
+    assert "configured-power web implementation" in text
+    assert "`regular_web_mode` preference" in text
+    assert "separate configured-power web final verification" in text
     assert "zero-exit local" in text
 
 

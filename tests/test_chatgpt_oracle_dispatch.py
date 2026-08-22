@@ -64,6 +64,31 @@ def test_regular_high_is_forwarded_as_the_visible_high_tier(tmp_path: Path) -> N
     assert value["thinking_time"] == "extended"
 
 
+def test_host_configured_pro_compiles_regular_mode_to_sol_pro_devspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("CODEX_CHATGPT_REGULAR_WEB_MODE", "pro")
+    module = load()
+    mission = tmp_path / "mission.md"
+    mission.write_text("work", encoding="utf-8")
+    target = tmp_path / "pro-default.json"
+
+    result = module.compile_manifest(
+        mode="orchestrator",
+        project_root=tmp_path,
+        mission_path=mission,
+        output_path=target,
+    )
+
+    value = json.loads(target.read_text(encoding="utf-8"))
+    assert result["contract"]["pro_selection_policy"] == "host-configured-pro"
+    assert value["task_kind"] == "orchestrator"
+    assert value["transport"] == "pro-devspace"
+    assert value["model"] == "gpt-5.6-sol"
+    assert value["thinking_time"] == "heavy"
+    assert value["task_outcome_contract"] == "v1"
+
+
 def test_configured_app_name_is_forwarded_to_manifest_and_composer(tmp_path: Path) -> None:
     module = load()
     mission = tmp_path / "mission.md"
