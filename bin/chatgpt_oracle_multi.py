@@ -947,6 +947,13 @@ def run_multi(
     if config.get("strict") and not dry_run and result_path.exists():
         raise MultiError("STRICT_MULTI_EXISTING_LEDGER_REQUIRES_EXACT_RECOVERY")
     lanes: list[dict[str, Any]] = []
+    waves = [
+        {
+            "index": index // config["max_concurrency"],
+            "lane_ids": [lane["id"] for lane in config["solvers"][index:index + config["max_concurrency"]]],
+        }
+        for index in range(0, len(config["solvers"]), config["max_concurrency"])
+    ]
     # The parent owns normal same-project exclusion. Children use the separate
     # parent-scoped launch mutex and may wait concurrently after submission.
     lock = nullcontext() if parent_lock_held else STATE.project_submit_mutex(config["project_root"], timeout_seconds=30)
@@ -957,6 +964,7 @@ def run_multi(
                 "status": "preflighting",
                 "parent_id": parent_id,
                 "manifest_sha256": config["manifest_sha256"],
+                "waves": waves,
                 "lanes": [{"id": lane["id"], "status": "planned"} for lane in config["solvers"]],
             }
             if not dry_run:
@@ -1054,7 +1062,14 @@ def run_multi(
         "parent_id": parent_id,
         "manifest_sha256": config["manifest_sha256"],
         "strict_baselines": config.get("_strict_baselines") if config.get("strict") else None,
+        "waves": waves if config.get("strict") else None,
         "lanes": lanes,
+        "barrier_status": "all-lanes-terminal" if config.get("strict") and len(successful) == len(lanes) else None,
+        "apply_status": "complete" if config.get("strict") and len(successful) == len(lanes) else None,
+        "merger": {
+            "ok": bool(merger.get("ok")),
+            "run_dir": merger.get("run_dir"),
+        } if config.get("strict") else None,
         "merger_run_dir": merger.get("run_dir"),
         "merger_mission_path": str(merger_mission),
         "merger_mission_sha256": hashlib.sha256(merger_mission.read_bytes()).hexdigest(),

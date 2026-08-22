@@ -58,6 +58,7 @@ USER_STOPPABLE_OUTCOMES = {"blocked", "not_executed", "pending", "unknown"}
 STANDARD_PROFILE = "standard"
 ULTRA_ECONOMY_PROFILE = "ultra-economy"
 ULTRA_GPT_PROFILE = "ultra-gpt"
+STRICT_ULTRA_PROFILE = "strict-ultra"
 MAX_PLAN_REVISIONS = 2
 REVIEW_STATUSES = {"PASS", "PASS_WITH_NOTES", "REVISE", "FAIL"}
 UNAMBIGUOUS_PRE_SUBMIT_MARKERS = (
@@ -94,6 +95,7 @@ def _load(name: str, path: Path):
 
 RUNNER = _load("oracle_comprehensive_runner", BIN / "chatgpt_oracle_run.py")
 MULTI = _load("oracle_comprehensive_multi", BIN / "chatgpt_oracle_multi.py")
+STRICT_ULTRA = _load("oracle_comprehensive_strict_ultra", BIN / "chatgpt_strict_ultra.py")
 WORKSPACE_CONFIG = _load("oracle_comprehensive_workspace_config", BIN / "chatgpt_workspace_config.py")
 
 
@@ -172,8 +174,8 @@ def load_manifest(path: Path) -> dict[str, Any]:
     if not 1 <= maximum <= 12:
         raise WorkflowError("max_stages must be within 1..12")
     workflow_profile = str(value.get("workflow_profile") or STANDARD_PROFILE).strip().casefold()
-    if workflow_profile not in {STANDARD_PROFILE, ULTRA_ECONOMY_PROFILE, ULTRA_GPT_PROFILE}:
-        raise WorkflowError("workflow_profile must be standard, ultra-economy, or ultra-gpt")
+    if workflow_profile not in {STANDARD_PROFILE, ULTRA_ECONOMY_PROFILE, ULTRA_GPT_PROFILE, STRICT_ULTRA_PROFILE}:
+        raise WorkflowError("workflow_profile must be standard, ultra-economy, ultra-gpt, or strict-ultra")
     allow_pro_raw = value.get("allow_pro", False)
     if not isinstance(allow_pro_raw, bool):
         raise WorkflowError("allow_pro must be a boolean explicit opt-in")
@@ -191,7 +193,7 @@ def load_manifest(path: Path) -> dict[str, Any]:
             raise WorkflowError("ULTRA_ECONOMY_INITIAL_STAGE_REQUIRED: initial_stage must be pro")
         if maximum < 4:
             raise WorkflowError("ULTRA_ECONOMY_STAGE_BUDGET_TOO_SMALL: max_stages must be at least 4")
-    elif workflow_profile == ULTRA_GPT_PROFILE:
+    elif workflow_profile in {ULTRA_GPT_PROFILE, STRICT_ULTRA_PROFILE}:
         if allow_pro:
             raise WorkflowError(
                 "ULTRA_GPT_PRO_IS_SEPARATE: use at most one explicitly authorized Pro design advisory before "
@@ -221,7 +223,7 @@ def load_manifest(path: Path) -> dict[str, Any]:
         )
     except ValueError as exc:
         raise WorkflowError(str(exc)) from exc
-    return {
+    normalized = {
         **value,
         "project_root": root,
         "workflow_dir": workflow_dir,
@@ -239,6 +241,25 @@ def load_manifest(path: Path) -> dict[str, Any]:
         "manifest_sha256": sha(path.resolve(strict=True)),
         "workflow_id": workflow_id,
     }
+    if workflow_profile == STRICT_ULTRA_PROFILE:
+        allowed = {
+            "schema", "workflow_id", "project_root", "workflow_dir", "initial_mission_path",
+            "workflow_profile", "initial_stage", "max_stages", "allow_pro", "app_name", "model",
+            "copy_profile", "local_gate_command", "strict_ultra_contract_path",
+            "strict_ultra_contract_sha256",
+        }
+        extra = sorted(set(value) - allowed)
+        if extra:
+            raise WorkflowError(f"STRICT_ULTRA_MANIFEST_EXTRA_KEYS: {extra}")
+        if allow_pro:
+            raise WorkflowError("STRICT_ULTRA_PRO_FORBIDDEN: pre-workflow Pro is separate and advisory-only")
+        try:
+            normalized["strict_ultra"] = STRICT_ULTRA.load_contract(
+                root, value.get("strict_ultra_contract_path"), value.get("strict_ultra_contract_sha256")
+            )
+        except STRICT_ULTRA.StrictUltraError as exc:
+            raise WorkflowError(str(exc)) from exc
+    return normalized
 
 
 def _write(path: Path, value: dict[str, Any]) -> None:
@@ -340,7 +361,7 @@ def _review_policy_from_history(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def _validate_ultra_gpt_multi(config: dict[str, Any], multi_config: dict[str, Any]) -> None:
-    if config.get("workflow_profile") != ULTRA_GPT_PROFILE:
+    if config.get("workflow_profile") not in {ULTRA_GPT_PROFILE, STRICT_ULTRA_PROFILE}:
         return
     if not 2 <= len(multi_config["solvers"]) <= 5:
         raise WorkflowError("ULTRA_GPT_SOLVER_COUNT_INVALID: web-multi requires 2..5 lanes")
@@ -363,7 +384,7 @@ def _validate_ultra_gpt_multi(config: dict[str, Any], multi_config: dict[str, An
 
 
 def _allowed_transitions(config: dict[str, Any], stage: str) -> set[str]:
-    if config.get("workflow_profile") == ULTRA_GPT_PROFILE:
+    if config.get("workflow_profile") in {ULTRA_GPT_PROFILE, STRICT_ULTRA_PROFILE}:
         return {
             "plan": {"review"},
             "review": {"web-multi"},
@@ -429,6 +450,11 @@ def _write_workflow_state(path: Path, config: dict[str, Any], value: dict[str, A
         if payload.get("review_receipt_sha256"):
             scope_payload["review_receipt_sha256"] = payload.get("review_receipt_sha256")
     _write(_scope_path(config), scope_payload)
+    if config.get("workflow_profile") == STRICT_ULTRA_PROFILE:
+        try:
+            STRICT_ULTRA.sync_identity_ledger(config, payload)
+        except STRICT_ULTRA.StrictUltraError as exc:
+            raise WorkflowError(str(exc)) from exc
 
 
 def _required_sha256(value: str, *, label: str) -> str:
@@ -919,7 +945,7 @@ def _stage_mission(
             if config["allow_pro"]
             else (
                 "Do not emit next_stage=pro; continue with review.\n"
-                if config.get("workflow_profile") == ULTRA_GPT_PROFILE
+                if config.get("workflow_profile") in {ULTRA_GPT_PROFILE, STRICT_ULTRA_PROFILE}
                 else "Do not emit next_stage=pro; continue with review or an authorized web-multi stage.\n"
             )
         )
@@ -943,7 +969,7 @@ def _stage_mission(
             "Canonical plan receipt status is PLAN_READY. The legacy status completed is accepted only when the "
             "receipt is otherwise a complete, hash-valid, blocker-free ready transition to review, web-multi, or pro.\n"
         )
-        if config.get("workflow_profile") == ULTRA_GPT_PROFILE:
+        if config.get("workflow_profile") in {ULTRA_GPT_PROFILE, STRICT_ULTRA_PROFILE}:
             protocol += (
                 "\n[ULTRA_GPT_WEB_AGENT_CONTRACT]\n"
                 "This workflow replaces every cognitive native Codex subagent with a separate web GPT session. "
@@ -958,7 +984,7 @@ def _stage_mission(
         review_handoff = (
             "Then author the complete bound Oracle Multi implementation manifest and return PASS or "
             "PASS_WITH_NOTES with next_stage=web-multi. Notes must travel inside the lane and merger missions. "
-            if config.get("workflow_profile") == ULTRA_GPT_PROFILE
+            if config.get("workflow_profile") in {ULTRA_GPT_PROFILE, STRICT_ULTRA_PROFILE}
             else "Then write a complete implementation mission and return PASS or PASS_WITH_NOTES with "
             "next_stage=implementation. Notes are non-blocking and must travel inside that implementation mission. "
         )
@@ -986,7 +1012,7 @@ def _stage_mission(
             f"baseline_critical_finding_ids={json.dumps(policy['baseline_critical_finding_ids'], ensure_ascii=False, separators=(',', ':'))}\n"
             f"baseline_critical_findings_sha256={policy['baseline_critical_findings_sha256'] or ''}\n"
         )
-        if config.get("workflow_profile") == ULTRA_GPT_PROFILE:
+        if config.get("workflow_profile") in {ULTRA_GPT_PROFILE, STRICT_ULTRA_PROFILE}:
             protocol += (
                 "\n[ULTRA_GPT_PARALLEL_IMPLEMENTATION_CONTRACT]\n"
                 "After repairing and finalizing the plan, author a bound Oracle Multi manifest and return "
@@ -1492,7 +1518,21 @@ def _validate_receipt(
     attempt_id: str,
     input_sha: str,
 ) -> dict[str, Any]:
-    value = _json(receipt_path)
+    value = (
+        STRICT_ULTRA.load_json(receipt_path)
+        if config.get("workflow_profile") == STRICT_ULTRA_PROFILE
+        else _json(receipt_path)
+    )
+    if config.get("workflow_profile") == STRICT_ULTRA_PROFILE:
+        allowed_receipt_keys = {
+            "schema", "workflow_id", "stage", "attempt_id", "input_mission_sha256",
+            "status", "output_path", "output_sha256", "next_stage", "next_mission_path",
+            "next_mission_sha256", "ready_for_next", "blocker", "critical_finding_ids",
+            "critical_findings_sha256",
+        }
+        extra = sorted(set(value) - allowed_receipt_keys)
+        if extra:
+            raise WorkflowError(f"STRICT_ULTRA_RECEIPT_EXTRA_KEYS: {extra}")
     has_schema = "schema" in value
     has_legacy_schema = "schema_version" in value
     schema = value.get("schema")
@@ -1511,7 +1551,7 @@ def _validate_receipt(
         raise WorkflowError("stage receipt identity mismatch")
     raw_status = str(value.get("status") or "")
     next_stage = str(value.get("next_stage") or "")
-    if config.get("workflow_profile") == ULTRA_GPT_PROFILE:
+    if config.get("workflow_profile") in {ULTRA_GPT_PROFILE, STRICT_ULTRA_PROFILE}:
         required_next = {
             "plan": "review", "review": "web-multi", "web-multi": "final-web-gate",
             "final-web-gate": "complete",
@@ -1541,7 +1581,7 @@ def _validate_receipt(
         if status not in REVIEW_STATUSES:
             raise WorkflowError("review status must be PASS, PASS_WITH_NOTES, REVISE, or FAIL")
         required_review_next = (
-            "web-multi" if config.get("workflow_profile") == ULTRA_GPT_PROFILE else "implementation"
+            "web-multi" if config.get("workflow_profile") in {ULTRA_GPT_PROFILE, STRICT_ULTRA_PROFILE} else "implementation"
         )
         if status in {"PASS", "PASS_WITH_NOTES"} and next_stage != required_review_next:
             raise WorkflowError(f"passing review must proceed to {required_review_next}")
@@ -1813,8 +1853,23 @@ def _pre_submit_retry_record(
 
 
 def _run_local_gate(config: dict[str, Any], runner: Callable[..., Any]) -> dict[str, Any]:
+    command = list(config["local_gate_command"])
+    bound_path = None
+    if config.get("workflow_profile") == STRICT_ULTRA_PROFILE:
+        bound_path = config["strict_ultra"]["research_governor_path"]
+        bound_sha = sha(bound_path)
+        if not any("{artifact_path}" in item for item in command) or not any(
+            "{artifact_sha256}" in item for item in command
+        ):
+            raise WorkflowError(
+                "STRICT_ULTRA_LOCAL_GATE_BINDING_REQUIRED: command must contain {artifact_path} and {artifact_sha256}"
+            )
+        command = [
+            item.replace("{artifact_path}", str(bound_path)).replace("{artifact_sha256}", bound_sha)
+            for item in command
+        ]
     completed = runner(
-        config["local_gate_command"],
+        command,
         cwd=str(config["project_root"]),
         stdin=subprocess.DEVNULL,
         capture_output=True,
@@ -1822,11 +1877,25 @@ def _run_local_gate(config: dict[str, Any], runner: Callable[..., Any]) -> dict[
         check=False,
         **RUNNER.STATE.windows_subprocess_kwargs(),
     )
-    return {
+    result = {
         "exit_code": int(completed.returncode),
         "stdout_sha256": hashlib.sha256((completed.stdout or "").encode("utf-8")).hexdigest(),
         "stderr_sha256": hashlib.sha256((completed.stderr or "").encode("utf-8")).hexdigest(),
     }
+    if bound_path is not None and completed.returncode == 0:
+        try:
+            receipt = STRICT_ULTRA.validate_gate_receipt(config, completed.stdout or "", bound_path)
+            STRICT_ULTRA.write_json_atomic(config["strict_ultra"]["local_gate_receipt_path"], receipt)
+        except STRICT_ULTRA.StrictUltraError as exc:
+            raise WorkflowError(str(exc)) from exc
+        result.update({
+            "receipt_path": str(config["strict_ultra"]["local_gate_receipt_path"]),
+            "receipt_sha256": sha(config["strict_ultra"]["local_gate_receipt_path"]),
+            "opened_path": receipt["opened_path"],
+            "opened_sha256": receipt["opened_sha256"],
+            "validator": receipt["validator"],
+        })
+    return result
 
 
 def _terminal_review_state(
@@ -2450,6 +2519,13 @@ def _run_workflow_locked(
             result = {"schema": STATE_SCHEMA, "status": "complete", "workflow_id": workflow_id,
                       "manifest_sha256": config["manifest_sha256"], "records": records,
                       "final_output_path": receipt["output_path"], "local_gate": gate}
+            if config.get("workflow_profile") == STRICT_ULTRA_PROFILE:
+                try:
+                    audit_path = STRICT_ULTRA.write_workflow_audit(config, result, gate)
+                except STRICT_ULTRA.StrictUltraError as exc:
+                    raise WorkflowError(str(exc)) from exc
+                result["workflow_audit_path"] = str(audit_path)
+                result["workflow_audit_sha256"] = sha(audit_path)
             _write_workflow_state(state_path, config, result)
             return {"ok": True, **result}
         stage, source = str(receipt["next_stage"]), receipt["_next_mission"]

@@ -105,3 +105,7 @@ gate.
 - Do not overlap local native-subagent work with the web workflow.
 - Completion requires the final web PASS receipt and the configured local
   deterministic gate with exit code zero.
+
+When the user explicitly requires closed, hash-bound workflow provenance,
+select the opt-in `strict-ultra` profile and follow `docs/STRICT_ULTRA.md`.
+Do not silently upgrade ordinary `ultra-gpt` runs to the strict profile.

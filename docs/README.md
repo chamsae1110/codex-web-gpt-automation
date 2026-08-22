@@ -38,6 +38,7 @@ route, then open a specialized guide only when that mode applies.
 | [Changelog](CHANGELOG.md) | User-visible changes by release |
 | [Release checklist](RELEASE_CHECKLIST.md) | Maintainer verification before tags and releases |
 | [Security policy](../SECURITY.md) | Supported versions and private reporting |
+| [Strict Ultra audit](STRICT_ULTRA.md) | Opt-in closed workflow provenance and audit contract |
 | [Third-party notices](../THIRD_PARTY_NOTICES.md) | Upstream licenses and provenance |
 
 ## Frozen legacy reference

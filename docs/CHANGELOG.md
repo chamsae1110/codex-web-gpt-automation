@@ -1,5 +1,21 @@
 # 기술 변경 기록
 
+## 1.16.0 - Strict Ultra 감사와 안전한 DevSpace 파일 제거
+
+- 기존 Oracle Multi v2 스케줄러를 그대로 사용하는 선택형
+  `strict-ultra` comprehensive 프로필을 추가했습니다. dependency,
+  authority, advisory Research Governor, identity ledger, local gate, 최종
+  workflow audit가 닫힌 JSON keyset과 SHA-256으로 결속됩니다.
+- strict Multi 결과가 실제 wave schedule, all-lanes barrier, audited apply,
+  merger를 최상위 감사 자료로 노출합니다. 5개 lane/동시성 3은 안정적인
+  3+2 wave로 기록됩니다.
+- DevSpace 1.0.4 호환 패치에 일반 파일 전용 `delete_file`과 복구 가능한
+  `trash_file`을 추가했습니다. 절대경로·경로이탈·reparse point·Git 및
+  trash 내부 대상은 실패 폐쇄하며 trash 이동은 바이트 수와 SHA-256을
+  재검증합니다.
+- 신규 계약은 명시적으로 선택한 경우에만 적용되며 기존 standard,
+  ultra-economy, ultra-gpt, legacy 경로는 그대로 유지됩니다.
+
 ## 1.15.12 - Luna Max CLI 및 Oracle 버전 해석 복구
 
 - Local Multi-GPT 등록이 Codex Desktop 업데이트로 사라진 구버전 CLI를
