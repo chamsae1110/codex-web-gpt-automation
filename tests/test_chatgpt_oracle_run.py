@@ -1334,7 +1334,7 @@ def test_status_audit_keeps_same_process_until_it_exits(
             return 7
 
         def poll(self):
-            return None
+            return None if self.wait_count <= 2 else 7
 
         def terminate(self):
             process_actions.append("terminate")
