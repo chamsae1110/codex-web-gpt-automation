@@ -27,7 +27,7 @@
     "README.md",
     "README.en.md",
     "CONTRIBUTING.md",
-    "INSTALL_AGENT.md",
+    "docs/INSTALL_AGENT.md",
     "onboard.py",
     "bin/codex_web_gpt_onboarding.py",
     "bin/codex_global_agents_setup.py",

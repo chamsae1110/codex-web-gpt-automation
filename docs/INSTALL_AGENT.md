@@ -93,4 +93,4 @@ Oracle 이외의 transport면 `FINAL_GATE_TRANSPORT_MUST_BE_REGULAR_NON_PRO_ORAC
 상태를 보고합니다: 프로그램 설치 완료 / ChatGPT 연결 대기 / 앱 등록 완료·검증
 대기. 마지막 상태인 전체 설치 및 실제 프로젝트 연결 검증 완료만 완료입니다.
 
-전체 절차와 수동 fallback은 [docs/FIRST_INSTALL.md](docs/FIRST_INSTALL.md)를 따르며, Local Multi-GPT 선택 사항은 [docs/LOCAL_MULTI_GPT.md](docs/LOCAL_MULTI_GPT.md)를 확인합니다.
+전체 절차와 수동 fallback은 [최초 설치 가이드](FIRST_INSTALL.md)를 따르며, Local Multi-GPT 선택 사항은 [Local Multi-GPT](LOCAL_MULTI_GPT.md)를 확인합니다.

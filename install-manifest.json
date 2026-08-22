@@ -114,7 +114,7 @@
     "scripts/start_devspace_bootstrap.ps1",
     "scripts/run_harness_canary.py",
     "docs/FIRST_INSTALL.md",
-    "INSTALL_AGENT.md",
+    "docs/INSTALL_AGENT.md",
     "docs/ULTRA_ECONOMY_MODE.md",
     "docs/ULTRA_GPT_MODE.md",
     "docs/STRICT_ULTRA.md",

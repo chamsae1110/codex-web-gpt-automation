@@ -11,6 +11,7 @@ being copied into several files.
 | [Main README](../README.md) | 한국어 | Product overview, quick install, mode selection |
 | [English README](../README.en.md) | English | English product overview and quick install |
 | [First Install](FIRST_INSTALL.md) | 한국어 | Canonical install-to-ChatGPT connection sequence |
+| [Install Contract](INSTALL_AGENT.md) | 한국어 | Agent-facing contract when only the repository URL is given |
 | [Contributing](../CONTRIBUTING.md) | English | Development, tests, pull requests, security boundary |
 
 ## Operate
