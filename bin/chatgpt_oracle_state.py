@@ -47,6 +47,9 @@ WAIT_OBJECT_0 = 0
 WAIT_ABANDONED = 0x80
 WAIT_TIMEOUT = 0x102
 CREATE_NO_WINDOW = 0x08000000
+ATOMIC_REPLACE_MAX_ATTEMPTS = 5
+ATOMIC_REPLACE_WINDOWS_TRANSIENT_ERRORS = {5, 32}
+ATOMIC_REPLACE_BACKOFF_SECONDS = (0.01, 0.025, 0.05, 0.1)
 BLOCKED_OPTIONS = {
     "-f", "--file", "--files", "--path", "--paths", "--include", "-p",
     "--prompt", "--message", "--write-output", "--slug", "-e", "--engine",
@@ -1171,7 +1174,30 @@ def write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f"{path.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}")
     temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    os.replace(temporary, path)
+    try:
+        for attempt in range(ATOMIC_REPLACE_MAX_ATTEMPTS):
+            try:
+                os.replace(temporary, path)
+                return
+            except PermissionError as exc:
+                # Windows can briefly deny ReplaceFile semantics while another
+                # observer has the destination open.  Retry only the two known
+                # sharing/access races; all other failures remain fail-closed.
+                if (
+                    getattr(exc, "winerror", None)
+                    not in ATOMIC_REPLACE_WINDOWS_TRANSIENT_ERRORS
+                    or attempt + 1 >= ATOMIC_REPLACE_MAX_ATTEMPTS
+                ):
+                    raise
+                time.sleep(ATOMIC_REPLACE_BACKOFF_SECONDS[attempt])
+    finally:
+        # A successful replace consumes the temporary path.  On a permanent
+        # failure, remove only the uniquely owned temporary file and preserve
+        # the original exception.
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def load_state(path: Path) -> dict[str, Any]:

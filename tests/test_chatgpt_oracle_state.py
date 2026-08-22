@@ -26,6 +26,96 @@ def load_state():
     return module
 
 
+@pytest.mark.parametrize("winerror", [5, 32])
+def test_write_json_atomic_retries_bounded_windows_replace_race(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    winerror: int,
+) -> None:
+    state = load_state()
+    destination = tmp_path / "state.json"
+    original_replace = state.os.replace
+    calls: list[tuple[Path, Path]] = []
+    sleeps: list[float] = []
+
+    def flaky_replace(source, target):
+        calls.append((Path(source), Path(target)))
+        if len(calls) <= 2:
+            error = PermissionError("transient Windows sharing race")
+            error.winerror = winerror
+            raise error
+        return original_replace(source, target)
+
+    monkeypatch.setattr(state.os, "replace", flaky_replace)
+    monkeypatch.setattr(state.time, "sleep", sleeps.append)
+
+    state.write_json_atomic(destination, {"status": "attention_required"})
+
+    assert json.loads(destination.read_text(encoding="utf-8")) == {
+        "status": "attention_required"
+    }
+    assert len(calls) == 3
+    assert sleeps == list(state.ATOMIC_REPLACE_BACKOFF_SECONDS[:2])
+    assert list(tmp_path.glob("state.json.tmp.*")) == []
+
+
+def test_write_json_atomic_keeps_permanent_windows_replace_failure_fail_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = load_state()
+    destination = tmp_path / "state.json"
+    destination.write_text('{"status":"original"}\n', encoding="utf-8")
+    calls = 0
+
+    def always_denied(_source, _target):
+        nonlocal calls
+        calls += 1
+        error = PermissionError("persistent Windows sharing race")
+        error.winerror = 5
+        raise error
+
+    monkeypatch.setattr(state.os, "replace", always_denied)
+    monkeypatch.setattr(state.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(PermissionError):
+        state.write_json_atomic(destination, {"status": "replacement"})
+
+    assert calls == state.ATOMIC_REPLACE_MAX_ATTEMPTS
+    assert destination.read_text(encoding="utf-8") == '{"status":"original"}\n'
+    assert list(tmp_path.glob("state.json.tmp.*")) == []
+
+
+def test_write_json_atomic_does_not_retry_unrecognized_permission_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = load_state()
+    destination = tmp_path / "state.json"
+    calls = 0
+
+    def denied(_source, _target):
+        nonlocal calls
+        calls += 1
+        error = PermissionError("unrecognized access failure")
+        error.winerror = 123
+        raise error
+
+    monkeypatch.setattr(state.os, "replace", denied)
+    monkeypatch.setattr(
+        state.time,
+        "sleep",
+        lambda _seconds: pytest.fail("unrecognized failures must not retry"),
+    )
+
+    with pytest.raises(PermissionError):
+        state.write_json_atomic(destination, {"status": "replacement"})
+
+    assert calls == 1
+    assert not destination.exists()
+    assert list(tmp_path.glob("state.json.tmp.*")) == []
+
+
 def test_v1_task_outcome_accepts_exact_provider_reference_footer(tmp_path: Path) -> None:
     state = load_state()
     output = tmp_path / "output.md"
