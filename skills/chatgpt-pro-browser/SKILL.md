@@ -114,6 +114,10 @@ or writable transport, artifact tamper, missing receipt, or a changed/unproven
 conversation fails closed. Never inject raw `--followup`,
 `--browser-follow-up`, or `session`; recovery observes only and cannot send a
 round; uncertainty never authorizes a replacement prompt.
+New read-only Pro parents normalize default `archive=auto` to `never`; no user
+archive-setting action is required. Explicit `archive=always` is a single-turn
+choice. Only historical or explicitly archived parents use the bounded exact
+restore-and-rearchive compatibility path.
 
 Completion requires the requested Pro model/effort evidence, exit zero, fresh
 nonempty host-only `output.md`, immutable run identity, and a refreshed

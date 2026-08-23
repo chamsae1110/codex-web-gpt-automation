@@ -362,9 +362,18 @@ def test_published_0171_patch_requires_extra_high_and_pro_selection_proof(tmp_pa
     assert "FOLLOWUP_ARCHIVED_PARENT_UNARCHIVE_FAILED" in archive_text
     assert "exact-conversation-url-mismatch" in archive_text
     assert "unarchive-menu-ambiguous" in archive_text
+    assert "direct-control" in archive_text
+    assert "[role=\"menu\"],[role=\"dialog\"]" in archive_text
+    assert "typeof PointerEvent === 'function'" in archive_text
+    assert "waitForUniqueUnarchive(3000)" in archive_text
+    assert "waitForDirectRestoreConfirmation(5000)" in archive_text
+    assert "composerReady() && directUnarchiveCandidates().length === 0" in archive_text
     browser_index = package / "dist/src/browser/index.js"
     browser_index_text = browser_index.read_text(encoding="utf-8")
-    assert browser_index_text.count("unarchiveChatGptConversation(Runtime") == 3
+    assert browser_index_text.count("restoreArchivedFollowupBeforeComposer(Runtime") == 4
+    assert 'stage: "followup-unarchive-before-composer"' in browser_index_text
+    assert "composerSubmitAttempted: false" in browser_index_text
+    assert "turnCountAfter" in browser_index_text
     for target in (followup, archive_action, browser_index):
         syntax = subprocess.run([node, "--check", str(target)], capture_output=True, text=True, check=False)
         assert syntax.returncode == 0, syntax.stderr
@@ -396,6 +405,89 @@ def test_published_0171_patch_requires_extra_high_and_pro_selection_proof(tmp_pa
     )
     assert recovery_syntax.returncode == 0, recovery_syntax.stderr
     assert compat.sha256_file(recovery_target) == compat.PATCHES["dist/src/browser/recoverConversation.js"]["patched"]
+
+
+def test_archived_parent_direct_restore_requires_exact_control_and_composer_transition(
+    tmp_path: Path,
+) -> None:
+    compat = load_compat()
+    source = (
+        Path.home()
+        / "AppData"
+        / "Local"
+        / "npm-cache"
+        / "_npx"
+        / "0a10f56e3ba43148"
+        / "node_modules"
+        / "@steipete"
+        / "oracle"
+    )
+    if not source.is_dir():
+        pytest.skip("published Oracle 0.17.1 cache is unavailable")
+    package = tmp_path / "oracle-dom"
+    shutil.copytree(source, package)
+    backup = tmp_path / "backup-dom"
+    compat.ensure_oracle_compatibility(
+        "oracle 0.17.1", package_root=package, backup_root=backup
+    )
+    module_url = (package / "dist/src/browser/actions/archiveConversation.js").as_uri()
+    script = f"""
+import {{ buildUnarchiveConversationExpressionForTest }} from {json.dumps(module_url)};
+class FakeElement {{
+  constructor(label, onClick = () => {{}}) {{ this.textContent = label; this.onClick = onClick; }}
+  getAttribute() {{ return null; }}
+  getBoundingClientRect() {{ return {{ width: 120, height: 30, top: 20, right: 900, left: 780 }}; }}
+  dispatchEvent(event) {{ if (event.type === 'click') this.onClick(); return true; }}
+}}
+globalThis.HTMLElement = FakeElement;
+globalThis.MouseEvent = class {{ constructor(type) {{ this.type = type; }} }};
+globalThis.PointerEvent = class {{ constructor(type) {{ this.type = type; }} }};
+globalThis.KeyboardEvent = class {{ constructor(type) {{ this.type = type; }} }};
+globalThis.getComputedStyle = () => ({{ visibility: 'visible', display: 'block' }});
+globalThis.window = {{ innerWidth: 1000 }};
+globalThis.location = {{ href: 'https://chatgpt.com/c/exact-parent' }};
+let clock = 0;
+Date.now = () => (clock += 1000);
+const runCase = async (label, transition) => {{
+  let restoreVisible = true;
+  let composerVisible = false;
+  const restore = new FakeElement(label, () => {{
+    if (transition) {{ restoreVisible = false; composerVisible = true; }}
+  }});
+  const composer = new FakeElement('composer');
+  globalThis.document = {{
+    querySelectorAll(selector) {{
+      if (selector.includes('#prompt-textarea')) return composerVisible ? [composer] : [];
+      if (selector.includes('button') || selector.includes('[role="menuitem"]')) return restoreVisible ? [restore] : [];
+      return [];
+    }},
+    dispatchEvent() {{ return true; }},
+  }};
+  return await eval(buildUnarchiveConversationExpressionForTest(location.href));
+}};
+const success = await runCase('아카이브 보관 취소하기', true);
+clock = 0;
+const noop = await runCase('아카이브 보관 취소하기', false);
+clock = 0;
+const unrelated = await runCase('복원', true);
+console.log(JSON.stringify({{ success, noop, unrelated }}));
+"""
+    node = shutil.which("node")
+    assert node is not None
+    completed = subprocess.run(
+        [node, "--input-type=module", "-e", script],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=15,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout)
+    assert result["success"]["status"] == "unarchived"
+    assert result["success"]["method"] == "direct-control"
+    assert result["noop"]["reason"] == "unarchive-not-confirmed"
+    assert result["unrelated"]["reason"] == "conversation-menu-not-found"
     target = package / "dist/src/browser/actions/thinkingTime.js"
     source_text = target.read_text(encoding="utf-8")
     assert "strictGpt56Effort" in source_text

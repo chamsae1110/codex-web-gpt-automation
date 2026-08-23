@@ -1971,6 +1971,13 @@ def settle_user_confirmed_no_submission(
     state_path = directory / "state.json"
     stored = STATE.load_state(state_path)
     require_current_task_owns_run(stored)
+    active_pids = [pid for pid in run_owned_process_ids(directory, stored) if process_is_alive(pid)]
+    if active_pids:
+        raise OracleRunError(
+            "NO_SUBMISSION_PROCESS_ACTIVE",
+            "no-submission settlement requires every exact run-owned process to be stopped",
+            {"active_pids": active_pids},
+        )
     source_thread_id = STATE.source_thread_id_from_state(stored)
     project_root = Path(str(stored.get("project_root") or "")).expanduser().resolve(strict=True)
     parallel_parent_id = str(stored.get("parallel_parent_id") or "").strip().casefold()

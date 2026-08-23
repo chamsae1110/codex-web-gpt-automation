@@ -205,6 +205,49 @@ def test_prompt_is_plain_app_plus_absolute_mission_instruction(tmp_path: Path) -
     assert "\n" not in prompt
 
 
+def test_readonly_pro_auto_archive_normalizes_to_never_for_followup(tmp_path: Path) -> None:
+    state = load_state()
+    mission = tmp_path / "mission.md"
+    mission.write_text("read-only advice", encoding="utf-8")
+
+    automatic = state.load_manifest(manifest(
+        tmp_path,
+        mission.resolve(),
+        app_name="codex",
+        transport="pro-devspace-readonly",
+        model="gpt-5.6-sol",
+        model_strategy="select",
+        thinking_time="heavy",
+        archive="auto",
+        task_outcome_contract="v1",
+    ))
+    explicit_single_turn = state.load_manifest(manifest(
+        tmp_path,
+        mission.resolve(),
+        app_name="codex",
+        transport="pro-devspace-readonly",
+        model="gpt-5.6-sol",
+        model_strategy="select",
+        thinking_time="heavy",
+        archive="always",
+        task_outcome_contract="v1",
+    ))
+
+    assert automatic.archive == "never"
+    assert explicit_single_turn.archive == "always"
+
+    ordinary_mission = tmp_path / "ordinary.md"
+    ordinary_mission.write_text("ordinary", encoding="utf-8")
+    ordinary = state.load_manifest(manifest(
+        tmp_path,
+        ordinary_mission.resolve(),
+        app_name="codex",
+        transport="devspace",
+        archive="auto",
+    ))
+    assert ordinary.archive == "auto"
+
+
 def test_pro_manifest_is_attachment_only_and_hashes_exact_files(tmp_path: Path) -> None:
     state = load_state()
     prompt = tmp_path / "prompt.txt"

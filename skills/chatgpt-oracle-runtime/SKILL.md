@@ -117,6 +117,10 @@ parent, duplicate round key, writable/attachment transport, missing or changed
 conversation, tampered artifact, or uncertain identity fails closed. Never
 inject raw `--followup`, `--browser-follow-up`, or `session`; never use recovery
 to send a question; never create a replacement conversation after uncertainty.
+New read-only Pro parents normalize default `archive=auto` to `never`, so do not
+manually unarchive them or change ChatGPT settings. Explicit `archive=always`
+means single-turn archival. Historical archived parents use only the bounded
+exact-conversation compatibility restore and are re-archived afterward.
 
 ## Recovery
 

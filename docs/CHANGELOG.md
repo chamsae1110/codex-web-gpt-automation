@@ -1,5 +1,26 @@
 # 기술 변경 기록
 
+## 1.18.5 - durable read-only Pro follow-up parents
+
+- New `pro-devspace-readonly` manifests normalize the default `archive=auto`
+  to `archive=never`, so a successful parent remains available for the next
+  task-bound round. Explicit `archive=always` remains a deliberate single-turn
+  choice, and historical archived parents keep bounded compatibility restore.
+- Oracle 0.17.1 archived-parent restore now recognizes the direct page restore
+  control as well as menu/dialog controls, uses pointer-compatible clicks and
+  bounded polling, and seals a structured before-composer failure receipt with
+  exact parent URL and unchanged turn counts.
+- The exact `unarchive-menu-not-found` child from v1.18.4 can enter the official
+  user-confirmed no-submission path without reopening the old parent. The gate
+  remains owner/binding/hash bound and additionally requires the latest exact
+  v1.18.4 lifecycle receipt to predate the immutable ownership receipt. It
+  rejects URL drift or any click/submission ambiguity, requires all exact
+  run-owned processes to be stopped, and never releases ownership without
+  explicit user confirmation.
+- Known v1.18.4 Oracle patch hashes migrate through exact reverse patches, so
+  global upgrades remain deterministic even when the pristine npm backup is
+  unavailable.
+
 ## 1.18.4 - archived Pro follow-up conversation restoration
 
 - A task-bound read-only Pro follow-up now detects the exact parent's durable

@@ -82,6 +82,135 @@ def make_parent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     return runner, layout, followup
 
 
+def make_archived_parent_unarchive_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    structured: bool,
+):
+    runner, parent, mission = make_parent(tmp_path, monkeypatch)
+    child_run_id = "followup-d5b70a899fe24da4884c0abea21efaf6"
+    plan = runner.followup_run(
+        parent.run_dir,
+        mission_path=mission,
+        round_key="round5-costs",
+        run_id=child_run_id,
+        dry_run=True,
+    )
+    reservation_path = Path(plan["round_receipt_path"])
+    reservation_path.parent.mkdir(parents=True)
+    reservation_path.write_text(
+        json.dumps(plan["round_receipt_plan"], ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    reservation_sha256 = hashlib.sha256(reservation_path.read_bytes()).hexdigest()
+    parent_state = runner.STATE.load_state(parent.state_path)
+    archive_contract = plan["round_receipt_plan"]["parent"]["archive_contract"]
+    payload = runner._followup_manifest_payload(
+        parent_state,
+        mission_path=mission,
+        run_id=child_run_id,
+        archive_contract=archive_contract,
+    )
+    payload["run_root"] = str(parent.run_dir.parent)
+    manifest_path = tmp_path / "archived-child.json"
+    manifest_path.write_text(json.dumps(payload), encoding="utf-8")
+    config = runner.STATE.load_manifest(manifest_path, bind_runtime_task=True)
+    child = runner.STATE.create_layout(config, run_id=child_run_id)
+    child.run_dir.mkdir()
+    (child.run_dir / "mission.md").write_bytes(mission.read_bytes())
+    marker = "FOLLOWUP_ARCHIVED_PARENT_UNARCHIVE_FAILED: unarchive-menu-not-found"
+    stdout = f"ERROR: {marker}\nUser error (browser-automation): {marker}\n"
+    child.stdout_path.write_text(stdout, encoding="utf-8")
+    child.stderr_path.write_bytes(b"")
+    child.transcript_path.write_text(stdout, encoding="utf-8")
+    state = runner.STATE.state_payload(
+        config,
+        child,
+        status="attention_required",
+        resolved_version="oracle 0.17.1",
+        exit_code=1,
+        cdp_port=plan["round_receipt_plan"]["child"]["expected_cdp_port"],
+    )
+    state.update({
+        "session_authority": "submitted_unknown",
+        "transport_status": "failed",
+        "task_outcome": "pending",
+        "terminal_harvested": False,
+    })
+    runner.STATE.write_json_atomic(child.state_path, state)
+    binding = {
+        "schema": "codex.chatgpt.oracle-followup-binding/v1",
+        "source_thread_id": OWNER,
+        "round_key": "round5-costs",
+        "reservation_path": str(reservation_path),
+        "reservation_sha256": reservation_sha256,
+        "parent": plan["round_receipt_plan"]["parent"],
+        "child": plan["round_receipt_plan"]["child"],
+        "conversation_url": plan["parent_conversation_url"],
+    }
+    runner.STATE.persist_followup_binding(child.state_path, binding)
+    runner.STATE.persist_ownership_receipt(child.state_path, oracle_process_pid=100)
+    ownership_created_at = json.loads(
+        (child.run_dir / "ownership-receipt.json").read_text(encoding="utf-8")
+    )["created_at"]
+    parent_url = plan["parent_conversation_url"]
+    details = {"stage": "execute-browser"}
+    if structured:
+        details = {
+            "stage": "followup-unarchive-before-composer",
+            "code": "FOLLOWUP_ARCHIVED_PARENT_UNARCHIVE_FAILED",
+            "reason": "unarchive-menu-not-found",
+            "expectedConversationUrl": parent_url,
+            "observedConversationUrl": parent_url,
+            "promptSubmitted": False,
+            "composerSubmitAttempted": False,
+            "turnCountBefore": 5,
+            "turnCountAfter": 5,
+        }
+    meta_path = Path(os.environ["ORACLE_SESSION_ROOT"]) / child.slug / "meta.json"
+    meta_path.parent.mkdir(parents=True, exist_ok=True)
+    browser_config = {
+        "resumeConversationUrl": parent_url,
+        "resumeArchivedConversation": True,
+        "archiveConversations": "always",
+    }
+    meta_path.write_text(json.dumps({
+        "id": child.slug,
+        "status": "error",
+        "completedAt": ownership_created_at,
+        "mode": "browser",
+        "model": "gpt-5.6-sol",
+        "browser": {"config": browser_config},
+        "options": {"browserConfig": browser_config},
+        "error": {
+            "category": "browser-automation",
+            "message": marker,
+            "details": details,
+        },
+    }), encoding="utf-8")
+    if not structured:
+        receipt_root = tmp_path / "install-receipts"
+        receipt_root.mkdir()
+        receipt_path = receipt_root / "codexpro-automation-v1184.json"
+        receipt_path.write_text(json.dumps({
+            "schema": "codexpro.install-receipt/v3",
+            "manifest_version": "1.18.4",
+            "installed_at": "2026-08-23T00:30:00Z",
+            "files": [
+                {"path": name, "installed_sha256": sha256}
+                for name, sha256 in runner.STATE.LEGACY_V1184_FOLLOWUP_MANAGED_HASHES.items()
+            ],
+        }), encoding="utf-8")
+        prove = runner.STATE._proven_legacy_v1184_followup_install_receipt
+        monkeypatch.setattr(
+            runner.STATE,
+            "_proven_legacy_v1184_followup_install_receipt",
+            lambda completed_at: prove(completed_at, receipt_root=receipt_root),
+        )
+    return runner, parent, child, meta_path
+
+
 def test_followup_dry_run_is_same_task_and_same_conversation_without_writes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     runner, layout, mission = make_parent(tmp_path, monkeypatch)
 
@@ -407,4 +536,130 @@ def test_followup_textarea_absent_requires_harvest_and_owner_confirmation(
     assert runner.STATE._legacy_followup_reservation_for_child(child_state) is not None
     assert runner.STATE._followup_no_submission_evidence(
         child_state, require_recovery_evidence=True
+    ) is None
+
+
+@pytest.mark.parametrize(
+    "structured, expected_profile",
+    [
+        (False, "archived-parent-unarchive-v1.18.4-legacy-no-click/v1"),
+        (True, "archived-parent-unarchive-before-composer/v2"),
+    ],
+)
+def test_followup_unarchive_menu_absent_is_bounded_before_composer_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    structured: bool,
+    expected_profile: str,
+) -> None:
+    runner, _parent, child, _meta_path = make_archived_parent_unarchive_failure(
+        tmp_path, monkeypatch, structured=structured
+    )
+
+    evidence = runner.STATE._followup_no_submission_evidence(
+        child.state_path, require_recovery_evidence=True
+    )
+
+    assert evidence is not None
+    assert evidence["settlement_eligibility"] == "oracle-followup-pre-submit-ui/v2"
+    assert evidence["failure_kind"] == "archived-parent-unarchive-menu-absent"
+    assert evidence["evidence_profile"] == expected_profile
+    assert evidence["recovery_evidence"] == []
+    assert evidence["parent_conversation_url"] == "https://chatgpt.com/c/exact-parent-conversation"
+    if not structured:
+        assert evidence["legacy_install_receipt_sha256"]
+    settled = runner.STATE.settle_user_confirmed_no_submission(
+        child.state_path,
+        confirmation="user-confirmed-no-submission",
+        reason="synthetic exact before-composer failure",
+    )
+    assert settled["transport_status"] == "not_submitted_user_confirmed"
+    assert runner.STATE.proven_user_confirmed_no_submission(child.state_path) is not None
+    assert runner.STATE.unresolved_project_sessions(
+        child.run_dir.parent,
+        Path(settled["project_root"]),
+        source_thread_id=OWNER,
+    ) == []
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("stage", "execute-browser"),
+        ("code", "OTHER_FAILURE"),
+        ("reason", "unarchive-not-confirmed"),
+        ("observedConversationUrl", "https://chatgpt.com/c/foreign"),
+        ("promptSubmitted", True),
+        ("composerSubmitAttempted", True),
+        ("turnCountAfter", 6),
+    ],
+)
+def test_followup_unarchive_structured_evidence_rejects_ambiguity_or_submission_risk(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    field: str,
+    value,
+) -> None:
+    runner, _parent, child, meta_path = make_archived_parent_unarchive_failure(
+        tmp_path, monkeypatch, structured=True
+    )
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["error"]["details"][field] = value
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+
+    assert runner.STATE._followup_no_submission_evidence(
+        child.state_path, require_recovery_evidence=True
+    ) is None
+
+
+def test_followup_unarchive_no_submission_settlement_requires_inactive_exact_processes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, _parent, child, _meta_path = make_archived_parent_unarchive_failure(
+        tmp_path, monkeypatch, structured=True
+    )
+    monkeypatch.setattr(runner, "run_owned_process_ids", lambda *_args: (4242,))
+    monkeypatch.setattr(runner, "process_is_alive", lambda pid: pid == 4242)
+
+    with pytest.raises(runner.OracleRunError) as active:
+        runner.settle_user_confirmed_no_submission(
+            child.run_dir,
+            confirmation="user-confirmed-no-submission",
+            reason="synthetic exact before-composer failure",
+        )
+
+    assert active.value.code == "NO_SUBMISSION_PROCESS_ACTIVE"
+
+
+def test_followup_unarchive_legacy_evidence_rejects_missing_install_provenance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, _parent, child, _meta_path = make_archived_parent_unarchive_failure(
+        tmp_path, monkeypatch, structured=False
+    )
+    receipt_path = next((tmp_path / "install-receipts").glob("*.json"))
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["installed_at"] = "2099-01-01T00:00:00Z"
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+
+    assert runner.STATE._followup_no_submission_evidence(
+        child.state_path, require_recovery_evidence=True
+    ) is None
+
+
+def test_followup_unarchive_structured_evidence_rejects_runtime_contradiction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, _parent, child, meta_path = make_archived_parent_unarchive_failure(
+        tmp_path, monkeypatch, structured=True
+    )
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["browser"]["runtime"] = {
+        "promptSubmitted": True,
+        "tabUrl": "https://chatgpt.com/c/exact-parent-conversation",
+    }
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+
+    assert runner.STATE._followup_no_submission_evidence(
+        child.state_path, require_recovery_evidence=True
     ) is None

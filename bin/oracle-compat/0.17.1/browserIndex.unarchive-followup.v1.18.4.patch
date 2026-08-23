@@ -11,43 +11,12 @@ index fde071c..a3ac291 100644
  import { assertManualLoginProfileReadyForRun, defaultManualLoginProfileDir, formatManualLoginSetupCommand, isManualLoginProfileInitialized, resolveManualLoginWaitMs, } from "./manualLoginProfile.js";
  import { describeBrowserControlPlan, formatBrowserControlPlan } from "./controlPlan.js";
  import { createConversationUrlMonitor, } from "./conversationUrlMonitor.js";
-@@ -37,2 +37,30 @@ export { CHATGPT_URL, DEFAULT_MODEL_STRATEGY, DEFAULT_MODEL_TARGET } from "./con
- export { parseDuration, delay, normalizeChatgptUrl, isTemporaryChatUrl } from "./utils.js";
-+async function restoreArchivedFollowupBeforeComposer(Runtime, logger, expectedConversationUrl) {
-+    const turnCountBefore = await readConversationTurnCount(Runtime, logger);
-+    try {
-+        await unarchiveChatGptConversation(Runtime, logger, { expectedConversationUrl });
-+    }
-+    catch (error) {
-+        const turnCountAfter = await readConversationTurnCount(Runtime, logger);
-+        const observed = await Runtime.evaluate({
-+            expression: "typeof location === 'object' ? location.href : null",
-+            returnByValue: true,
-+        }).catch(() => null);
-+        const observedConversationUrl = observed?.result?.value ?? null;
-+        const message = error instanceof Error ? error.message : String(error);
-+        const prefix = "FOLLOWUP_ARCHIVED_PARENT_UNARCHIVE_FAILED: ";
-+        const reason = message.startsWith(prefix) ? message.slice(prefix.length) : "unarchive-failed";
-+        throw new BrowserAutomationError(message, {
-+            stage: "followup-unarchive-before-composer",
-+            code: "FOLLOWUP_ARCHIVED_PARENT_UNARCHIVE_FAILED",
-+            reason,
-+            expectedConversationUrl,
-+            observedConversationUrl,
-+            promptSubmitted: false,
-+            composerSubmitAttempted: false,
-+            turnCountBefore,
-+            turnCountAfter,
-+        }, error instanceof Error ? error : undefined);
-+    }
-+}
- export { formatThinkingLog, formatThinkingWaitingLog, buildThinkingStatusExpressionForTest, readThinkingStatusForTest, sanitizeThinkingText, startThinkingStatusMonitorForTest, } from "./actions/thinkingStatus.js";
 @@ -926,6 +926,9 @@ export async function runBrowserMode(options) {
              }
              await raceWithDisconnect(ensureNotBlocked(Runtime, config.headless, logger));
              await raceWithDisconnect(ensureLoggedIn(Runtime, logger));
 +            if (isResumingConversation && config.resumeArchivedConversation) {
-+                await raceWithDisconnect(restoreArchivedFollowupBeforeComposer(Runtime, logger, config.resumeConversationUrl));
++                await raceWithDisconnect(unarchiveChatGptConversation(Runtime, logger, { expectedConversationUrl: config.resumeConversationUrl }));
 +            }
              await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
              if (isResumingConversation) {
@@ -57,7 +26,7 @@ index fde071c..a3ac291 100644
                  await raceWithDisconnect(navigateToChatGPT(Page, Runtime, config.resumeConversationUrl, logger));
                  await raceWithDisconnect(ensureNotBlocked(Runtime, config.headless, logger));
 +                if (config.resumeArchivedConversation) {
-+                    await raceWithDisconnect(restoreArchivedFollowupBeforeComposer(Runtime, logger, config.resumeConversationUrl));
++                    await raceWithDisconnect(unarchiveChatGptConversation(Runtime, logger, { expectedConversationUrl: config.resumeConversationUrl }));
 +                }
                  await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
              }
@@ -67,7 +36,7 @@ index fde071c..a3ac291 100644
          await ensureNotBlocked(Runtime, config.headless, logger);
          await ensureLoggedIn(Runtime, logger, { remoteSession: true });
 +        if (config.resumeConversationUrl && config.resumeArchivedConversation) {
-+            await restoreArchivedFollowupBeforeComposer(Runtime, logger, config.resumeConversationUrl);
++            await unarchiveChatGptConversation(Runtime, logger, { expectedConversationUrl: config.resumeConversationUrl });
 +        }
          await ensurePromptReady(Runtime, config.inputTimeoutMs, logger);
          if (config.resumeConversationUrl) {

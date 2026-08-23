@@ -102,6 +102,21 @@ ORACLE_NO_SESSION_RE = re.compile(
 ORACLE_PROMPT_NOT_OBSERVED_MARKER = (
     "Prompt did not appear in conversation before timeout (send may have failed)"
 )
+ORACLE_PROMPT_TEXTAREA_ABSENT_MARKER = "Prompt textarea did not appear before timeout"
+ORACLE_FOLLOWUP_UNARCHIVE_MENU_ABSENT_MARKER = (
+    "FOLLOWUP_ARCHIVED_PARENT_UNARCHIVE_FAILED: unarchive-menu-not-found"
+)
+LEGACY_V1184_FOLLOWUP_MANAGED_HASHES = {
+    "bin/chatgpt_oracle_compat.py": "f41d3fb50b911f882a8e23e71cb02a5e9e81ee5ebe16f548ee48e7f815da0ee1",
+    "bin/chatgpt_oracle_run.py": "957cd75a52cbe9258a994e66b557987cda4617de561307acaff5632a66fdfdf7",
+    "bin/chatgpt_oracle_state.py": "9e045291ce69e2fdff0f9fa4ea78592bb4bcae463448c174f6dc93d10fa32835",
+    "bin/oracle-compat/0.17.1/archiveConversation.unarchive-followup.patch": (
+        "f693e24dc8cf6483da5d50b2f403157c862a402086a66d9cd04c2257461119bb"
+    ),
+    "bin/oracle-compat/0.17.1/browserIndex.unarchive-followup.patch": (
+        "bf7a6ac55dab047087c71069d8608d222ad2d09d72350ebda3bb785dd8cad58e"
+    ),
+}
 ORACLE_ATTACHMENTS_UPLOAD_TIMEOUT_MARKER = (
     "Attachments did not finish uploading before timeout."
 )
@@ -539,6 +554,14 @@ def load_manifest(
     archive = str(payload.get("archive") or "auto").strip().casefold()
     if archive not in {"auto", "always", "never"}:
         raise OracleStateError("ARCHIVE_INVALID", "archive must be auto, always, or never")
+    # Read-only Pro advice commonly continues through the task-bound followup
+    # command.  Oracle's one-shot `auto` policy archives a successful parent,
+    # making the composer unavailable to the next round.  Normalize the
+    # default/auto case to `never`; an explicit `always` remains a deliberate
+    # single-turn choice and archived historical parents retain their exact
+    # state for bounded compatibility recovery.
+    if is_pro_readonly_transport(transport) and archive == "auto":
+        archive = "never"
     task_outcome_contract = str(payload.get("task_outcome_contract") or "legacy").strip().casefold()
     if task_outcome_contract not in {"legacy", "v1"}:
         raise OracleStateError(
@@ -2795,6 +2818,65 @@ def _legacy_followup_reservation_for_child(state_path: Path) -> dict[str, Any] |
     return candidates[0] if len(candidates) == 1 else None
 
 
+def _proven_legacy_v1184_followup_install_receipt(
+    installed_before_at: str,
+    *,
+    receipt_root: Path | None = None,
+) -> dict[str, str] | None:
+    try:
+        cutoff = datetime.fromisoformat(installed_before_at.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if cutoff.tzinfo is None:
+        return None
+    cutoff = cutoff.astimezone(timezone.utc)
+    root = (receipt_root or (Path.home() / ".codex" / "receipts")).resolve()
+    if not root.is_dir() or root.is_symlink():
+        return None
+    candidates: list[tuple[datetime, Path, dict[str, Any], bytes]] = []
+    for path in root.glob("codexpro-automation-*.json"):
+        if not path.is_file() or path.is_symlink():
+            continue
+        loaded = _strict_json_object(path)
+        if loaded is None:
+            continue
+        receipt, raw = loaded
+        if receipt.get("schema") != "codexpro.install-receipt/v3":
+            continue
+        try:
+            installed = datetime.fromisoformat(
+                str(receipt.get("installed_at") or "").replace("Z", "+00:00")
+            )
+        except ValueError:
+            continue
+        if installed.tzinfo is None:
+            continue
+        installed = installed.astimezone(timezone.utc)
+        if installed <= cutoff:
+            candidates.append((installed, path.resolve(), receipt, raw))
+    if not candidates:
+        return None
+    installed, path, receipt, raw = max(candidates, key=lambda item: item[0])
+    if receipt.get("manifest_version") != "1.18.4":
+        return None
+    files = receipt.get("files")
+    if not isinstance(files, list):
+        return None
+    installed_hashes = {
+        str(item.get("path") or ""): str(item.get("installed_sha256") or "").casefold()
+        for item in files
+        if isinstance(item, dict)
+    }
+    if any(installed_hashes.get(name) != expected for name, expected in LEGACY_V1184_FOLLOWUP_MANAGED_HASHES.items()):
+        return None
+    return {
+        "path": str(path),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "installed_at": installed.isoformat(),
+        "manifest_version": "1.18.4",
+    }
+
+
 def _followup_no_submission_evidence(
     state_path: Path,
     *,
@@ -2849,15 +2931,29 @@ def _followup_no_submission_evidence(
     stdout_path, stdout_bytes = records["stdout"]  # type: ignore[misc]
     stderr_path, stderr_bytes = records["stderr"]  # type: ignore[misc]
     transcript_path, transcript_bytes = records["transcript"]  # type: ignore[misc]
-    expected_lines = {
-        "ERROR: Prompt textarea did not appear before timeout",
-        "User error (browser-automation): Prompt textarea did not appear before timeout",
-    }
     try:
         ordered_lines = [line.strip() for line in stdout_bytes.decode("utf-8", errors="strict").splitlines() if line.strip()]
         lines = set(ordered_lines)
     except UnicodeDecodeError:
         return None
+    failure_signatures = {
+        "textarea-absent": {
+            f"ERROR: {ORACLE_PROMPT_TEXTAREA_ABSENT_MARKER}",
+            f"User error (browser-automation): {ORACLE_PROMPT_TEXTAREA_ABSENT_MARKER}",
+        },
+        "archived-parent-unarchive-menu-absent": {
+            f"ERROR: {ORACLE_FOLLOWUP_UNARCHIVE_MENU_ABSENT_MARKER}",
+            f"User error (browser-automation): {ORACLE_FOLLOWUP_UNARCHIVE_MENU_ABSENT_MARKER}",
+        },
+    }
+    matched_failures = [
+        (kind, expected)
+        for kind, expected in failure_signatures.items()
+        if expected.issubset(lines)
+    ]
+    if len(matched_failures) != 1:
+        return None
+    failure_kind, expected_lines = matched_failures[0]
     if (
         stdout_path.resolve() != (run_dir / "stdout.log").resolve()
         or stderr_path.resolve() != (run_dir / "stderr.log").resolve()
@@ -2899,7 +2995,14 @@ def _followup_no_submission_evidence(
             "stderr_name": recovery_paths[1].name,
             "stderr_sha256": hashlib.sha256(raw_err).hexdigest(),
         })
-    if require_recovery_evidence and len(recovery_records) != 1:
+    # A missing textarea has no known conversation and therefore still needs
+    # the exact no-tab/no-URL harvest receipt.  An archived-parent menu miss is
+    # different: reopening the stored parent URL would inspect an old answer,
+    # not prove anything about this child.  Its bounded before-composer
+    # taxonomy below is the authoritative no-click evidence instead.
+    if require_recovery_evidence and failure_kind == "textarea-absent" and len(recovery_records) != 1:
+        return None
+    if failure_kind == "archived-parent-unarchive-menu-absent" and recovery_records:
         return None
     reservation_record = binding.get("reservation") if isinstance(binding.get("reservation"), dict) else binding
     reservation = reservation_record["payload"]
@@ -2919,24 +3022,95 @@ def _followup_no_submission_evidence(
     options = meta.get("options") if isinstance(meta.get("options"), dict) else {}
     option_browser = options.get("browserConfig") if isinstance(options.get("browserConfig"), dict) else {}
     meta_urls = CHATGPT_CONVERSATION_URL_RE.findall(meta_raw.decode("utf-8", errors="strict"))
-    if (
+    common_invalid = (
         meta.get("id") != locator
         or meta.get("status") != "error"
         or not str(meta.get("completedAt") or "").strip()
         or meta.get("mode") != "browser"
         or str(meta.get("model") or "") != "gpt-5.6-sol"
         or error.get("category") != "browser-automation"
-        or error.get("message") != "Prompt textarea did not appear before timeout"
-        or details.get("stage") != "execute-browser"
-        or runtime not in (None, {})
         or browser.get("archive") not in (None, "")
         or config.get("resumeConversationUrl") != parent_url
         or option_browser.get("resumeConversationUrl") != parent_url
         or any(url != parent_url for url in meta_urls)
-    ):
+    )
+    if common_invalid:
         return None
-    return {
-        "settlement_eligibility": "oracle-followup-pre-submit-ui/v1",
+    if failure_kind == "textarea-absent":
+        if (
+            error.get("message") != ORACLE_PROMPT_TEXTAREA_ABSENT_MARKER
+            or details.get("stage") != "execute-browser"
+            or runtime not in (None, {})
+        ):
+            return None
+        evidence_profile = "textarea-absent-with-exact-harvest/v1"
+    else:
+        parent_archive = (reservation.get("parent") or {}).get("archive_contract")
+        structured_before_composer = (
+            details.get("stage") == "followup-unarchive-before-composer"
+            and details.get("code") == "FOLLOWUP_ARCHIVED_PARENT_UNARCHIVE_FAILED"
+            and details.get("reason") == "unarchive-menu-not-found"
+            and details.get("expectedConversationUrl") == parent_url
+            and details.get("observedConversationUrl") == parent_url
+            and details.get("promptSubmitted") is False
+            and details.get("composerSubmitAttempted") is False
+            and isinstance(details.get("turnCountBefore"), int)
+            and details.get("turnCountAfter") == details.get("turnCountBefore")
+            and runtime in (None, {})
+        )
+        # v1.18.4 emitted this exact error only from the no-candidate branch
+        # before `ensurePromptReady` and before any unarchive click.  Retain one
+        # deliberately narrow compatibility predicate so the already-created
+        # exact child can be settled; all future runs use the structured proof.
+        owner_payload = owner.get("payload") if isinstance(owner.get("payload"), dict) else {}
+        ownership_created_at = str(owner_payload.get("created_at") or "")
+        try:
+            ownership_created = datetime.fromisoformat(ownership_created_at.replace("Z", "+00:00"))
+            meta_completed = datetime.fromisoformat(str(meta.get("completedAt") or "").replace("Z", "+00:00"))
+        except ValueError:
+            ownership_created = None
+            meta_completed = None
+        ownership_time_valid = (
+            ownership_created is not None
+            and meta_completed is not None
+            and ownership_created.tzinfo is not None
+            and meta_completed.tzinfo is not None
+            and ownership_created.astimezone(timezone.utc) <= meta_completed.astimezone(timezone.utc)
+        )
+        legacy_provenance = (
+            _proven_legacy_v1184_followup_install_receipt(ownership_created_at)
+            if ownership_time_valid
+            else None
+        )
+        legacy_v1184_no_click = (
+            details.get("stage") == "execute-browser"
+            and set(details) == {"stage"}
+            and runtime in (None, {})
+            and isinstance(persisted_binding, dict)
+            and legacy_provenance is not None
+        )
+        if (
+            error.get("message") != ORACLE_FOLLOWUP_UNARCHIVE_MENU_ABSENT_MARKER
+            or config.get("resumeArchivedConversation") is not True
+            or option_browser.get("resumeArchivedConversation") is not True
+            or config.get("archiveConversations") != "always"
+            or option_browser.get("archiveConversations") != "always"
+            or not isinstance(parent_archive, dict)
+            or parent_archive.get("was_archived") is not True
+            or parent_archive.get("conversation_url") != parent_url
+            or parent_archive.get("restore_policy") != "exact-unarchive-then-rearchive"
+            or not (structured_before_composer or legacy_v1184_no_click)
+        ):
+            return None
+        evidence_profile = (
+            "archived-parent-unarchive-before-composer/v2"
+            if structured_before_composer
+            else "archived-parent-unarchive-v1.18.4-legacy-no-click/v1"
+        )
+    evidence = {
+        "settlement_eligibility": "oracle-followup-pre-submit-ui/v2",
+        "failure_kind": failure_kind,
+        "evidence_profile": evidence_profile,
         "project_root": str(state.get("project_root") or ""),
         "run_id": state.get("run_id"),
         "transport": state.get("transport"),
@@ -2955,6 +3129,10 @@ def _followup_no_submission_evidence(
         "round_key": reservation.get("round_key"),
         "oracle_meta_sha256": hashlib.sha256(meta_raw).hexdigest(),
     }
+    if failure_kind == "archived-parent-unarchive-menu-absent" and legacy_v1184_no_click:
+        evidence["legacy_install_receipt_path"] = legacy_provenance["path"]
+        evidence["legacy_install_receipt_sha256"] = legacy_provenance["sha256"]
+    return evidence
 
 
 def _direct_devspace_no_submission_evidence(
@@ -3291,13 +3469,20 @@ def proven_user_confirmed_no_submission(state_path: Path) -> dict[str, Any] | No
             "source_mission_sha256", "transport_mission_path", "transport_mission_sha256",
             "oracle_version",
         )
-    elif current.get("settlement_eligibility") == "oracle-followup-pre-submit-ui/v1":
+    elif current.get("settlement_eligibility") in {
+        "oracle-followup-pre-submit-ui/v1",
+        "oracle-followup-pre-submit-ui/v2",
+    }:
         required = (
             "settlement_eligibility", "transport", "followup_binding_mode",
             "followup_reservation_path", "followup_reservation_sha256",
             "parent_run_id", "parent_conversation_url", "round_key",
             "oracle_meta_sha256",
         )
+        if current.get("settlement_eligibility") == "oracle-followup-pre-submit-ui/v2":
+            required += ("failure_kind", "evidence_profile")
+            if current.get("evidence_profile") == "archived-parent-unarchive-v1.18.4-legacy-no-click/v1":
+                required += ("legacy_install_receipt_path", "legacy_install_receipt_sha256")
     elif current.get("settlement_eligibility") == "oracle-pre-submit-host/v1":
         required = (
             "settlement_eligibility", "transport", "transport_mission_path",

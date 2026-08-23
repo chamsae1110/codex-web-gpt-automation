@@ -87,12 +87,20 @@ PATCHES = {
     "dist/src/browser/actions/archiveConversation.js": {
         "patch": "archiveConversation.unarchive-followup.patch",
         "pristine": "88ab449b818bfe4bb8abe6824647feedcc617adc8af10b055278bd134fe21f82",
-        "patched": "edd00f89b0974696ccee8e0d844d7992871f34074cea7481619957937b391221",
+        "patched": "45c330d82108e0e9c2a857350f2e378e48751d89cc4db19920f75f30edb17867",
+        "legacy_patched": [
+            "edd00f89b0974696ccee8e0d844d7992871f34074cea7481619957937b391221",
+        ],
+        "legacy_patch": "archiveConversation.unarchive-followup.v1.18.4.patch",
     },
     "dist/src/browser/index.js": {
         "patch": "browserIndex.unarchive-followup.patch",
         "pristine": "335f29c8864399cf2795333e4da8b87bc1b3591c30862eb9e82ea12cd3b37d11",
-        "patched": "000bdacec15e0d933e95bdd398bf1e758f4eb979f38e0f506665b5462efab73e",
+        "patched": "2b2f90b0bcd4d9e03e64902b8fea061b76fdf63d632dd7a8d577031a26a687b3",
+        "legacy_patched": [
+            "000bdacec15e0d933e95bdd398bf1e758f4eb979f38e0f506665b5462efab73e",
+        ],
+        "legacy_patch": "browserIndex.unarchive-followup.v1.18.4.patch",
     },
     "dist/src/cli/browserTabs.js": {
         "patch": "browserTabs.live-terminal-timeout.patch",
