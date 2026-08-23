@@ -41,6 +41,7 @@
 ## Ultra GPT mode
 
 - When the user explicitly requests `울트라 GPT 모드` or `Ultra GPT Mode`, use the installed `ultra-gpt-mode` skill and the `ultra-gpt` comprehensive profile.
+- Closed workflow provenance is an explicit `closed_audit` option of `ultra-gpt`, not a separate mode. Never enable it silently. Accept `workflow_profile: strict-ultra` only for exact legacy compatibility and recovery.
 - In that profile, do not spawn native Codex subagents for semantic work. Use separate web GPT sessions for planning, review and partitioning, parallel implementation lanes in distinct pre-created Git worktrees with host-audited disjoint project-relative ownership, an all-lanes barrier, merging, and final verification. Local Codex remains a deterministic controller and runs only the final local gate.
 - Pro is not an internal Ultra GPT stage. A user-requested Pro design advisory is a separate, single pre-workflow consultation; ordinary Ultra GPT stages remain on the highest supported non-Pro tier.
 <!-- END CODEX WEB GPT SUBAGENT POLICY -->

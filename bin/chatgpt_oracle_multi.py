@@ -418,7 +418,7 @@ def _strict_canonical_clean(config: dict[str, Any]) -> None:
             continue
         unexpected.append(path)
     if unexpected:
-        raise MultiError("strict Ultra canonical checkout must be clean outside output_dir")
+        raise MultiError("Ultra GPT canonical checkout must be clean outside output_dir")
 
 
 def _strict_preflight(

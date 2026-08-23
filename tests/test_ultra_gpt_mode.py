@@ -59,6 +59,8 @@ def test_ultra_gpt_skill_replaces_native_subagents_with_web_sessions() -> None:
     assert "pairwise disjoint" in text
     assert "deterministic controller" in text
     assert "final web PASS receipt" in text
+    assert "closed_audit" in text
+    assert "another mode" in text
 
 
 def test_ultra_gpt_ui_and_documentation_are_discoverable() -> None:
@@ -68,6 +70,8 @@ def test_ultra_gpt_ui_and_documentation_are_discoverable() -> None:
     assert "$ultra-gpt-mode" in ui
     assert "울트라 GPT 모드" in doc
     assert '"workflow_profile": "ultra-gpt"' in doc
+    assert '"closed_audit"' in doc
+    assert "별도 실행 모드가 아닙니다" in doc
 
 
 def test_ultra_gpt_dry_run_is_regular_plan_with_forced_review_contract(tmp_path: Path) -> None:

@@ -42,7 +42,7 @@ route, then open a specialized guide only when that mode applies.
 | [Changelog](CHANGELOG.md) | User-visible changes by release |
 | [Release checklist](RELEASE_CHECKLIST.md) | Maintainer verification before tags and releases |
 | [Security policy](../SECURITY.md) | Supported versions and private reporting |
-| [Strict Ultra audit](STRICT_ULTRA.md) | Opt-in closed workflow provenance and audit contract |
+| [Ultra GPT closed audit](STRICT_ULTRA.md) | Optional closed provenance contract inside Ultra GPT Mode; legacy name compatibility |
 | [Third-party notices](../THIRD_PARTY_NOTICES.md) | Upstream licenses and provenance |
 
 ## Frozen legacy reference

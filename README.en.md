@@ -121,7 +121,7 @@ new exact folder. Do not inspect or automate ChatGPT app settings per task.
 | PC-local advice and counterexamples | Local Multi-GPT | Optional, Luna Max, read-only |
 | Plan through final gate | comprehensive mode | Staged web workflow |
 | Minimize local model cost | `ultra-economy` | Luna Max command + separate web stages |
-| Codex Ultra-style web delegation | `ultra-gpt` | Web plan/review + parallel isolated-worktree writers + merge/verification |
+| Codex Ultra-style web delegation | `ultra-gpt` | Web plan/review + parallel isolated-worktree writers + merge/verification; optional SHA-bound closed audit |
 | Explicitly requested Pro work | `pro` | GPT-5.6 Sol Pro + read-only DevSpace design, advice, or review |
 
 Natural-language aliases use the same routes: `orchestrator` / orchestrator and
@@ -129,7 +129,7 @@ Natural-language aliases use the same routes: `orchestrator` / orchestrator and
 
 See [Global Routing](docs/GLOBAL_CHATGPT_ROUTING.md) for selection rules,
 [Ultra Economy Mode](docs/ULTRA_ECONOMY_MODE.md), and
-[Ultra GPT Mode](docs/ULTRA_GPT_MODE.md) for their strict contracts.
+[Ultra GPT Mode](docs/ULTRA_GPT_MODE.md) for its execution contract and optional closed audit.
 
 ## Run example
 

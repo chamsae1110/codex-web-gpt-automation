@@ -1,5 +1,21 @@
 # 기술 변경 기록
 
+## 1.19.0 - unify Ultra GPT and closed workflow auditing
+
+- `strict-ultra` is no longer presented as a separate mode. New workflows use
+  `workflow_profile: ultra-gpt` and add an explicit `closed_audit` contract
+  only when machine-verifiable provenance is required.
+- The optional audit reuses the existing Ultra GPT scheduler and adds the
+  bound dependency, authority, advisory Research Governor, identity ledger,
+  local-gate receipt, and final workflow audit without changing ordinary Ultra
+  GPT behavior.
+- Legacy `workflow_profile: strict-ultra` manifests, frozen
+  `codex.chatgpt.strict-ultra-*/v1` artifacts, receipts, and recovery identities
+  remain accepted without rewriting. Dry-run reports the old profile name as a
+  deprecated compatibility alias.
+- README, English README, repository/global policy, Ultra GPT skill, and docs
+  now expose one Ultra GPT mode with an optional closed-audit capability.
+
 ## 1.18.6 - follow-up no-submission settlement continuity
 
 - An archived-parent follow-up that failed before the composer now goes

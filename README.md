@@ -123,14 +123,12 @@ ChatGPT 앱 `codex` 등록은 준비가 끝난 뒤 **최초 한 번 수동 등�
 | PC 로컬 자문·반례 탐색 | Local Multi-GPT | 선택 설치, Luna Max, 읽기 전용 |
 | 계획부터 최종 gate까지 | comprehensive mode | 단계별 웹 워크플로 |
 | 로컬 비용 최소화 | `ultra-economy` | Luna Max 지휘 + 분리 웹 단계 |
-| Codex Ultra식 웹 분업 | `ultra-gpt` | 웹 planner/reviewer + 병렬 격리 worktree 구현 + merger/검증 |
-| 폐쇄형 Ultra 감사 | `strict-ultra` | 기존 Ultra 실행 + SHA 결속 dependency/authority/Governor/identity/workflow audit |
+| Codex Ultra식 웹 분업 | `ultra-gpt` | 웹 planner/reviewer + 병렬 격리 worktree 구현 + merger/검증; 필요할 때 선택형 SHA 폐쇄 감사 |
 | 명시 요청한 Pro 작업 | `pro` | GPT-5.6 Sol Pro + 읽기 전용 DevSpace 설계·자문·검토 |
 
 자세한 선택 기준은 [전역 라우팅](docs/GLOBAL_CHATGPT_ROUTING.md),
 [초절약모드](docs/ULTRA_ECONOMY_MODE.md),
-[울트라 GPT 모드](docs/ULTRA_GPT_MODE.md),
-[Strict Ultra 감사](docs/STRICT_ULTRA.md)를 참고하세요.
+[울트라 GPT 모드와 선택형 폐쇄 감사](docs/ULTRA_GPT_MODE.md)를 참고하세요.
 
 ## 실행 예시
 

@@ -1,14 +1,16 @@
-# Strict Ultra workflow audit
+# Ultra GPT closed workflow audit
 
-`strict-ultra` is an opt-in, backward-compatible extension of the existing
-`ultra-gpt` comprehensive workflow. It does not replace the scheduler. The
-existing Oracle Multi v2 writer waves, isolated worktrees, all-lanes barrier,
-audited apply, merger, and final web gate remain the execution engine.
+The closed audit is an opt-in contract inside the existing `ultra-gpt`
+comprehensive workflow, not a separate execution mode. It does not replace the
+scheduler. The existing Oracle Multi v2 writer waves, isolated worktrees,
+all-lanes barrier, audited apply, merger, and final web gate remain the
+execution engine.
 
-The profile adds a closed audit boundary for workflows that need machine-
-verifiable provenance. A comprehensive manifest selects `strict-ultra` and
-binds one `codex.chatgpt.strict-ultra-contract/v1` file by exact SHA-256. The
-contract in turn binds:
+The option adds a closed audit boundary for workflows that need machine-
+verifiable provenance. A new comprehensive manifest keeps
+`workflow_profile: "ultra-gpt"` and binds one
+`codex.chatgpt.strict-ultra-contract/v1` file by exact SHA-256 through the
+`closed_audit` object. The contract in turn binds:
 
 - a closed dependency manifest whose regular, non-symlink project files are
   checked against exact SHA-256 values;
@@ -62,4 +64,6 @@ present. Elapsed activity, aliases, or unexecuted plans cannot be counted as
 new successful work merely by changing a display label.
 
 Existing `standard`, `ultra-economy`, and `ultra-gpt` manifests and receipts
-retain their current behavior.
+retain their current behavior when `closed_audit` is absent. Legacy manifests
+that selected `workflow_profile: "strict-ultra"` remain accepted for exact
+compatibility and recovery, but that name is deprecated for new workflows.

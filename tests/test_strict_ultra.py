@@ -32,7 +32,7 @@ def write(path: Path, value: object) -> Path:
     return path
 
 
-def strict_fixture(tmp_path: Path) -> tuple[Path, dict[str, Path]]:
+def strict_fixture(tmp_path: Path, *, legacy_alias: bool = False) -> tuple[Path, dict[str, Path]]:
     mission = tmp_path / "mission.md"
     mission.write_text("Plan a bounded change.", encoding="utf-8")
     dependency = tmp_path / "dependency.txt"
@@ -82,13 +82,13 @@ def strict_fixture(tmp_path: Path) -> tuple[Path, dict[str, Path]]:
         "workflow_audit_path": str(tmp_path / "workflow" / "audit.json"),
         "local_gate_receipt_path": str(tmp_path / "workflow" / "local-gate.json"),
     })
-    manifest = write(tmp_path / "workflow.json", {
+    manifest_value = {
         "schema": "codex.chatgpt.oracle-comprehensive/v1",
         "workflow_id": "a" * 32,
         "project_root": str(tmp_path),
         "workflow_dir": str(tmp_path / "workflow"),
         "initial_mission_path": str(mission),
-        "workflow_profile": "strict-ultra",
+        "workflow_profile": "strict-ultra" if legacy_alias else "ultra-gpt",
         "initial_stage": "plan",
         "max_stages": 5,
         "allow_pro": False,
@@ -97,21 +97,33 @@ def strict_fixture(tmp_path: Path) -> tuple[Path, dict[str, Path]]:
         "local_gate_command": [
             "validator", "--path", "{artifact_path}", "--sha256", "{artifact_sha256}",
         ],
-        "strict_ultra_contract_path": str(contract),
-        "strict_ultra_contract_sha256": digest(contract),
-    })
+    }
+    if legacy_alias:
+        manifest_value.update({
+            "strict_ultra_contract_path": str(contract),
+            "strict_ultra_contract_sha256": digest(contract),
+        })
+    else:
+        manifest_value["closed_audit"] = {
+            "contract_path": str(contract),
+            "contract_sha256": digest(contract),
+        }
+    manifest = write(tmp_path / "workflow.json", manifest_value)
     return manifest, {
         "mission": mission, "dependency": dependency, "dependencies": dependencies,
         "authority": authority, "governor": governor, "contract": contract,
     }
 
 
-def test_strict_ultra_manifest_is_closed_hash_bound_and_dry_runnable(tmp_path: Path) -> None:
+def test_ultra_gpt_closed_audit_is_hash_bound_and_dry_runnable(tmp_path: Path) -> None:
     os.environ["CODEX_ORACLE_STATE_ROOT"] = str(tmp_path.parent / f"{tmp_path.name}-state")
     comprehensive = load_module("strict_ultra_comprehensive_test", ROOT / "bin" / "chatgpt_oracle_comprehensive.py")
     manifest, _ = strict_fixture(tmp_path)
     config = comprehensive.load_manifest(manifest)
-    assert config["workflow_profile"] == "strict-ultra"
+    assert config["workflow_profile"] == "ultra-gpt"
+    assert config["workflow_profile_canonical"] == "ultra-gpt"
+    assert config["workflow_profile_legacy_alias"] is False
+    assert config["closed_audit_enabled"] is True
     assert config["allow_pro"] is False
     assert config["strict_ultra"]["authority"]["native_subagents_disabled"] is True
 
@@ -122,10 +134,64 @@ def test_strict_ultra_manifest_is_closed_hash_bound_and_dry_runnable(tmp_path: P
 
     result = comprehensive.run_workflow(manifest, dry_run=True, oracle_execute=preview)
     assert result["ok"] is True
-    assert result["workflow_profile"] == "strict-ultra"
+    assert result["workflow_profile"] == "ultra-gpt"
+    assert result["closed_audit_enabled"] is True
+    assert result["warnings"] == []
 
 
-def test_strict_ultra_rejects_extra_keys_tamper_duplicates_and_nonfinite(tmp_path: Path) -> None:
+def test_legacy_strict_ultra_profile_is_compatibility_alias(tmp_path: Path) -> None:
+    os.environ["CODEX_ORACLE_STATE_ROOT"] = str(tmp_path.parent / f"{tmp_path.name}-state")
+    comprehensive = load_module("strict_ultra_legacy_alias_test", ROOT / "bin" / "chatgpt_oracle_comprehensive.py")
+    manifest, _ = strict_fixture(tmp_path, legacy_alias=True)
+    config = comprehensive.load_manifest(manifest)
+    assert config["workflow_profile"] == "strict-ultra"
+    assert config["workflow_profile_canonical"] == "ultra-gpt"
+    assert config["workflow_profile_legacy_alias"] is True
+    assert config["closed_audit_enabled"] is True
+
+    result = comprehensive.run_workflow(
+        manifest,
+        dry_run=True,
+        oracle_execute=lambda _path, *, dry_run: {"ok": dry_run},
+    )
+    assert result["ok"] is True
+    assert result["workflow_profile_canonical"] == "ultra-gpt"
+    assert result["warnings"] == [
+        "strict-ultra is a deprecated input alias; use ultra-gpt with closed_audit"
+    ]
+
+
+def test_ordinary_ultra_gpt_does_not_enable_closed_audit(tmp_path: Path) -> None:
+    os.environ["CODEX_ORACLE_STATE_ROOT"] = str(tmp_path.parent / f"{tmp_path.name}-state")
+    comprehensive = load_module("ordinary_ultra_gpt_no_audit_test", ROOT / "bin" / "chatgpt_oracle_comprehensive.py")
+    manifest, _ = strict_fixture(tmp_path)
+    value = json.loads(manifest.read_text(encoding="utf-8"))
+    value.pop("closed_audit")
+    value["local_gate_command"] = ["validator", "--ordinary"]
+    write(manifest, value)
+    config = comprehensive.load_manifest(manifest)
+    assert config["workflow_profile"] == "ultra-gpt"
+    assert config["closed_audit_enabled"] is False
+    assert "strict_ultra" not in config
+
+
+def test_closed_audit_contract_keyset_is_fail_closed(tmp_path: Path) -> None:
+    os.environ["CODEX_ORACLE_STATE_ROOT"] = str(tmp_path.parent / f"{tmp_path.name}-state")
+    comprehensive = load_module("closed_audit_keyset_test", ROOT / "bin" / "chatgpt_oracle_comprehensive.py")
+    manifest, _ = strict_fixture(tmp_path)
+    value = json.loads(manifest.read_text(encoding="utf-8"))
+    value["closed_audit"] = {"contract_path": value["closed_audit"]["contract_path"]}
+    write(manifest, value)
+    with pytest.raises(comprehensive.WorkflowError, match="KEYSET_MISMATCH"):
+        comprehensive.load_manifest(manifest)
+
+    value["closed_audit"] = None
+    write(manifest, value)
+    with pytest.raises(comprehensive.WorkflowError, match="must be an object"):
+        comprehensive.load_manifest(manifest)
+
+
+def test_closed_audit_rejects_extra_keys_tamper_duplicates_and_nonfinite(tmp_path: Path) -> None:
     os.environ["CODEX_ORACLE_STATE_ROOT"] = str(tmp_path.parent / f"{tmp_path.name}-state")
     comprehensive = load_module("strict_ultra_closed_test", ROOT / "bin" / "chatgpt_oracle_comprehensive.py")
     strict = load_module("strict_ultra_contract_test", ROOT / "bin" / "chatgpt_strict_ultra.py")
@@ -206,3 +272,98 @@ def test_identity_ledger_gate_and_closed_workflow_audit(tmp_path: Path) -> None:
     assert [len(wave["lane_ids"]) for wave in audit["multi_runs"][0]["waves"]] == [3, 2]
     assert audit["model_telemetry"]["ordinary_web"]["model"] == "gpt-5.6"
     assert audit["research_governor"]["advisory_only"] is True
+
+
+def test_terminal_finalizer_binds_audit_to_final_identity_ledger(tmp_path: Path) -> None:
+    os.environ["CODEX_ORACLE_STATE_ROOT"] = str(tmp_path.parent / f"{tmp_path.name}-state")
+    comprehensive = load_module(
+        "strict_ultra_finalizer_comprehensive_test",
+        ROOT / "bin" / "chatgpt_oracle_comprehensive.py",
+    )
+    strict = load_module("strict_ultra_finalizer_test", ROOT / "bin" / "chatgpt_strict_ultra.py")
+    manifest, paths = strict_fixture(tmp_path)
+    config = comprehensive.load_manifest(manifest)
+    config["_review_policy"] = comprehensive._review_policy_from_history(config)
+    gate = {
+        "schema": "codex.chatgpt.strict-local-gate-result/v1",
+        "status": "PASS",
+        "opened_path": str(paths["governor"]),
+        "opened_sha256": digest(paths["governor"]),
+        "validator": "strict-governor-validator/v1",
+    }
+    state_path = tmp_path / "workflow" / "workflow-state.json"
+    result = comprehensive._finalize_complete_workflow(
+        state_path,
+        config,
+        {
+            "schema": comprehensive.STATE_SCHEMA,
+            "status": "complete",
+            "workflow_id": config["workflow_id"],
+            "manifest_sha256": config["manifest_sha256"],
+            "records": [],
+            "final_output_path": str(paths["mission"]),
+        },
+        gate,
+    )
+
+    ledger_path = config["strict_ultra"]["identity_ledger_path"]
+    audit_path = config["strict_ultra"]["workflow_audit_path"]
+    audit = strict.load_json(audit_path)
+    stored = strict.load_json(state_path)
+    assert audit["identity_ledger_sha256"] == digest(ledger_path)
+    assert result["workflow_audit_sha256"] == digest(audit_path)
+    assert stored["workflow_audit_sha256"] == digest(audit_path)
+    assert len(strict.load_json(ledger_path)["entries"]) == 1
+
+
+def test_terminal_finalizer_audit_failure_keeps_recoverable_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    os.environ["CODEX_ORACLE_STATE_ROOT"] = str(tmp_path.parent / f"{tmp_path.name}-state")
+    comprehensive = load_module(
+        "strict_ultra_finalizer_failure_comprehensive_test",
+        ROOT / "bin" / "chatgpt_oracle_comprehensive.py",
+    )
+    strict = load_module("strict_ultra_finalizer_failure_test", ROOT / "bin" / "chatgpt_strict_ultra.py")
+    manifest, paths = strict_fixture(tmp_path)
+    config = comprehensive.load_manifest(manifest)
+    config["_review_policy"] = comprehensive._review_policy_from_history(config)
+    state_path = tmp_path / "workflow" / "workflow-state.json"
+    prepared = {
+        "schema": comprehensive.STATE_SCHEMA,
+        "status": "awaiting_receipt",
+        "workflow_id": config["workflow_id"],
+        "manifest_sha256": config["manifest_sha256"],
+        "records": [],
+    }
+    comprehensive._write_workflow_state(state_path, config, prepared)
+    gate = {
+        "schema": "codex.chatgpt.strict-local-gate-result/v1",
+        "status": "PASS",
+        "opened_path": str(paths["governor"]),
+        "opened_sha256": digest(paths["governor"]),
+        "validator": "strict-governor-validator/v1",
+    }
+    complete = {
+        **prepared,
+        "status": "complete",
+        "final_output_path": str(paths["mission"]),
+    }
+    real_writer = comprehensive.STRICT_ULTRA.write_workflow_audit
+
+    def fail_audit(*args, **kwargs):
+        raise comprehensive.STRICT_ULTRA.StrictUltraError("simulated audit write failure")
+
+    monkeypatch.setattr(comprehensive.STRICT_ULTRA, "write_workflow_audit", fail_audit)
+    with pytest.raises(comprehensive.WorkflowError, match="simulated audit write failure"):
+        comprehensive._finalize_complete_workflow(state_path, config, complete, gate)
+    assert strict.load_json(state_path)["status"] == "awaiting_receipt"
+
+    monkeypatch.setattr(comprehensive.STRICT_ULTRA, "write_workflow_audit", real_writer)
+    result = comprehensive._finalize_complete_workflow(state_path, config, complete, gate)
+    ledger_path = config["strict_ultra"]["identity_ledger_path"]
+    audit = strict.load_json(config["strict_ultra"]["workflow_audit_path"])
+    assert result["status"] == "complete"
+    assert strict.load_json(state_path)["status"] == "complete"
+    assert audit["identity_ledger_sha256"] == digest(ledger_path)
+    assert len(strict.load_json(ledger_path)["entries"]) == 2

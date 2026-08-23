@@ -84,6 +84,31 @@ python "$env:USERPROFILE\.codex\bin\chatgpt_oracle_comprehensive.py" `
   --manifest D:\project\ultra-gpt-workflow.json --dry-run
 ```
 
+## 선택형 폐쇄 감사
+
+폐쇄 감사는 별도 실행 모드가 아닙니다. 동일한 `ultra-gpt` 실행에 재현성과
+책임 추적이 필요한 경우에만 다음 계약을 명시적으로 추가합니다.
+
+```json
+{
+  "workflow_profile": "ultra-gpt",
+  "closed_audit": {
+    "contract_path": "D:\\project\\audit\\contract.json",
+    "contract_sha256": "<64 lowercase hex>"
+  }
+}
+```
+
+이 옵션은 기존 planner/reviewer/writer wave/merger/final gate를 그대로 사용하면서
+SHA-256으로 결속된 dependency·authority manifest, advisory-only Research
+Governor, identity ledger, 실제 결속 파일을 연 local-gate receipt, 최종 workflow
+audit를 추가합니다. 일반 `ultra-gpt`에는 자동으로 적용되지 않습니다.
+
+과거 `workflow_profile: "strict-ultra"` 입력과
+`codex.chatgpt.strict-ultra-*/v1` 산출물 스키마는 정확한 기존 실행의 복구와
+재검증을 위해 계속 허용합니다. 신규 workflow에서는 사용하지 않습니다. 세부
+감사 산출물 계약은 [Ultra GPT 폐쇄 감사 호환 문서](STRICT_ULTRA.md)를 참고하세요.
+
 `ultra-gpt` 실행기는 다음 조건을 제출 전에 실패 폐쇄합니다.
 
 - `initial_stage`가 `plan`이 아님
