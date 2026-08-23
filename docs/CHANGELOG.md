@@ -1,5 +1,23 @@
 # 기술 변경 기록
 
+## 1.18.6 - follow-up no-submission settlement continuity
+
+- An archived-parent follow-up that failed before the composer now goes
+  directly to explicit user-confirmed no-submission settlement. Recovery and
+  harvest are rejected with
+  `FOLLOWUP_ARCHIVED_PARENT_HARVEST_NOT_APPLICABLE`, because reopening the
+  already-known parent cannot prove a child submission.
+- A v1.18.5 run that already followed the earlier harvest guidance remains
+  settleable only when the exact owned slug produced one strict no-live-tab /
+  no-recoverable-URL log pair, no recovery state, no child conversation URL,
+  no output, no nonempty candidate, and no additional recovery artifacts.
+  Partial, linked, changed, symlinked, or ambiguous evidence still fails closed.
+- Historical official follow-up settlement receipts created under the v1
+  eligibility label are revalidated against today's stricter raw-artifact
+  predicate without rewriting the receipt. Compatibility is limited to the
+  original textarea-absent evidence class; all hashes, task/run/mission/parent,
+  round, recovery, and Oracle metadata bindings must remain exact.
+
 ## 1.18.5 - durable read-only Pro follow-up parents
 
 - New `pro-devspace-readonly` manifests normalize the default `archive=auto`

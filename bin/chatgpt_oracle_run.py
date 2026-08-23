@@ -609,6 +609,23 @@ def require_bound_browser_identity(
     receipt = STATE.proven_browser_identity_receipt(state_path)
     if receipt is not None:
         return "browser-identity-receipt"
+    direct_settlement = (
+        STATE.followup_archived_parent_settle_without_harvest_evidence(state_path)
+        if recovery_action == "harvest"
+        else None
+    )
+    if direct_settlement is not None:
+        raise OracleRunError(
+            "FOLLOWUP_ARCHIVED_PARENT_HARVEST_NOT_APPLICABLE",
+            "the exact follow-up failed before the composer while restoring an archived parent; harvest is not applicable",
+            {
+                "run_id": state.get("run_id"),
+                "slug": (state.get("oracle") or {}).get("slug"),
+                "failure_kind": direct_settlement.get("failure_kind"),
+                "next_action": "after explicit user confirmation, use settle-no-submission for this exact run",
+                "submission_action": "none",
+            },
+        )
     bounded = (
         STATE.bounded_task_owned_prompt_timeout_harvest_evidence(state_path)
         if recovery_action == "harvest"

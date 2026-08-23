@@ -118,6 +118,10 @@ New read-only Pro parents normalize default `archive=auto` to `never`; no user
 archive-setting action is required. Explicit `archive=always` is a single-turn
 choice. Only historical or explicitly archived parents use the bounded exact
 restore-and-rearchive compatibility path.
+If restoration fails before the composer, do not harvest. Preserve the exact
+child, obtain explicit user no-submission confirmation, and use the runner's
+exact `settle-no-submission` path. An older exact no-live/no-URL/no-candidate
+harvest pair may be revalidated, but must never be deleted or rewritten.
 
 Completion requires the requested Pro model/effort evidence, exit zero, fresh
 nonempty host-only `output.md`, immutable run identity, and a refreshed

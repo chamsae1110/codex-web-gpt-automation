@@ -2594,7 +2594,10 @@ def bounded_task_owned_prompt_timeout_harvest_evidence(
     It never settles ownership and is used only to permit ``session --harvest``.
     """
     followup = _followup_no_submission_evidence(state_path, require_recovery_evidence=False)
-    if followup is not None:
+    if (
+        followup is not None
+        and followup.get("failure_kind") != "archived-parent-unarchive-menu-absent"
+    ):
         return followup
     evidence = _standalone_pro_no_submission_evidence(
         state_path,
@@ -2746,6 +2749,28 @@ def bounded_task_owned_prompt_timeout_harvest_evidence(
         "conversation_url_absent": True,
         "output_absent": True,
     }
+
+
+def followup_archived_parent_settle_without_harvest_evidence(
+    state_path: Path,
+) -> dict[str, Any] | None:
+    """Identify an exact before-composer failure that must go straight to settle.
+
+    An archived-parent restore failure already has task/run/mission/archive and
+    no-click evidence.  Reopening the parent conversation cannot prove anything
+    about the child, so recovery must not be offered as a prerequisite.  The
+    normal explicit user-confirmed settlement gate remains mandatory.
+    """
+    evidence = _followup_no_submission_evidence(
+        state_path,
+        require_recovery_evidence=False,
+    )
+    if (
+        evidence is None
+        or evidence.get("failure_kind") != "archived-parent-unarchive-menu-absent"
+    ):
+        return None
+    return evidence
 
 
 def _strict_json_object(path: Path) -> tuple[dict[str, Any], bytes] | None:
@@ -2978,15 +3003,53 @@ def _followup_no_submission_evidence(
         return None
     recovery_records: list[dict[str, Any]] = []
     recovery_paths = (run_dir / "recovery-harvest-stdout.log", run_dir / "recovery-harvest-stderr.log")
-    if all(path.is_file() and not path.is_symlink() for path in recovery_paths):
-        raw_out, raw_err = (path.read_bytes() for path in recovery_paths)
-        text = b"\n".join((raw_out, raw_err)).decode("utf-8", errors="strict")
+    recovery_candidate = run_dir / "recovery-harvest-candidate.md"
+    allowed_recovery_names = {
+        recovery_paths[0].name,
+        recovery_paths[1].name,
+        recovery_candidate.name,
+    }
+    try:
+        recovery_artifacts = [
+            path
+            for path in run_dir.glob("recovery-*")
+            if path.exists() or path.is_symlink()
+        ]
+    except OSError:
+        return None
+    if any(path.name not in allowed_recovery_names for path in recovery_artifacts):
+        return None
+    if recovery_candidate.exists() or recovery_candidate.is_symlink():
+        try:
+            candidate_bytes = recovery_candidate.read_bytes()
+        except OSError:
+            return None
+        if recovery_candidate.is_symlink() or not recovery_candidate.is_file() or candidate_bytes:
+            return None
+    recovery_presence = [path.exists() or path.is_symlink() for path in recovery_paths]
+    if any(recovery_presence):
+        if not all(
+            path.is_file() and not path.is_symlink()
+            for path in recovery_paths
+        ):
+            return None
+        try:
+            raw_out, raw_err = (path.read_bytes() for path in recovery_paths)
+            stdout_text = raw_out.decode("utf-8", errors="strict")
+            stderr_text = raw_err.decode("utf-8", errors="strict")
+        except (OSError, UnicodeDecodeError):
+            return None
+        text = "\n".join((stdout_text, stderr_text))
         locator = str((state.get("oracle") or {}).get("slug") or "")
         if (
             CHATGPT_CONVERSATION_URL_RE.search(text)
+            or ORACLE_RECOVERY_STATE_RE.search(text)
             or ORACLE_NO_LIVE_TAB_MARKER not in text
+            or ORACLE_NO_LIVE_TAB_MARKER not in stdout_text
             or f'"{locator}"' not in text
+            or f'"{locator}"' not in stdout_text
             or ORACLE_NO_RECOVERABLE_URL_MARKER not in text
+            or ORACLE_NO_RECOVERABLE_URL_MARKER not in stderr_text
         ):
             return None
         recovery_records.append({
@@ -2997,12 +3060,12 @@ def _followup_no_submission_evidence(
         })
     # A missing textarea has no known conversation and therefore still needs
     # the exact no-tab/no-URL harvest receipt.  An archived-parent menu miss is
-    # different: reopening the stored parent URL would inspect an old answer,
-    # not prove anything about this child.  Its bounded before-composer
-    # taxonomy below is the authoritative no-click evidence instead.
+    # different: its bounded before-composer taxonomy is authoritative and a
+    # new recovery attempt is not applicable.  Preserve settlement eligibility
+    # only when an older runner already wrote one exact harmless no-tab/no-URL
+    # pair; any candidate, state marker, URL, extra attempt, or partial pair was
+    # rejected above.
     if require_recovery_evidence and failure_kind == "textarea-absent" and len(recovery_records) != 1:
-        return None
-    if failure_kind == "archived-parent-unarchive-menu-absent" and recovery_records:
         return None
     reservation_record = binding.get("reservation") if isinstance(binding.get("reservation"), dict) else binding
     reservation = reservation_record["payload"]
@@ -3118,6 +3181,9 @@ def _followup_no_submission_evidence(
         "oracle_locator": (state.get("oracle") or {}).get("slug"),
         "stdout_sha256": hashlib.sha256(stdout_bytes).hexdigest(),
         "stderr_sha256": hashlib.sha256(stderr_bytes).hexdigest(),
+        "harvest_outcome": (
+            "no-live-no-url-no-candidate" if recovery_records else "not-run"
+        ),
         "recovery_evidence": recovery_records,
         "output_absent": True,
         "conversation_url_absent": True,
@@ -3474,15 +3540,40 @@ def proven_user_confirmed_no_submission(state_path: Path) -> dict[str, Any] | No
         "oracle-followup-pre-submit-ui/v2",
     }:
         required = (
-            "settlement_eligibility", "transport", "followup_binding_mode",
+            "transport", "followup_binding_mode",
             "followup_reservation_path", "followup_reservation_sha256",
             "parent_run_id", "parent_conversation_url", "round_key",
             "oracle_meta_sha256",
         )
-        if current.get("settlement_eligibility") == "oracle-followup-pre-submit-ui/v2":
+        recorded_eligibility = recorded.get("settlement_eligibility")
+        current_eligibility = current.get("settlement_eligibility")
+        if recorded_eligibility == current_eligibility:
+            required += ("settlement_eligibility",)
+        else:
+            historical_v1_upgrade = (
+                recorded_eligibility == "oracle-followup-pre-submit-ui/v1"
+                and current_eligibility == "oracle-followup-pre-submit-ui/v2"
+                and current.get("failure_kind") == "textarea-absent"
+                and current.get("evidence_profile")
+                == "textarea-absent-with-exact-harvest/v1"
+                and all(
+                    key not in recorded
+                    for key in ("failure_kind", "evidence_profile", "harvest_outcome")
+                )
+            )
+            if not historical_v1_upgrade:
+                return None
+        if recorded_eligibility == "oracle-followup-pre-submit-ui/v2":
             required += ("failure_kind", "evidence_profile")
-            if current.get("evidence_profile") == "archived-parent-unarchive-v1.18.4-legacy-no-click/v1":
+            if recorded.get("evidence_profile") == "archived-parent-unarchive-v1.18.4-legacy-no-click/v1":
                 required += ("legacy_install_receipt_path", "legacy_install_receipt_sha256")
+        # v1 settlements predate failure/evidence profile labels.  Their exact
+        # artifact hashes and immutable follow-up binding remain authoritative;
+        # a predicate-only v1 -> v2 label upgrade must not resurrect ownership.
+        # New v2 settlements bind the explicit harmless-harvest outcome while
+        # existing v2 receipts that predate this field remain revalidatable.
+        if "harvest_outcome" in recorded:
+            required += ("harvest_outcome",)
     elif current.get("settlement_eligibility") == "oracle-pre-submit-host/v1":
         required = (
             "settlement_eligibility", "transport", "transport_mission_path",

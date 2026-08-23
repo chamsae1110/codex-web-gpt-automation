@@ -121,6 +121,11 @@ New read-only Pro parents normalize default `archive=auto` to `never`, so do not
 manually unarchive them or change ChatGPT settings. Explicit `archive=always`
 means single-turn archival. Historical archived parents use only the bounded
 exact-conversation compatibility restore and are re-archived afterward.
+If that restore fails before the composer, do not run recovery or harvest.
+Preserve the exact child and obtain explicit user no-submission confirmation,
+then use the runner's exact `settle-no-submission` command. Older v1.18.5
+children that already produced one exact no-live/no-URL/no-candidate harvest
+pair remain compatible; never delete or edit those logs.
 
 ## Recovery
 

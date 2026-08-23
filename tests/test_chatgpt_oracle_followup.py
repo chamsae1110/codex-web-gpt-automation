@@ -211,6 +211,70 @@ def make_archived_parent_unarchive_failure(
     return runner, parent, child, meta_path
 
 
+def write_exact_harmless_archived_parent_harvest(child, runner) -> None:
+    """Write the only legacy recovery pair that remains harmless for this child.
+
+    A follow-up keeps a *parent* conversation URL by design.  This pair must
+    therefore prove only that the child has no live tab and no recoverable
+    child URL; it must never turn a recovery of the parent into child evidence.
+    """
+    slug = runner.STATE.load_state(child.state_path)["oracle"]["slug"]
+    (child.run_dir / "recovery-harvest-stdout.log").write_text(
+        f'No live ChatGPT tab matched session "{slug}". '
+        "Attempting recovery by reopening the saved conversation URL.\n",
+        encoding="utf-8",
+    )
+    (child.run_dir / "recovery-harvest-stderr.log").write_text(
+        "Cannot recover conversation: session metadata has no recoverable "
+        "ChatGPT conversation URL (expected browser.harvest.url or "
+        "browser.runtime.tabUrl to be a chatgpt.com/c/<id> URL).\n",
+        encoding="utf-8",
+    )
+
+
+def make_followup_textarea_absent_with_harvest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Build a current v2 textarea child that can stand in for a v1 receipt."""
+    runner, parent, child, meta_path = make_archived_parent_unarchive_failure(
+        tmp_path, monkeypatch, structured=False
+    )
+    marker = runner.STATE.ORACLE_PROMPT_TEXTAREA_ABSENT_MARKER
+    stdout = f"ERROR: {marker}\nUser error (browser-automation): {marker}\n"
+    child.stdout_path.write_text(stdout, encoding="utf-8")
+    child.transcript_path.write_text(stdout, encoding="utf-8")
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["error"] = {
+        "category": "browser-automation",
+        "message": marker,
+        "details": {"stage": "execute-browser"},
+    }
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+    write_exact_harmless_archived_parent_harvest(child, runner)
+    return runner, parent, child
+
+
+def rewrite_settlement_as_official_followup_v1(child, runner, *, mutate=None) -> dict:
+    """Simulate an immutable old official v1 receipt, not ad-hoc user tampering."""
+    runner.STATE.settle_user_confirmed_no_submission(
+        child.state_path,
+        confirmation="user-confirmed-no-submission",
+        reason="create a synthetic official historical v1 receipt",
+    )
+    settlement_path = child.run_dir / "user-confirmed-no-submission.json"
+    recorded = json.loads(settlement_path.read_text(encoding="utf-8"))
+    recorded["settlement_eligibility"] = "oracle-followup-pre-submit-ui/v1"
+    for key in ("failure_kind", "evidence_profile", "harvest_outcome"):
+        recorded.pop(key, None)
+    if mutate is not None:
+        mutate(recorded)
+    runner.STATE.write_json_atomic(settlement_path, recorded)
+    state = runner.STATE.load_state(child.state_path)
+    state["user_confirmed_no_submission"]["sha256"] = hashlib.sha256(
+        settlement_path.read_bytes()
+    ).hexdigest()
+    runner.STATE.write_json_atomic(child.state_path, state)
+    return recorded
+
+
 def test_followup_dry_run_is_same_task_and_same_conversation_without_writes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     runner, layout, mission = make_parent(tmp_path, monkeypatch)
 
@@ -663,3 +727,193 @@ def test_followup_unarchive_structured_evidence_rejects_runtime_contradiction(
     assert runner.STATE._followup_no_submission_evidence(
         child.state_path, require_recovery_evidence=True
     ) is None
+
+
+def test_followup_archived_parent_legacy_harmless_harvest_keeps_settlement_eligible(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, _parent, child, _meta_path = make_archived_parent_unarchive_failure(
+        tmp_path, monkeypatch, structured=False
+    )
+    write_exact_harmless_archived_parent_harvest(child, runner)
+
+    evidence = runner.STATE._followup_no_submission_evidence(
+        child.state_path, require_recovery_evidence=True
+    )
+
+    assert evidence is not None
+    assert evidence["failure_kind"] == "archived-parent-unarchive-menu-absent"
+    assert len(evidence["recovery_evidence"]) == 1
+    settled = runner.STATE.settle_user_confirmed_no_submission(
+        child.state_path,
+        confirmation="user-confirmed-no-submission",
+        reason="exact harmless no-tab/no-url harvest still proves no child submission",
+    )
+    assert settled["transport_status"] == "not_submitted_user_confirmed"
+    assert runner.STATE.proven_user_confirmed_no_submission(child.state_path) is not None
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "partial-pair",
+        "wrong-slug",
+        "child-conversation-url",
+        "nonempty-candidate",
+        "additional-recovery-log",
+        "symlink",
+    ),
+)
+def test_followup_archived_parent_harvest_evidence_fails_closed_on_any_ambiguity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str
+) -> None:
+    runner, _parent, child, _meta_path = make_archived_parent_unarchive_failure(
+        tmp_path, monkeypatch, structured=False
+    )
+    write_exact_harmless_archived_parent_harvest(child, runner)
+    stdout_path = child.run_dir / "recovery-harvest-stdout.log"
+    stderr_path = child.run_dir / "recovery-harvest-stderr.log"
+
+    if mutation == "partial-pair":
+        stderr_path.unlink()
+    elif mutation == "wrong-slug":
+        stdout_path.write_text(
+            stdout_path.read_text(encoding="utf-8").replace(
+                runner.STATE.load_state(child.state_path)["oracle"]["slug"],
+                "oracle-coin-wrong-slug",
+            ),
+            encoding="utf-8",
+        )
+    elif mutation == "child-conversation-url":
+        stderr_path.write_text(
+            stderr_path.read_text(encoding="utf-8")
+            + "https://chatgpt.com/c/a-real-child-conversation\n",
+            encoding="utf-8",
+        )
+    elif mutation == "nonempty-candidate":
+        (child.run_dir / "recovery-harvest-candidate.md").write_text(
+            "candidate output must revoke no-submission evidence\n", encoding="utf-8"
+        )
+    elif mutation == "additional-recovery-log":
+        (child.run_dir / "recovery-live-stdout.log").write_text(
+            "another recovery attempt is ambiguous\n", encoding="utf-8"
+        )
+    else:
+        target = child.run_dir / "outside-recovery.log"
+        target.write_text("not an owned recovery record\n", encoding="utf-8")
+        stdout_path.unlink()
+        try:
+            stdout_path.symlink_to(target)
+        except OSError:
+            pytest.skip("the current Windows test host does not permit symlinks")
+
+    assert runner.STATE._followup_no_submission_evidence(
+        child.state_path, require_recovery_evidence=True
+    ) is None
+    assert runner.STATE.proven_user_confirmed_no_submission(child.state_path) is None
+
+
+def test_structured_archived_parent_failure_rejects_harvest_and_directs_settlement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, _parent, child, _meta_path = make_archived_parent_unarchive_failure(
+        tmp_path, monkeypatch, structured=True
+    )
+
+    with pytest.raises(runner.OracleRunError) as exc:
+        runner.recover_run(
+            child.run_dir,
+            action="harvest",
+            dry_run=True,
+            oracle_command=["oracle"],
+    )
+
+    assert exc.value.code == "FOLLOWUP_ARCHIVED_PARENT_HARVEST_NOT_APPLICABLE"
+    assert exc.value.evidence["submission_action"] == "none"
+    assert "settle-no-submission" in exc.value.evidence["next_action"]
+    assert runner.STATE._user_confirmable_no_submission_evidence(child.state_path) is not None
+
+
+def test_followup_official_v1_settlement_revalidates_against_exact_v2_textarea_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, _parent, child = make_followup_textarea_absent_with_harvest(tmp_path, monkeypatch)
+    recorded = rewrite_settlement_as_official_followup_v1(child, runner)
+
+    assert recorded["settlement_eligibility"] == "oracle-followup-pre-submit-ui/v1"
+    assert not {"failure_kind", "evidence_profile", "harvest_outcome"} & set(recorded)
+    proof = runner.STATE.proven_user_confirmed_no_submission(child.state_path)
+
+    assert proof is not None
+    assert proof["settlement_eligibility"] == "oracle-followup-pre-submit-ui/v1"
+    assert runner.STATE.unresolved_project_sessions(
+        child.run_dir.parent,
+        Path(runner.STATE.load_state(child.state_path)["project_root"]),
+        source_thread_id=OWNER,
+    ) == []
+
+
+@pytest.mark.parametrize(
+    "field, replacement",
+    (
+        ("project_root", "C:/not-the-exact-project"),
+        ("run_id", "other-child-run"),
+        ("stdout_sha256", "0" * 64),
+        ("stderr_sha256", "1" * 64),
+        ("recovery_evidence", []),
+        ("output_absent", False),
+        ("conversation_url_absent", False),
+        ("mission_sha256", "2" * 64),
+        ("oracle_locator", "oracle-coin-other-child"),
+        ("followup_binding_mode", "foreign-task-binding/v1"),
+        ("followup_reservation_sha256", "3" * 64),
+        ("parent_run_id", "other-parent-run"),
+        ("parent_conversation_url", "https://chatgpt.com/c/other-parent"),
+        ("round_key", "other-round"),
+        ("oracle_meta_sha256", "4" * 64),
+    ),
+)
+def test_followup_v1_to_v2_revalidation_fails_closed_on_any_core_or_binding_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, field: str, replacement
+) -> None:
+    runner, _parent, child = make_followup_textarea_absent_with_harvest(tmp_path, monkeypatch)
+    rewrite_settlement_as_official_followup_v1(
+        child, runner, mutate=lambda recorded: recorded.__setitem__(field, replacement)
+    )
+
+    assert runner.STATE.proven_user_confirmed_no_submission(child.state_path) is None
+    owners = runner.STATE.unresolved_project_sessions(
+        child.run_dir.parent,
+        Path(runner.STATE.load_state(child.state_path)["project_root"]),
+        source_thread_id=OWNER,
+    )
+    assert [owner["run_id"] for owner in owners] == [child.run_dir.name]
+
+
+@pytest.mark.parametrize(
+    "kind",
+    ("archived-parent-current-v2", "unexpected-v2-field", "wrong-recorded-eligibility"),
+)
+def test_followup_v1_receipt_compatibility_is_not_a_general_v2_downgrade(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    if kind == "archived-parent-current-v2":
+        runner, _parent, child, _meta_path = make_archived_parent_unarchive_failure(
+            tmp_path, monkeypatch, structured=True
+        )
+    else:
+        runner, _parent, child = make_followup_textarea_absent_with_harvest(tmp_path, monkeypatch)
+    recorded = rewrite_settlement_as_official_followup_v1(child, runner)
+    if kind == "unexpected-v2-field":
+        recorded["failure_kind"] = "textarea-absent"
+    elif kind == "wrong-recorded-eligibility":
+        recorded["settlement_eligibility"] = "oracle-followup-pre-submit-ui/v2"
+    settlement_path = child.run_dir / "user-confirmed-no-submission.json"
+    runner.STATE.write_json_atomic(settlement_path, recorded)
+    state = runner.STATE.load_state(child.state_path)
+    state["user_confirmed_no_submission"]["sha256"] = hashlib.sha256(
+        settlement_path.read_bytes()
+    ).hexdigest()
+    runner.STATE.write_json_atomic(child.state_path, state)
+
+    assert runner.STATE.proven_user_confirmed_no_submission(child.state_path) is None
