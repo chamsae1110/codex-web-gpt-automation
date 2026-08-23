@@ -921,6 +921,7 @@ def execute_run(
     exact_recovery_factory: Callable[..., dict[str, Any]] | None = None,
     _cdp_port: int | None = None,
     _followup_parent_slug: str | None = None,
+    _followup_binding: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     config = STATE.load_manifest(
         manifest_path,
@@ -1002,6 +1003,8 @@ def execute_run(
             cdp_port=cdp_port,
         ),
     )
+    if _followup_binding is not None:
+        STATE.persist_followup_binding(layout.state_path, _followup_binding)
     layout.stdout_path.touch()
     layout.stderr_path.touch()
     oracle_env = STATE.browser_temp_environment(layout.browser_temp_path, platform_name=platform_name)
@@ -2249,7 +2252,41 @@ def recover_run(
 FOLLOWUP_ROUND_KEY_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
 
 
-def _require_followup_parent(parent_run_dir: Path) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], str, dict[str, str]]:
+def _followup_archive_contract(state: dict[str, Any], conversation_url: str) -> dict[str, Any]:
+    slug = str((state.get("oracle") or {}).get("slug") or "")
+    session_root = Path(os.environ.get("ORACLE_SESSION_ROOT") or (Path.home() / ".oracle" / "sessions")).resolve()
+    meta_path = session_root / slug / "meta.json"
+    try:
+        raw = meta_path.read_bytes()
+        meta = json.loads(raw.decode("utf-8", errors="strict"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise OracleRunError(
+            "FOLLOWUP_PARENT_ARCHIVE_STATUS_UNVERIFIED",
+            "follow-up requires exact terminal Oracle archive metadata",
+        ) from exc
+    archive = ((meta.get("browser") or {}).get("archive") if isinstance(meta, dict) else None)
+    if not isinstance(archive, dict) or not isinstance(archive.get("archived"), bool):
+        raise OracleRunError(
+            "FOLLOWUP_PARENT_ARCHIVE_STATUS_UNVERIFIED",
+            "follow-up parent archive state is absent or ambiguous",
+        )
+    archived = archive["archived"]
+    archive_url = str(archive.get("conversationUrl") or "").strip()
+    if archived and archive_url != conversation_url:
+        raise OracleRunError(
+            "FOLLOWUP_PARENT_ARCHIVE_IDENTITY_INVALID",
+            "archived follow-up parent is not bound to the exact conversation URL",
+        )
+    return {
+        "was_archived": archived,
+        "conversation_url": archive_url or conversation_url,
+        "oracle_meta_path": str(meta_path),
+        "oracle_meta_sha256": hashlib.sha256(raw).hexdigest(),
+        "restore_policy": "exact-unarchive-then-rearchive" if archived else "no-transition",
+    }
+
+
+def _require_followup_parent(parent_run_dir: Path) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], str, dict[str, str], dict[str, Any]]:
     """Validate the one narrow parent contract for an in-conversation Pro round.
 
     This is deliberately stricter than ordinary recovery.  A follow-up is not
@@ -2319,7 +2356,8 @@ def _require_followup_parent(parent_run_dir: Path) -> tuple[dict[str, Any], dict
                 {"artifact": name, "expected_sha256": expected or None, "actual_sha256": digest},
             )
         checks[name] = digest
-    return state, ownership, browser, conversation_url, checks
+    archive_contract = _followup_archive_contract(state, conversation_url)
+    return state, ownership, browser, conversation_url, checks, archive_contract
 
 
 def _followup_manifest_payload(
@@ -2327,6 +2365,7 @@ def _followup_manifest_payload(
     *,
     mission_path: Path,
     run_id: str,
+    archive_contract: dict[str, Any],
 ) -> dict[str, Any]:
     profile = parent.get("profile") if isinstance(parent.get("profile"), dict) else {}
     policy = parent.get("episode_policy") if isinstance(parent.get("episode_policy"), dict) else {}
@@ -2345,7 +2384,7 @@ def _followup_manifest_payload(
         "model_strategy": "select",
         "thinking_time": "heavy",
         "research": str(profile.get("research") or "off"),
-        "archive": str(profile.get("archive") or "auto"),
+        "archive": "always" if archive_contract.get("was_archived") is True else "never",
         "task_outcome_contract": "v1",
         "run_id": run_id,
         "source_thread_id": STATE.source_thread_id_from_state(parent),
@@ -2398,6 +2437,7 @@ def _persist_followup_completion_receipt(
     parent_conversation_url: str,
     browser_receipt: dict[str, Any] | None,
     identity_status: str,
+    archive_transition: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Append the actual child round outcome without rewriting reservation data."""
     state = STATE.load_state(child_state_path)
@@ -2431,6 +2471,7 @@ def _persist_followup_completion_receipt(
             "identity_status": identity_status,
             "browser_identity_receipt_sha256": (browser_receipt or {}).get("sha256"),
         },
+        "archive_transition": archive_transition,
         "recorded_at": datetime.now(timezone.utc).isoformat(),
     }
     digest = _write_followup_round_receipt(receipt_path, payload)
@@ -2455,7 +2496,7 @@ def followup_run(
     normalized_round_key = str(round_key or "").strip().casefold()
     if FOLLOWUP_ROUND_KEY_RE.fullmatch(normalized_round_key) is None:
         raise OracleRunError("FOLLOWUP_ROUND_KEY_INVALID", "round_key must be a safe 1-64 character identifier")
-    parent, ownership, browser, conversation_url, artifact_hashes = _require_followup_parent(directory)
+    parent, ownership, browser, conversation_url, artifact_hashes, archive_contract = _require_followup_parent(directory)
     parent_slug = str((parent.get("oracle") or {}).get("slug") or "")
     child_run_id = str(run_id or f"followup-{uuid.uuid4().hex}").strip().casefold()
     if STATE.RUN_ID_RE.fullmatch(child_run_id) is None:
@@ -2475,7 +2516,9 @@ def followup_run(
             "this parent conversation already has the requested follow-up round key",
             {"round_receipt": str(receipt_path)},
         )
-    manifest_payload = _followup_manifest_payload(parent, mission_path=child_mission, run_id=child_run_id)
+    manifest_payload = _followup_manifest_payload(
+        parent, mission_path=child_mission, run_id=child_run_id, archive_contract=archive_contract
+    )
     manifest_payload["run_root"] = str(run_root)
     manifest_path = directory / "followup-manifests" / f"{child_run_id}.json"
     receipt = {
@@ -2496,6 +2539,7 @@ def followup_run(
                 "sha256": artifact_hashes["transcript"],
                 "state_terminal_hash_field": "absent-in-parent-schema",
             },
+            "archive_contract": archive_contract,
         },
         "child": {
             "run_id": child_run_id, "slug": child_slug,
@@ -2527,12 +2571,23 @@ def followup_run(
     except FileExistsError as exc:
         raise OracleRunError("FOLLOWUP_MANIFEST_CONFLICT", "follow-up manifest path already exists", {"manifest": str(manifest_path)}) from exc
     receipt_sha256 = _write_followup_round_receipt(receipt_path, receipt)
+    followup_binding = {
+        "schema": "codex.chatgpt.oracle-followup-binding/v1",
+        "source_thread_id": STATE.source_thread_id_from_state(parent),
+        "round_key": normalized_round_key,
+        "reservation_path": str(receipt_path),
+        "reservation_sha256": receipt_sha256,
+        "parent": receipt["parent"],
+        "child": receipt["child"],
+        "conversation_url": conversation_url,
+    }
     try:
         result = execute_run(
             manifest_path,
             dry_run=False,
             _cdp_port=expected_port,
             _followup_parent_slug=parent_slug,
+            _followup_binding=followup_binding,
             **execute_kwargs,
         )
     except Exception:
@@ -2547,6 +2602,7 @@ def followup_run(
                 parent_conversation_url=conversation_url,
                 browser_receipt=None,
                 identity_status="launcher-exception-identity-unavailable",
+                archive_transition=None,
             )
         raise
     result["followup_round_receipt"] = {"path": str(receipt_path), "sha256": receipt_sha256}
@@ -2560,11 +2616,26 @@ def followup_run(
             "same-exact-conversation" if child_url == conversation_url else "unverified-or-different-conversation"
         )
         identity_error = not pre_submit and (child_browser is None or child_url != conversation_url)
-        if identity_error:
+        archive_transition = None
+        if not pre_submit:
+            try:
+                archive_transition = _followup_archive_contract(child_state, conversation_url)
+            except OracleRunError:
+                archive_transition = {"was_archived": False, "restore_policy": "unverified"}
+        archive_error = (
+            archive_contract.get("was_archived") is True
+            and not pre_submit
+            and not identity_error
+            and archive_transition.get("was_archived") is not True
+        )
+        if identity_error or archive_error:
             STATE.update_state(
                 child_state_path,
                 status="attention_required",
-                task_outcome_reason="followup-conversation-identity-unverified",
+                task_outcome_reason=(
+                    "followup-archive-restoration-unverified" if archive_error
+                    else "followup-conversation-identity-unverified"
+                ),
                 conversation_url_conflict=(
                     {"persisted": conversation_url, "observed": child_url}
                     if child_url and child_url != conversation_url else None
@@ -2578,12 +2649,13 @@ def followup_run(
             parent_conversation_url=conversation_url,
             browser_receipt=child_browser,
             identity_status=identity_status,
+            archive_transition=archive_transition,
         )
         result["followup_round_result_receipt"] = {"path": completion["path"], "sha256": completion["sha256"]}
-        if identity_error:
+        if identity_error or archive_error:
             raise OracleRunError(
-                "FOLLOWUP_CONVERSATION_IDENTITY_UNVERIFIED",
-                "follow-up launched but its exact browser receipt did not prove the parent conversation binding",
+                "FOLLOWUP_ARCHIVE_RESTORATION_UNVERIFIED" if archive_error else "FOLLOWUP_CONVERSATION_IDENTITY_UNVERIFIED",
+                "follow-up did not prove the exact conversation and original archive state",
                 {
                     "parent_conversation_url": conversation_url,
                     "child_conversation_url": child_url or None,

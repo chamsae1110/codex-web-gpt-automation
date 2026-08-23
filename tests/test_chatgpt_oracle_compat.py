@@ -353,6 +353,21 @@ def test_published_0171_patch_requires_extra_high_and_pro_selection_proof(tmp_pa
     assert set(compat.PATCHES) <= touched
     node = shutil.which("node")
     assert node is not None, "Node.js is required to validate the patched Oracle source"
+    followup = package / "dist/src/cli/followup.js"
+    followup_text = followup.read_text(encoding="utf-8")
+    assert "resumeArchivedConversation: parentWasArchived" in followup_text
+    assert 'archiveConversations: parentWasArchived ? "always" : "never"' in followup_text
+    archive_action = package / "dist/src/browser/actions/archiveConversation.js"
+    archive_text = archive_action.read_text(encoding="utf-8")
+    assert "FOLLOWUP_ARCHIVED_PARENT_UNARCHIVE_FAILED" in archive_text
+    assert "exact-conversation-url-mismatch" in archive_text
+    assert "unarchive-menu-ambiguous" in archive_text
+    browser_index = package / "dist/src/browser/index.js"
+    browser_index_text = browser_index.read_text(encoding="utf-8")
+    assert browser_index_text.count("unarchiveChatGptConversation(Runtime") == 3
+    for target in (followup, archive_action, browser_index):
+        syntax = subprocess.run([node, "--check", str(target)], capture_output=True, text=True, check=False)
+        assert syntax.returncode == 0, syntax.stderr
     browser_tabs = package / "dist/src/cli/browserTabs.js"
     browser_tabs_text = browser_tabs.read_text(encoding="utf-8")
     assert "ORACLE_LIVE_TERMINAL_TIMEOUT_MS" in browser_tabs_text

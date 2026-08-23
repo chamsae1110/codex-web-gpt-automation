@@ -870,6 +870,10 @@ def browser_identity_receipt_path(run_dir: Path) -> Path:
     return run_dir / "browser-identity-receipt.json"
 
 
+def followup_binding_receipt_path(run_dir: Path) -> Path:
+    return run_dir / "followup-binding.json"
+
+
 def _write_append_only_json(path: Path, payload: dict[str, Any]) -> str:
     encoded = (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
     try:
@@ -906,6 +910,165 @@ def persist_ownership_receipt(state_path: Path, *, oracle_process_pid: int | Non
     path = ownership_receipt_path(state_path.parent.resolve())
     digest = _write_append_only_json(path, receipt)
     return {"path": str(path), "sha256": digest, "payload": receipt}
+
+
+def persist_followup_binding(state_path: Path, binding: dict[str, Any]) -> dict[str, Any]:
+    """Seal the parent/round/child tuple before a follow-up browser can launch."""
+    state = load_state(state_path)
+    child = binding.get("child") if isinstance(binding.get("child"), dict) else {}
+    if (
+        binding.get("schema") != "codex.chatgpt.oracle-followup-binding/v1"
+        or binding.get("source_thread_id") != source_thread_id_from_state(state)
+        or child.get("run_id") != state.get("run_id")
+        or child.get("slug") != (state.get("oracle") or {}).get("slug")
+        or child.get("mission_sha256") != (state.get("mission") or {}).get("sha256")
+        or child.get("expected_cdp_port") != (state.get("browser_identity") or {}).get("expected_cdp_port")
+    ):
+        raise OracleStateError("FOLLOWUP_BINDING_INVALID", "follow-up binding does not match the exact child state")
+    path = followup_binding_receipt_path(state_path.parent.resolve())
+    digest = _write_append_only_json(path, binding)
+    payload = load_state(state_path)
+    payload["followup_binding"] = {
+        "schema": "codex.chatgpt.oracle-followup-binding-reference/v1",
+        "path": str(path),
+        "sha256": digest,
+    }
+    write_json_atomic(state_path, payload)
+    return {"path": str(path), "sha256": digest, "payload": binding}
+
+
+def _validate_followup_reservation_for_child(
+    state_path: Path,
+    reservation_path: Path,
+    *,
+    expected_sha256: str | None = None,
+) -> dict[str, Any] | None:
+    state = load_state(state_path)
+    loaded = _strict_json_object(reservation_path)
+    if loaded is None:
+        return None
+    reservation, raw = loaded
+    actual_sha256 = hashlib.sha256(raw).hexdigest()
+    if expected_sha256 and actual_sha256 != expected_sha256:
+        return None
+    source_thread_id = source_thread_id_from_state(state)
+    child = reservation.get("child") if isinstance(reservation.get("child"), dict) else {}
+    parent = reservation.get("parent") if isinstance(reservation.get("parent"), dict) else {}
+    round_key = str(reservation.get("round_key") or "")
+    run_dir = state_path.parent.resolve()
+    parent_dir = reservation_path.parent.parent.resolve()
+    parent_state_path = parent_dir / "state.json"
+    if (
+        reservation.get("schema") != "codex.chatgpt.oracle-followup-round/v1"
+        or reservation.get("source_thread_id") != source_thread_id
+        or not round_key
+        or reservation_path.resolve() != (parent_dir / "followup-rounds" / f"{round_key}.json").resolve()
+        or child.get("run_id") != state.get("run_id")
+        or child.get("slug") != (state.get("oracle") or {}).get("slug")
+        or child.get("mission_sha256") != (state.get("mission") or {}).get("sha256")
+        or child.get("expected_cdp_port") != (state.get("browser_identity") or {}).get("expected_cdp_port")
+        or Path(str(child.get("run_dir") or "")).resolve() != run_dir
+        or parent.get("run_id") != parent_dir.name
+        or reservation.get("followup_argv") != ["--followup", parent.get("slug")]
+        or CHATGPT_CONVERSATION_URL_RE.fullmatch(str(parent.get("conversation_url") or "")) is None
+    ):
+        return None
+    try:
+        parent_state = load_state(parent_state_path)
+    except OracleStateError:
+        return None
+    parent_owner = proven_ownership_receipt(parent_state_path)
+    parent_browser = proven_browser_identity_receipt(parent_state_path)
+    parent_profile = parent_state.get("profile") if isinstance(parent_state.get("profile"), dict) else {}
+    parent_artifacts = parent.get("artifacts") if isinstance(parent.get("artifacts"), dict) else {}
+    if (
+        source_thread_id_from_state(parent_state) != source_thread_id
+        or parent_state.get("run_id") != parent.get("run_id")
+        or (parent_state.get("oracle") or {}).get("slug") != parent.get("slug")
+        or str((parent_state.get("oracle") or {}).get("conversation_url") or "") != parent.get("conversation_url")
+        or parent_state.get("status") != "complete"
+        or parent_state.get("session_authority") != "terminal"
+        or parent_state.get("terminal_harvested") is not True
+        or parent_state.get("task_outcome") != "executed"
+        or parent_state.get("transport") != "pro-devspace-readonly"
+        or parent_profile.get("model") != "gpt-5.6-sol"
+        or parent_profile.get("model_strategy") != "select"
+        or parent_profile.get("thinking_time") != "heavy"
+        or parent_owner is None
+        or parent_browser is None
+        or parent.get("ownership_receipt_sha256") != parent_owner.get("sha256")
+        or parent.get("browser_identity_receipt_sha256") != parent_browser.get("sha256")
+        or str((parent_browser.get("payload") or {}).get("conversation_url") or "") != parent.get("conversation_url")
+    ):
+        return None
+    parent_mission = parent_state.get("mission") if isinstance(parent_state.get("mission"), dict) else {}
+    state_artifacts = parent_state.get("artifacts") if isinstance(parent_state.get("artifacts"), dict) else {}
+    artifact_paths = {
+        "output": state_artifacts.get("output"),
+        "transcript": state_artifacts.get("transcript"),
+        "mission": parent_mission.get("transport_path"),
+        "project_mission": parent_mission.get("path"),
+    }
+    for name, value in artifact_paths.items():
+        try:
+            candidate = exact_regular_file(value, label=f"followup_parent_{name}")
+        except OracleStateError:
+            return None
+        if sha256_file(candidate) != parent_artifacts.get(name):
+            return None
+    return {
+        "path": str(reservation_path.resolve()),
+        "sha256": actual_sha256,
+        "payload": reservation,
+    }
+
+
+def proven_followup_binding(state_path: Path) -> dict[str, Any] | None:
+    state = load_state(state_path)
+    reference = state.get("followup_binding")
+    expected_path = followup_binding_receipt_path(state_path.parent.resolve())
+    if not isinstance(reference, dict) or expected_path.is_symlink():
+        return None
+    try:
+        raw = expected_path.read_bytes()
+        def reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+            result: dict[str, Any] = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError("duplicate follow-up binding key")
+                result[key] = value
+            return result
+        binding = json.loads(raw.decode("utf-8", errors="strict"), object_pairs_hook=reject_duplicates)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
+        return None
+    actual = hashlib.sha256(raw).hexdigest()
+    child = binding.get("child") if isinstance(binding, dict) and isinstance(binding.get("child"), dict) else {}
+    if (
+        reference.get("schema") != "codex.chatgpt.oracle-followup-binding-reference/v1"
+        or Path(str(reference.get("path") or "")).resolve() != expected_path
+        or reference.get("sha256") != actual
+        or binding.get("schema") != "codex.chatgpt.oracle-followup-binding/v1"
+        or binding.get("source_thread_id") != source_thread_id_from_state(state)
+        or child.get("run_id") != state.get("run_id")
+        or child.get("slug") != (state.get("oracle") or {}).get("slug")
+        or child.get("mission_sha256") != (state.get("mission") or {}).get("sha256")
+        or child.get("expected_cdp_port") != (state.get("browser_identity") or {}).get("expected_cdp_port")
+    ):
+        return None
+    reservation_path = Path(str(binding.get("reservation_path") or ""))
+    reservation = _validate_followup_reservation_for_child(
+        state_path, reservation_path, expected_sha256=str(binding.get("reservation_sha256") or "")
+    )
+    parent = binding.get("parent") if isinstance(binding.get("parent"), dict) else {}
+    if (
+        reservation is None
+        or binding.get("round_key") != reservation["payload"].get("round_key")
+        or binding.get("conversation_url") != (reservation["payload"].get("parent") or {}).get("conversation_url")
+        or parent != reservation["payload"].get("parent")
+        or child != reservation["payload"].get("child")
+    ):
+        return None
+    return {"path": str(expected_path), "sha256": actual, "payload": binding, "reservation": reservation}
 
 
 def proven_ownership_receipt(state_path: Path) -> dict[str, Any] | None:
@@ -2407,6 +2570,9 @@ def bounded_task_owned_prompt_timeout_harvest_evidence(
     task/run ownership receipt and Oracle's completed, zero-turn commit probe.
     It never settles ownership and is used only to permit ``session --harvest``.
     """
+    followup = _followup_no_submission_evidence(state_path, require_recovery_evidence=False)
+    if followup is not None:
+        return followup
     evidence = _standalone_pro_no_submission_evidence(
         state_path,
         require_recovery_evidence=False,
@@ -2556,6 +2722,238 @@ def bounded_task_owned_prompt_timeout_harvest_evidence(
         "commit_probe_turns": 0,
         "conversation_url_absent": True,
         "output_absent": True,
+    }
+
+
+def _strict_json_object(path: Path) -> tuple[dict[str, Any], bytes] | None:
+    try:
+        if path.is_symlink() or not path.is_file():
+            return None
+        raw = path.read_bytes()
+        def reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+            value: dict[str, Any] = {}
+            for key, item in pairs:
+                if key in value:
+                    raise ValueError("duplicate JSON key")
+                value[key] = item
+            return value
+        parsed = json.loads(raw.decode("utf-8", errors="strict"), object_pairs_hook=reject_duplicates)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
+        return None
+    return (parsed, raw) if isinstance(parsed, dict) else None
+
+
+def _legacy_followup_reservation_for_child(state_path: Path) -> dict[str, Any] | None:
+    """Find one exact v1.18.1-v1.18.3 reservation by immutable child identity.
+
+    This compatibility path never chooses a latest project run. It accepts only
+    one unique same-task reservation whose child tuple exactly names this run.
+    """
+    state = load_state(state_path)
+    run_dir = state_path.parent.resolve()
+    run_root = run_dir.parent
+    source_thread_id = source_thread_id_from_state(state)
+    child_slug = str((state.get("oracle") or {}).get("slug") or "")
+    child_mission = str((state.get("mission") or {}).get("sha256") or "")
+    expected_port = (state.get("browser_identity") or {}).get("expected_cdp_port")
+    candidates: list[dict[str, Any]] = []
+    try:
+        parent_dirs = [path for path in run_root.iterdir() if path.is_dir() and not path.is_symlink()]
+    except OSError:
+        return None
+    for parent_dir in parent_dirs:
+        rounds = parent_dir / "followup-rounds"
+        if not rounds.is_dir() or rounds.is_symlink():
+            continue
+        for reservation_path in rounds.glob("*.json"):
+            if reservation_path.name.endswith(".result.json"):
+                continue
+            loaded = _strict_json_object(reservation_path)
+            if loaded is None:
+                continue
+            reservation, raw = loaded
+            child = reservation.get("child") if isinstance(reservation.get("child"), dict) else {}
+            parent = reservation.get("parent") if isinstance(reservation.get("parent"), dict) else {}
+            if (
+                reservation.get("schema") != "codex.chatgpt.oracle-followup-round/v1"
+                or reservation.get("source_thread_id") != source_thread_id
+                or child.get("run_id") != state.get("run_id")
+                or child.get("slug") != child_slug
+                or child.get("mission_sha256") != child_mission
+                or child.get("expected_cdp_port") != expected_port
+                or Path(str(child.get("run_dir") or "")).resolve() != run_dir
+                or parent.get("run_id") != parent_dir.name
+            ):
+                continue
+            validated = _validate_followup_reservation_for_child(state_path, reservation_path)
+            if validated is None:
+                continue
+            candidates.append({
+                **validated,
+                "binding_mode": "legacy-unique-child-tuple/v1",
+            })
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _followup_no_submission_evidence(
+    state_path: Path,
+    *,
+    require_recovery_evidence: bool,
+) -> dict[str, Any] | None:
+    state = load_state(state_path)
+    run_dir = state_path.parent.resolve()
+    profile = state.get("profile") if isinstance(state.get("profile"), dict) else {}
+    persisted_binding = state.get("followup_binding")
+    binding = proven_followup_binding(state_path)
+    if binding is None and persisted_binding is None:
+        binding = _legacy_followup_reservation_for_child(state_path)
+    owner = proven_ownership_receipt(state_path)
+    browser_identity = state.get("browser_identity") if isinstance(state.get("browser_identity"), dict) else {}
+    browser_receipt = browser_identity_receipt_path(run_dir)
+    if (
+        state.get("status") not in {"attention_required", "failed"}
+        or state.get("session_authority") not in {"submitted_unknown", "pre_submit"}
+        or state.get("transport") != "pro-devspace-readonly"
+        or state.get("mode") != "browser"
+        or state.get("transport_status") not in {"failed", "not_submitted_user_confirmed"}
+        or profile.get("model") != "gpt-5.6-sol"
+        or profile.get("model_strategy") != "select"
+        or profile.get("thinking_time") != "heavy"
+        or state.get("task_outcome") != "pending"
+        or state.get("terminal_harvested") is True
+        or state.get("parallel_parent_id") is not None
+        or state.get("web_multi_child_provenance") is not None
+        or state.get("attachments") not in (None, [])
+        or state.get("run_id") != run_dir.name
+        or state.get("exit_code") == 0
+        or binding is None
+        or owner is None
+        or browser_identity.get("receipt_path") not in {None, ""}
+        or browser_identity.get("receipt_sha256") not in {None, ""}
+        or browser_receipt.exists()
+        or browser_receipt.is_symlink()
+        or proven_browser_identity_receipt(state_path) is not None
+        or _state_has_conversation_url(state)
+    ):
+        return None
+    artifacts = state.get("artifacts") if isinstance(state.get("artifacts"), dict) else {}
+    output = Path(str(artifacts.get("output") or ""))
+    records = {name: _artifact_bytes(state, name) for name in ("stdout", "stderr", "transcript")}
+    if (
+        output.resolve() != (run_dir / "output.md").resolve()
+        or output.is_symlink()
+        or output_is_nonempty(output)
+        or any(value is None for value in records.values())
+    ):
+        return None
+    stdout_path, stdout_bytes = records["stdout"]  # type: ignore[misc]
+    stderr_path, stderr_bytes = records["stderr"]  # type: ignore[misc]
+    transcript_path, transcript_bytes = records["transcript"]  # type: ignore[misc]
+    expected_lines = {
+        "ERROR: Prompt textarea did not appear before timeout",
+        "User error (browser-automation): Prompt textarea did not appear before timeout",
+    }
+    try:
+        ordered_lines = [line.strip() for line in stdout_bytes.decode("utf-8", errors="strict").splitlines() if line.strip()]
+        lines = set(ordered_lines)
+    except UnicodeDecodeError:
+        return None
+    if (
+        stdout_path.resolve() != (run_dir / "stdout.log").resolve()
+        or stderr_path.resolve() != (run_dir / "stderr.log").resolve()
+        or transcript_path.resolve() != (run_dir / "transcript.md").resolve()
+        or any(path.is_symlink() for path in (stdout_path, stderr_path, transcript_path))
+        or
+        not expected_lines.issubset(lines)
+        or any(
+            line not in expected_lines
+            and not line.startswith((
+                "🧿 oracle ", "Session: ", "Mode: ", "Models: ", "Detach: ",
+                "Reattach: oracle session ", "Launching browser mode ",
+                "This run can take up to an hour ", "[browser] Browser control: ",
+                "[browser] Browser guidance: ",
+            ))
+            for line in ordered_lines
+        )
+        or stderr_bytes
+        or transcript_bytes != stdout_bytes
+        or any(CHATGPT_CONVERSATION_URL_RE.search(raw.decode("utf-8", errors="ignore")) for raw in (stdout_bytes, stderr_bytes, transcript_bytes))
+    ):
+        return None
+    recovery_records: list[dict[str, Any]] = []
+    recovery_paths = (run_dir / "recovery-harvest-stdout.log", run_dir / "recovery-harvest-stderr.log")
+    if all(path.is_file() and not path.is_symlink() for path in recovery_paths):
+        raw_out, raw_err = (path.read_bytes() for path in recovery_paths)
+        text = b"\n".join((raw_out, raw_err)).decode("utf-8", errors="strict")
+        locator = str((state.get("oracle") or {}).get("slug") or "")
+        if (
+            CHATGPT_CONVERSATION_URL_RE.search(text)
+            or ORACLE_NO_LIVE_TAB_MARKER not in text
+            or f'"{locator}"' not in text
+            or ORACLE_NO_RECOVERABLE_URL_MARKER not in text
+        ):
+            return None
+        recovery_records.append({
+            "stdout_name": recovery_paths[0].name,
+            "stdout_sha256": hashlib.sha256(raw_out).hexdigest(),
+            "stderr_name": recovery_paths[1].name,
+            "stderr_sha256": hashlib.sha256(raw_err).hexdigest(),
+        })
+    if require_recovery_evidence and len(recovery_records) != 1:
+        return None
+    reservation_record = binding.get("reservation") if isinstance(binding.get("reservation"), dict) else binding
+    reservation = reservation_record["payload"]
+    parent_url = str((reservation.get("parent") or {}).get("conversation_url") or "")
+    locator = str((state.get("oracle") or {}).get("slug") or "")
+    session_root = Path(os.environ.get("ORACLE_SESSION_ROOT") or (Path.home() / ".oracle" / "sessions")).resolve()
+    meta_path = session_root / locator / "meta.json"
+    loaded_meta = _strict_json_object(meta_path)
+    if loaded_meta is None:
+        return None
+    meta, meta_raw = loaded_meta
+    browser = meta.get("browser") if isinstance(meta.get("browser"), dict) else {}
+    runtime = browser.get("runtime")
+    error = meta.get("error") if isinstance(meta.get("error"), dict) else {}
+    details = error.get("details") if isinstance(error.get("details"), dict) else {}
+    config = browser.get("config") if isinstance(browser.get("config"), dict) else {}
+    options = meta.get("options") if isinstance(meta.get("options"), dict) else {}
+    option_browser = options.get("browserConfig") if isinstance(options.get("browserConfig"), dict) else {}
+    meta_urls = CHATGPT_CONVERSATION_URL_RE.findall(meta_raw.decode("utf-8", errors="strict"))
+    if (
+        meta.get("id") != locator
+        or meta.get("status") != "error"
+        or not str(meta.get("completedAt") or "").strip()
+        or meta.get("mode") != "browser"
+        or str(meta.get("model") or "") != "gpt-5.6-sol"
+        or error.get("category") != "browser-automation"
+        or error.get("message") != "Prompt textarea did not appear before timeout"
+        or details.get("stage") != "execute-browser"
+        or runtime not in (None, {})
+        or browser.get("archive") not in (None, "")
+        or config.get("resumeConversationUrl") != parent_url
+        or option_browser.get("resumeConversationUrl") != parent_url
+        or any(url != parent_url for url in meta_urls)
+    ):
+        return None
+    return {
+        "settlement_eligibility": "oracle-followup-pre-submit-ui/v1",
+        "project_root": str(state.get("project_root") or ""),
+        "run_id": state.get("run_id"),
+        "transport": state.get("transport"),
+        "mission_sha256": (state.get("mission") or {}).get("sha256"),
+        "oracle_locator": (state.get("oracle") or {}).get("slug"),
+        "stdout_sha256": hashlib.sha256(stdout_bytes).hexdigest(),
+        "stderr_sha256": hashlib.sha256(stderr_bytes).hexdigest(),
+        "recovery_evidence": recovery_records,
+        "output_absent": True,
+        "conversation_url_absent": True,
+        "followup_binding_mode": binding.get("binding_mode", "child-binding-receipt/v1"),
+        "followup_reservation_path": reservation_record.get("path"),
+        "followup_reservation_sha256": reservation_record.get("sha256"),
+        "parent_run_id": (reservation.get("parent") or {}).get("run_id"),
+        "parent_conversation_url": parent_url,
+        "round_key": reservation.get("round_key"),
+        "oracle_meta_sha256": hashlib.sha256(meta_raw).hexdigest(),
     }
 
 
@@ -2779,6 +3177,12 @@ def persist_direct_devspace_prompt_not_observed_recovery(state_path: Path) -> di
 
 def _user_confirmable_no_submission_evidence(state_path: Path) -> dict[str, Any] | None:
     """Return exact evidence for supported user-adjudicable Oracle runs."""
+    # A follow-up session necessarily stores its already-existing parent URL in
+    # immutable resume configuration. Its dedicated predicate permits only that
+    # exact parent URL while rejecting any child runtime/conversation binding.
+    followup = _followup_no_submission_evidence(state_path, require_recovery_evidence=True)
+    if followup is not None:
+        return followup
     if _settlement_logs_have_conversation_url(state_path):
         return None
     comprehensive = _comprehensive_no_submission_evidence(state_path)
@@ -2887,6 +3291,13 @@ def proven_user_confirmed_no_submission(state_path: Path) -> dict[str, Any] | No
             "source_mission_sha256", "transport_mission_path", "transport_mission_sha256",
             "oracle_version",
         )
+    elif current.get("settlement_eligibility") == "oracle-followup-pre-submit-ui/v1":
+        required = (
+            "settlement_eligibility", "transport", "followup_binding_mode",
+            "followup_reservation_path", "followup_reservation_sha256",
+            "parent_run_id", "parent_conversation_url", "round_key",
+            "oracle_meta_sha256",
+        )
     elif current.get("settlement_eligibility") == "oracle-pre-submit-host/v1":
         required = (
             "settlement_eligibility", "transport", "transport_mission_path",
@@ -2921,6 +3332,13 @@ def settle_user_confirmed_no_submission(
     Mechanical evidence remains fail-closed: it merely makes the run eligible.
     The exact confirmation token is the authority that resolves non-submission.
     """
+    state_owner = source_thread_id_from_state(load_state(state_path))
+    caller = current_source_thread_id()
+    if state_owner and caller != state_owner:
+        raise OracleStateError(
+            "FOREIGN_TASK_SESSION",
+            "the exact Oracle run belongs to a different Codex task; settlement is forbidden",
+        )
     if confirmation.strip().casefold() != USER_CONFIRMED_NO_SUBMISSION:
         raise OracleStateError(
             "NO_SUBMISSION_CONFIRMATION_REQUIRED",

@@ -1,5 +1,22 @@
 # 기술 변경 기록
 
+## 1.18.4 - archived Pro follow-up conversation restoration
+
+- A task-bound read-only Pro follow-up now detects the exact parent's durable
+  archive state. If the bound conversation was archived, Oracle 0.17.1 restores
+  only that exact `chatgpt.com/c/<id>` conversation before composer readiness
+  and re-archives it after the round completes.
+- Local and remote browser resume paths fail closed on URL drift, missing or
+  ambiguous restore controls, or an unverified final archive state. They never
+  create a replacement conversation.
+- Follow-up reservations now seal an append-only child binding before browser
+  launch, including task, parent, round, mission, exact conversation, and CDP
+  identity.
+- A pre-composer `Prompt textarea did not appear` child can use one prompt-free
+  exact harvest and explicit owner confirmation only after its parent/round
+  reservation, error metadata, empty runtime, artifacts, and exact parent URL
+  are revalidated. The consumed round key remains non-reusable.
+
 ## 1.18.3 - task-bound Pro 프롬프트 미관찰 교착 수리
 
 - `pro-devspace-readonly` 실행이 프롬프트 commit 확인 전에 실패해 conversation

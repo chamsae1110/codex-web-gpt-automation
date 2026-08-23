@@ -86,6 +86,8 @@ explicitly requested, qualified read-only DevSpace Pro design, advice, or
 review session, saves the durable result, returns it to the calling Codex task,
 and stops unless the user explicitly requests a bounded follow-up round in the
 same conversation. That round must use the internal runner `followup` command,
+which restores only an exact task-bound archived parent and re-archives it after
+the round; any URL drift or unverified transition fails closed without fallback.
 the exact terminal parent run directory, a project-contained UTF-8 mission,
 and a unique round key. Raw Oracle follow-up options remain blocked. Each round
 gets a new Oracle run/slug but must prove the unchanged ChatGPT conversation

@@ -93,6 +93,79 @@ def test_followup_dry_run_is_same_task_and_same_conversation_without_writes(tmp_
     assert result["argv_plan"][:2] == ["--followup", layout.slug]
     assert not Path(result["manifest_path"]).exists()
     assert not Path(result["round_receipt_path"]).exists()
+    assert result["round_receipt_plan"]["parent"]["archive_contract"]["was_archived"] is True
+    payload = runner._followup_manifest_payload(
+        runner.STATE.load_state(layout.state_path), mission_path=mission,
+        run_id="followup-archive-plan-0001",
+        archive_contract=result["round_receipt_plan"]["parent"]["archive_contract"],
+    )
+    assert payload["archive"] == "always"
+
+
+def test_followup_archived_parent_url_mismatch_fails_before_child_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, layout, mission = make_parent(tmp_path, monkeypatch)
+    meta_path = Path(os.environ["ORACLE_SESSION_ROOT"]) / layout.slug / "meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["browser"]["archive"]["conversationUrl"] = "https://chatgpt.com/c/other-conversation"
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+
+    with pytest.raises(runner.OracleRunError) as exc:
+        runner.followup_run(layout.run_dir, mission_path=mission, round_key="archive-mismatch", dry_run=True)
+
+    assert exc.value.code == "FOLLOWUP_PARENT_ARCHIVE_IDENTITY_INVALID"
+    assert not (layout.run_dir / "followup-rounds").exists()
+
+
+def test_followup_child_binding_is_append_only_and_exact(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    runner, layout, mission = make_parent(tmp_path, monkeypatch)
+    plan = runner.followup_run(
+        layout.run_dir, mission_path=mission, round_key="bound-round",
+        run_id="followup-bound-child-0001", dry_run=True,
+    )
+    reservation_path = Path(plan["round_receipt_path"])
+    reservation_path.parent.mkdir(parents=True)
+    reservation_path.write_text(
+        json.dumps(plan["round_receipt_plan"], ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    reservation_sha256 = hashlib.sha256(reservation_path.read_bytes()).hexdigest()
+    parent = runner.STATE.load_state(layout.state_path)
+    archive_contract = runner._followup_archive_contract(
+        parent, "https://chatgpt.com/c/exact-parent-conversation"
+    )
+    manifest_payload = runner._followup_manifest_payload(
+        parent, mission_path=mission, run_id="followup-bound-child-0001",
+        archive_contract=archive_contract,
+    )
+    manifest_payload["run_root"] = str(layout.run_dir.parent)
+    manifest = tmp_path / "child.json"
+    manifest.write_text(json.dumps(manifest_payload), encoding="utf-8")
+    config = runner.STATE.load_manifest(manifest, bind_runtime_task=True)
+    child = runner.STATE.create_layout(config, run_id=config.requested_run_id)
+    child.run_dir.mkdir()
+    expected_port = plan["round_receipt_plan"]["child"]["expected_cdp_port"]
+    child.state_path.write_text(json.dumps(runner.STATE.state_payload(
+        config, child, status="prepared", resolved_version="oracle 0.17.1", cdp_port=expected_port
+    )), encoding="utf-8")
+    binding = {
+        "schema": "codex.chatgpt.oracle-followup-binding/v1",
+        "source_thread_id": OWNER,
+        "round_key": "bound-round",
+        "reservation_path": str(reservation_path),
+        "reservation_sha256": reservation_sha256,
+        "parent": plan["round_receipt_plan"]["parent"],
+        "child": plan["round_receipt_plan"]["child"],
+        "conversation_url": "https://chatgpt.com/c/exact-parent-conversation",
+    }
+
+    recorded = runner.STATE.persist_followup_binding(child.state_path, binding)
+
+    assert runner.STATE.proven_followup_binding(child.state_path)["sha256"] == recorded["sha256"]
+    binding["round_key"] = "tampered"
+    with pytest.raises(runner.STATE.OracleStateError):
+        runner.STATE.persist_followup_binding(child.state_path, binding)
 
 
 @pytest.mark.parametrize("mutation, code", [
@@ -186,8 +259,15 @@ def test_followup_non_pre_submit_outcomes_always_seal_a_reverifiable_result_rece
         payload = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
         child_run = Path(payload["run_root"]) / payload["run_id"]
         child_run.mkdir(parents=True)
-        child_state = {"schema": "codex.chatgpt.oracle-run-state/v1", "run_id": payload["run_id"], "oracle": {}, **state_fields}
+        child_slug = runner.STATE.oracle_slug(Path(payload["project_root"]), payload["run_id"])
+        child_state = {"schema": "codex.chatgpt.oracle-run-state/v1", "run_id": payload["run_id"], "oracle": {"slug": child_slug}, **state_fields}
         (child_run / "state.json").write_text(json.dumps(child_state), encoding="utf-8")
+        child_meta = Path(os.environ["ORACLE_SESSION_ROOT"]) / child_slug / "meta.json"
+        child_meta.parent.mkdir(parents=True, exist_ok=True)
+        child_meta.write_text(json.dumps({"browser": {"archive": {
+            "mode": "always", "attempted": True, "archived": True,
+            "conversationUrl": "https://chatgpt.com/c/exact-parent-conversation",
+        }}}), encoding="utf-8")
         return {"ok": state_fields["task_outcome"] == "executed", "run_dir": str(child_run)}
 
     def fake_receipt(state_path):
@@ -238,3 +318,93 @@ def test_followup_missing_child_browser_receipt_is_uncertain_and_locks_only_the_
     child_state = json.loads((layout.run_dir.parent / "followup-absence-0001" / "state.json").read_text(encoding="utf-8"))
     assert child_state["status"] == "attention_required"
     assert (layout.run_dir / "followup-rounds" / "round-absence.result.json").is_file()
+
+
+def test_followup_textarea_absent_requires_harvest_and_owner_confirmation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, layout, mission = make_parent(tmp_path, monkeypatch)
+
+    def fake_execute(manifest_path, **kwargs):
+        payload = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+        config = runner.STATE.load_manifest(Path(manifest_path), bind_runtime_task=True)
+        child = runner.STATE.create_layout(config, run_id=config.requested_run_id)
+        child.run_dir.mkdir()
+        child_mission = child.run_dir / "mission.md"
+        child_mission.write_bytes(Path(payload["mission_path"]).read_bytes())
+        text = (
+            f"🧿 oracle 0.17.1 — test\nSession: {child.slug}\nMode: browser foreground\n"
+            "Models: 1\nDetach: no\n"
+            f"Reattach: oracle session {child.slug}\n"
+            "Launching browser mode (target=GPT-5.6 Sol; requested=gpt-5.6-sol) with ~1 tokens.\n"
+            "This run can take up to an hour (usually ~10 minutes).\n"
+            "ERROR: Prompt textarea did not appear before timeout\n"
+            "User error (browser-automation): Prompt textarea did not appear before timeout\n"
+        )
+        child.stdout_path.write_text(text, encoding="utf-8")
+        child.stderr_path.write_bytes(b"")
+        child.transcript_path.write_text(text, encoding="utf-8")
+        state = runner.STATE.state_payload(
+            config, child, status="attention_required", resolved_version="oracle 0.17.1",
+            exit_code=1, cdp_port=kwargs["_cdp_port"],
+        )
+        state.update({
+            "session_authority": "submitted_unknown", "transport_status": "failed",
+            "task_outcome": "pending", "terminal_harvested": False,
+        })
+        runner.STATE.write_json_atomic(child.state_path, state)
+        runner.STATE.persist_followup_binding(child.state_path, kwargs["_followup_binding"])
+        runner.STATE.persist_ownership_receipt(child.state_path, oracle_process_pid=100)
+        meta_path = Path(os.environ["ORACLE_SESSION_ROOT"]) / child.slug / "meta.json"
+        meta_path.parent.mkdir(parents=True, exist_ok=True)
+        parent_url = kwargs["_followup_binding"]["conversation_url"]
+        meta_path.write_text(json.dumps({
+            "id": child.slug, "status": "error", "completedAt": "2026-08-23T00:00:00Z", "mode": "browser", "model": "gpt-5.6-sol",
+            "browser": {"config": {"resumeConversationUrl": parent_url}},
+            "options": {"browserConfig": {"resumeConversationUrl": parent_url}},
+            "error": {"category": "browser-automation", "message": "Prompt textarea did not appear before timeout", "details": {"stage": "execute-browser"}},
+        }), encoding="utf-8")
+        return {"ok": False, "run_dir": str(child.run_dir)}
+
+    monkeypatch.setattr(runner, "execute_run", fake_execute)
+    with pytest.raises(runner.OracleRunError):
+        runner.followup_run(
+            layout.run_dir, mission_path=mission, round_key="textarea-absent",
+            run_id="followup-b2d1aed7ba6145db8f2e56c111d4a856",
+        )
+    child_state = layout.run_dir.parent / "followup-b2d1aed7ba6145db8f2e56c111d4a856" / "state.json"
+    assert runner.STATE.bounded_task_owned_prompt_timeout_harvest_evidence(child_state) is not None
+    assert runner.STATE._user_confirmable_no_submission_evidence(child_state) is None
+    child_slug = runner.STATE.load_state(child_state)["oracle"]["slug"]
+    (child_state.parent / "recovery-harvest-stdout.log").write_text(
+        f'No live ChatGPT tab matched session "{child_slug}".\n', encoding="utf-8"
+    )
+    (child_state.parent / "recovery-harvest-stderr.log").write_text(
+        "Cannot recover conversation: session metadata has no recoverable ChatGPT conversation URL\n",
+        encoding="utf-8",
+    )
+    assert runner.STATE._user_confirmable_no_submission_evidence(child_state) is not None
+    monkeypatch.setenv("CODEX_THREAD_ID", FOREIGN)
+    with pytest.raises(runner.STATE.OracleStateError, match="different Codex task"):
+        runner.STATE.settle_user_confirmed_no_submission(
+            child_state, confirmation="user-confirmed-no-submission", reason="foreign must fail",
+        )
+    monkeypatch.setenv("CODEX_THREAD_ID", OWNER)
+    settled = runner.STATE.settle_user_confirmed_no_submission(
+        child_state, confirmation="user-confirmed-no-submission", reason="exact textarea absent",
+    )
+    assert settled["transport_status"] == "not_submitted_user_confirmed"
+    assert runner.STATE.proven_user_confirmed_no_submission(child_state) is not None
+    with pytest.raises(runner.OracleRunError) as duplicate:
+        runner.followup_run(
+            layout.run_dir, mission_path=mission, round_key="textarea-absent", dry_run=True,
+        )
+    assert duplicate.value.code == "FOLLOWUP_ROUND_DUPLICATE"
+    tampered = runner.STATE.load_state(child_state)
+    tampered["followup_binding"]["sha256"] = "b" * 64
+    runner.STATE.write_json_atomic(child_state, tampered)
+    assert runner.STATE.proven_user_confirmed_no_submission(child_state) is None
+    assert runner.STATE._legacy_followup_reservation_for_child(child_state) is not None
+    assert runner.STATE._followup_no_submission_evidence(
+        child_state, require_recovery_evidence=True
+    ) is None

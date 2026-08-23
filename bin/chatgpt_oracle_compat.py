@@ -79,6 +79,21 @@ PATCHES_0161 = {
 }
 
 PATCHES = {
+    "dist/src/cli/followup.js": {
+        "patch": "oracle-followup.archived-parent.patch",
+        "pristine": "d6082bf55cd997f07c9718dfe7ca2ba54520c2e414fbd17f21b9225b4a9b57b3",
+        "patched": "0545cd02472c59609ee83c531361ca82ebd3f98d3b5afcf50ff0f035d496f952",
+    },
+    "dist/src/browser/actions/archiveConversation.js": {
+        "patch": "archiveConversation.unarchive-followup.patch",
+        "pristine": "88ab449b818bfe4bb8abe6824647feedcc617adc8af10b055278bd134fe21f82",
+        "patched": "edd00f89b0974696ccee8e0d844d7992871f34074cea7481619957937b391221",
+    },
+    "dist/src/browser/index.js": {
+        "patch": "browserIndex.unarchive-followup.patch",
+        "pristine": "335f29c8864399cf2795333e4da8b87bc1b3591c30862eb9e82ea12cd3b37d11",
+        "patched": "000bdacec15e0d933e95bdd398bf1e758f4eb979f38e0f506665b5462efab73e",
+    },
     "dist/src/cli/browserTabs.js": {
         "patch": "browserTabs.live-terminal-timeout.patch",
         "pristine": "05256692ffa9b35415346963adde5ff42aeacd78ce46dd6f484496678f5d0281",
