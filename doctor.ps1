@@ -83,9 +83,8 @@ if (!$Node -or !$Npx) {
   try {
     $NodeVersion = (& $Node.Source --version).Trim().TrimStart('v')
     $NodeMajor = [int]($NodeVersion.Split('.')[0])
-    $NodeMinor = [int]($NodeVersion.Split('.')[1])
-    if ($NodeMajor -lt 22 -or $NodeMajor -ge 27 -or ($NodeMajor -eq 22 -and $NodeMinor -lt 19)) {
-      $Issues += @{code='DEVSPACE_NODE_VERSION_UNSUPPORTED'; actual=$NodeVersion; required='>=22.19 <27'}
+    if ($NodeMajor -lt 24 -or $NodeMajor -ge 27) {
+      $Issues += @{code='ORACLE_DEVSPACE_NODE_VERSION_UNSUPPORTED'; actual=$NodeVersion; required='>=24 <27'}
     }
   } catch {
     $Issues += @{code='NODE_VERSION_UNREADABLE'; detail=$_.Exception.Message}
@@ -94,7 +93,7 @@ if (!$Node -or !$Npx) {
 if (!$GitBash) {
   $Issues += @{code='DEVSPACE_GIT_BASH_MISSING'; detail='Windows DevSpace requires Git Bash'}
 }
-$Commands += 'npx -y @steipete/oracle --version'
+$Commands += 'npx -y @steipete/oracle@0.18.0 --version'
 $Commands += 'python .\skills\chatgpt-workspace-setup\scripts\devspace_tailscale_setup.py doctor --root C:\project --hostname your-device.your-tailnet.ts.net'
 
 $Python = Get-Command python.exe,python -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -170,8 +169,8 @@ if (($Agbrowse -or $UpdateReceipt) -and (!$Python -or !(Test-Path -LiteralPath $
   warnings = $Warnings
   commands = $Commands
   agbrowse = @{selected_version=$SelectedVersion; contract=$Contract; update_receipt=$UpdateReceiptPath}
-  oracle = @{package='@steipete/oracle';tested_version='0.17.1';resolution='npx at explicit run time'}
-  devspace = @{package='@waishnav/devspace';tested_version='1.0.4';setup='explicit setup skill only'}
+  oracle = @{package='@steipete/oracle';current_version='0.18.0';last_known_good='0.17.1';policy='newest-validated-stable';resolution='npx at explicit run time'}
+  devspace = @{package='@waishnav/devspace';current_version='1.0.7';last_known_good='1.0.4';policy='newest-validated-stable';setup='explicit setup skill only'}
   local_multi_gpt = @{enabled=$LocalMultiGptEnabled;doctor=$LocalMultiGptDoctor}
   codexpro = @{
     installation = 'external'

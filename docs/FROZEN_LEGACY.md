@@ -63,11 +63,11 @@
 | `bin/chatgpt_oracle_state.py` | 프로젝트 잠금·신원·상태 장부 |
 | `bin/chatgpt_oracle_comprehensive.py` | 종합모드 단계 실행기 |
 | `bin/chatgpt_oracle_multi.py` | 진짜 Web Multi-GPT wave 실행 |
-| `bin/chatgpt_oracle_compat.py` | 기본 Oracle 0.17.1 해시 검증과 명시적 WebJjonku Linux 0.18.0 범위 제한 호환 패치 |
+| `bin/chatgpt_oracle_compat.py` | 기본 Oracle 0.18.0 해시 검증과 Oracle 0.17.1 롤백 LKG/과거 실행 복구 계약 |
 | `bin/chatgpt_oracle_profiles.py` | lane별 throwaway 프로필 |
 | `bin/chatgpt_oracle_diagnose.py` | 실패 서명 분류 |
 | `bin/chatgpt_oracle_incident.py` | 단일 수리 소유자 인계 패킷 |
-| `bin/chatgpt_devspace_compat.py` | DevSpace 1.0.4 호환 패치 |
+| `bin/chatgpt_devspace_compat.py` | DevSpace 1.0.7 current 호환 패치와 1.0.4 롤백 LKG |
 
 ## 레거시 스텁 문서
 

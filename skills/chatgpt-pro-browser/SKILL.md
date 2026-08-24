@@ -146,7 +146,7 @@ Recover only the stored exact Oracle run directory and slug. `live` and
 `harvest` may observe or collect that same session; they never restart,
 resubmit, change route/model/effort, or create a replacement conversation.
 
-When Oracle 0.17.1 reports the exact prompt-not-observed timeout, first run
+When the exact recorded Oracle runtime reports the prompt-not-observed timeout, first run
 exact-slug harvest. No live tab plus no recoverable conversation URL remains
 submission-uncertain and needs explicit user confirmation before the
 hash-bound `settle-no-submission` path can release a standalone qualified-Pro
@@ -157,7 +157,7 @@ ordinary trailing browser error may be treated as proof.
 If the task-bound failure occurred before a conversation-bound browser receipt
 could be sealed, preview the same exact slug with `recover --action harvest
 --dry-run`. The preview may use `bounded-prompt-timeout-harvest` only when the
-ownership receipt, qualified-Pro profile, Oracle 0.17.1 zero-turn commit probe,
+ownership receipt, qualified-Pro profile, the exact recorded Oracle version's zero-turn commit probe,
 root composer, dynamic CDP port, isolated profile/target, and absent output/URL
 all match. Remove only `--dry-run` for that one prompt-free harvest. `live`, a
 foreign task, or any contradictory identity stays blocked. The harvest still
@@ -167,7 +167,7 @@ run copy and task ownership receipt bind the same original mission SHA-256;
 legacy-unbound runs do not receive this compatibility path.
 
 The same user-confirmed, fail-closed settlement is available to a
-`pro-attachment` run only when Oracle 0.17.1 reports the exact attachment-upload
+`pro-attachment` run only when the exact recorded Oracle runtime reports the attachment-upload
 timeout before prompt submission. It binds every attachment path, size, and
 SHA-256; the source and transport mission copies; Oracle locator/version; exact
 stdout/transcript and recovery bytes; and the absence of output and a

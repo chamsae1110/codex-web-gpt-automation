@@ -69,7 +69,7 @@ SAFE_ORACLE_VALUE_OPTIONS = {
     "--heartbeat",
     "--timeout",
     "--zombie-timeout",
-    # Oracle 0.17.1 is compatibility-patched so this is one browser observation
+    # The promoted Oracle and rollback LKG are patched so this is one browser observation
     # window, including fallback capture.  Reaching it is not terminal evidence:
     # the harness keeps the exact session binding and continues live recovery.
     "--browser-timeout",
@@ -165,7 +165,10 @@ ORACLE_MODEL_SELECTOR_BUTTON_PRE_SUBMIT_ERROR = (
     "selected in the browser, retry with --browser-model-strategy current; otherwise retry "
     "with --browser-model-strategy ignore to skip model selection."
 )
-ORACLE_STANDALONE_PRO_NO_SUBMISSION_VERSIONS = {"0.17.1"}
+ORACLE_STANDALONE_PRO_NO_SUBMISSION_VERSIONS = {"0.17.1", "0.18.0"}
+ORACLE_CURRENT_VERSION = "0.18.0"
+ORACLE_LKG_VERSION = "0.17.1"
+ORACLE_COMPATIBLE_VERSIONS = {ORACLE_CURRENT_VERSION, ORACLE_LKG_VERSION}
 USER_CONFIRMED_NO_SUBMISSION = "user-confirmed-no-submission"
 DEVSPACE_SERVICE_RESTART_REQUIRED_ERROR = (
     "version resolution failed: DEVSPACE_SERVICE_RESTART_REQUIRED: "
@@ -213,8 +216,8 @@ ORACLE_THINKING_TIME_PRE_SUBMIT_RE = re.compile(
 # Upstream Oracle copies a signed-in browser profile with rsync.  On POSIX
 # hosts without rsync the copy fails after launch, so feasibility is decided
 # while loading the manifest instead of crashing mid-launch.  The pinned
-# Oracle 0.17.1 natively uses Node's recursive copy on Windows, so `nt` needs
-# no external dependency.
+# The validated Oracle current/LKG releases use Node's recursive copy on
+# Windows, so `nt` needs no external dependency.
 # Checking PATH there would drop per-run profile isolation and block every
 # parallel Web Multi lane, which is the exact failure this guard must avoid.
 PROFILE_COPY_DEPENDENCY = "rsync"
@@ -373,7 +376,7 @@ def oracle_state_root() -> Path:
 
 def default_oracle_command(platform_name: str | None = None) -> tuple[str, ...]:
     platform = os.name if platform_name is None else platform_name
-    return ("npx.cmd" if platform == "nt" else "npx", "-y", "@steipete/oracle@0.17.1")
+    return ("npx.cmd" if platform == "nt" else "npx", "-y", f"@steipete/oracle@{ORACLE_CURRENT_VERSION}")
 
 
 def validate_oracle_command(values: Any) -> tuple[str, ...]:
@@ -383,15 +386,14 @@ def validate_oracle_command(values: Any) -> tuple[str, ...]:
     executable = Path(command[0]).name.casefold()
     if executable in {"oracle", "oracle.cmd", "oracle.exe"} and len(command) == 1:
         return command
-    if executable in {"npx", "npx.cmd", "npx.exe"} and command[1:] in {
-        ("-y", "@steipete/oracle@0.17.1"),
-        ("--yes", "@steipete/oracle@0.17.1"),
-        ("@steipete/oracle@0.17.1",),
-    }:
-        return command
+    if executable in {"npx", "npx.cmd", "npx.exe"} and command[1:]:
+        package = command[-1]
+        version = package.rsplit("@", 1)[-1] if package.startswith("@steipete/oracle@") else ""
+        if version in ORACLE_COMPATIBLE_VERSIONS and command[1:-1] in {(), ("-y",), ("--yes",)}:
+            return command
     raise OracleStateError(
         "ORACLE_COMMAND_FORBIDDEN",
-        "oracle_command must resolve directly to Oracle or npx @steipete/oracle@0.17.1",
+        f"oracle_command must resolve directly to Oracle or pinned current/LKG Oracle {sorted(ORACLE_COMPATIBLE_VERSIONS)}",
         {"command": command_for_display(command)},
     )
 
@@ -2477,7 +2479,7 @@ def _standalone_pro_no_submission_evidence(
     """Return bounded evidence for user adjudication of one qualified Pro run.
 
     Prompt-observation timeouts remain eligible through their exact transcript.
-    A model-selector-button failure additionally requires Oracle 0.17.1's exact
+    A legacy model-selector-button failure additionally requires Oracle 0.17.1's exact
     session ledger to prove the browser never left the ChatGPT home composer and
     ``promptSubmitted`` stayed false.
     """
@@ -4646,6 +4648,10 @@ def proven_pre_submit_host_failure(state_path: Path) -> dict[str, Any] | None:
             }
         )
         command = tuple(str(item) for item in (oracle.get("command") or []))
+        try:
+            validated_command = validate_oracle_command(list(command))
+        except OracleStateError:
+            validated_command = ()
         locator = str(oracle.get("session_locator") or oracle.get("slug") or "").strip()
         if (
             authority != "pre_submit"
@@ -4655,7 +4661,7 @@ def proven_pre_submit_host_failure(state_path: Path) -> dict[str, Any] | None:
             or str(state.get("mode") or "") != "browser"
             or str(state.get("task_outcome") or "") != "pending"
             or stdout_bytes
-            or command != default_oracle_command(platform_name="nt" if command and command[0].casefold().endswith(".cmd") else None)
+            or validated_command != command
             or not locator
         ):
             return None

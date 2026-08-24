@@ -93,7 +93,7 @@ def version_timeout_runner(command, **kwargs):
     raise subprocess.TimeoutExpired(command, kwargs.get("timeout", 30))
 
 
-def test_version_resolution_allows_a_bounded_slow_valid_oracle_0161() -> None:
+def test_version_resolution_allows_a_bounded_slow_valid_oracle_lkg() -> None:
     runner = load_runner()
     captured = {}
 
@@ -131,13 +131,25 @@ def test_version_resolution_recovers_from_npx_failure_with_exact_cached_package(
     assert len(calls) == 1
 
 
+def test_version_resolution_recovers_current_oracle_from_exact_cached_package() -> None:
+    runner = load_runner()
+    resolved = runner.resolve_oracle_version(
+        ["npx.cmd", "-y", "@steipete/oracle@0.18.0"],
+        run_factory=lambda command, **kwargs: subprocess.CompletedProcess(
+            command, 1, stdout="", stderr="network unavailable"
+        ),
+        cache_resolver=lambda command: "oracle 0.18.0",
+    )
+    assert resolved == "oracle 0.18.0"
+
+
 def test_default_oracle_command_is_pinned_to_the_hash_validated_version() -> None:
     runner = load_runner()
 
     assert runner.STATE.default_oracle_command(platform_name="nt") == (
-        "npx.cmd", "-y", "@steipete/oracle@0.17.1",
+        "npx.cmd", "-y", "@steipete/oracle@0.18.0",
     )
-    with pytest.raises(runner.STATE.OracleStateError, match="0.17.1"):
+    with pytest.raises(runner.STATE.OracleStateError, match="0.17.1.*0.18.0|0.18.0.*0.17.1"):
         runner.STATE.validate_oracle_command(["npx.cmd", "-y", "@steipete/oracle@0.17.0"])
 
 
@@ -1261,10 +1273,10 @@ def test_pro_attachment_limit_is_exactly_one_mib_and_blocks_before_oracle_launch
     runner = load_runner()
     packet = tmp_path / "packet.zip"
     exact_manifest = pro_manifest(tmp_path)
-    packet.write_bytes(b"x" * runner.ORACLE_0161_ATTACHMENT_MAX_BYTES)
+    packet.write_bytes(b"x" * runner.ORACLE_ATTACHMENT_MAX_BYTES)
     assert execute_run(runner, exact_manifest, dry_run=True)["ok"] is True
 
-    packet.write_bytes(b"x" * (runner.ORACLE_0161_ATTACHMENT_MAX_BYTES + 1))
+    packet.write_bytes(b"x" * (runner.ORACLE_ATTACHMENT_MAX_BYTES + 1))
     calls: list[bool] = []
     with pytest.raises(runner.OracleRunError) as exc:
         execute_run(

@@ -1,5 +1,22 @@
 # 기술 변경 기록
 
+## 1.20.0 - Follow validated upstream stable runtimes
+
+- Oracle `0.18.0` and DevSpace `1.0.7` are now the defaults for new work after
+  published-integrity, exact-patch, syntax, compatibility, and cross-platform
+  validation. Oracle `0.17.1` and DevSpace `1.0.4` remain rollback LKG and exact
+  historical-recovery contracts rather than continuing as stale defaults.
+- A strict machine-readable runtime registry and six-hour read-only GitHub
+  drift watcher compare current versions with official npm `latest`. The
+  watcher maintains one issue and cannot promote, install, restart services,
+  open ChatGPT, or modify a project.
+- Current Oracle keeps task-scoped ownership, no-duplicate/prompt-not-observed
+  fail-closed behavior, dynamic CDP binding, saved-output recovery, and bounded
+  terminal-marker detection while inheriting upstream UI/model/cookie fixes.
+- Current DevSpace keeps the existing allowed-root, OAuth replay, write/delete,
+  large-read, and workspace-context safety canaries while inheriting upstream
+  restart-safe conversation/workspace reuse and actionable workspace errors.
+
 ## 1.19.7 - settle direct DevSpace model-option misses safely
 
 - Ordinary `devspace` runs that fail before submission because Oracle 0.17.1

@@ -1,0 +1,53 @@
+name: upstream-runtime-watch
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Query official npm latest tags without mutating local state
+        run: >-
+          python scripts/check_upstream_runtime_policy.py
+          --policy upstream-runtime-policy.json
+          --output upstream-runtime-report.json
+          --allow-drift
+      - name: Create or update the single stable drift issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          title="$(python -c 'import json; print(json.load(open("upstream-runtime-policy.json", encoding="utf-8"))["promotion"]["drift_issue_title"])')"
+          drift_count="$(python -c 'import json; print(len(json.load(open("upstream-runtime-report.json", encoding="utf-8"))["drifted"]))')"
+          issue_number="$(gh issue list --repo "${GITHUB_REPOSITORY}" --state open --search "\"${title}\" in:title" --json number --jq '.[0].number' 2>/dev/null || true)"
+          if [ "${drift_count}" -gt 0 ]; then
+            python - <<'PY'
+          import json
+          report = json.load(open("upstream-runtime-report.json", encoding="utf-8"))
+          lines = ["The official npm `latest` tags differ from the validated runtime policy.", "", "This report is advisory only: it did not promote, install, patch, or restart anything.", "", "| Runtime | Validated current | npm latest |", "| --- | --- | --- |"]
+          for name in report["drifted"]:
+              item = report["runtimes"][name]
+              lines.append(f"| {name} | {item['current']['version']} | {item['latest']['version']} |")
+          lines += ["", "Validate archive integrity, compatibility patches, deterministic no-submit canaries, and CI before updating `upstream-runtime-policy.json` and the installed runtime."]
+          open("upstream-runtime-issue.md", "w", encoding="utf-8").write("\n".join(lines) + "\n")
+          PY
+            if [ -n "${issue_number}" ]; then
+              gh issue edit "${issue_number}" --repo "${GITHUB_REPOSITORY}" --title "${title}" --body-file upstream-runtime-issue.md
+            else
+              gh issue create --repo "${GITHUB_REPOSITORY}" --title "${title}" --body-file upstream-runtime-issue.md
+            fi
+          elif [ -n "${issue_number}" ]; then
+            gh issue close "${issue_number}" --repo "${GITHUB_REPOSITORY}" --comment "Official npm latest tags match the validated runtime policy again. No runtime was changed by this watcher."
+          fi

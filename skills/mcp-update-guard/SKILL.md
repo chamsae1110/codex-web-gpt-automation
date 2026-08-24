@@ -40,6 +40,28 @@ preserve unrelated local customizations.
    `codex-web-gpt-automation` source, install the verified bytes, commit with a
    descriptive message, push public-safe changes, and check CI.
 
+## Upstream runtime freshness
+
+Oracle and DevSpace follow the checked-in `upstream-runtime-policy.json`
+`newest-validated-stable` contract. Do not keep an older runtime merely because
+local patches were originally written for it.
+
+- Treat each official npm `latest` change as an immediate candidate and let the
+  read-only scheduled watcher report drift within six hours. The watcher may
+  create or update one stable GitHub issue, but it never installs, promotes,
+  patches, restarts a service, opens ChatGPT, or changes a project.
+- Promote promptly after verifying the published archive integrity and exact
+  package tree, rebasing every required local patch with pristine/patched
+  hashes, running syntax and focused compatibility checks, proving an Oracle
+  no-submission canary and DevSpace health/root/large-read canaries, and passing
+  Windows and macOS CI on the release commit.
+- Make the promoted version the explicit default for new work. Retain the prior
+  verified version as rollback LKG and exact historical-recovery authority;
+  never reinterpret persisted runs or execute a moving unpinned `latest` tag.
+- Finalize source and installed bytes before the single required managed
+  DevSpace restart. If a foreign live Oracle run could be disrupted, finish the
+  GitHub/source gates first and wait for a safe installation window.
+
 ## Release completion gate
 
 A version bump is only release metadata preparation. It is never evidence that

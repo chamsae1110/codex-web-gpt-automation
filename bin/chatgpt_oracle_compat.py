@@ -13,10 +13,12 @@ import tempfile
 from pathlib import Path, PurePosixPath
 from typing import Any, Sequence
 
-SUPPORTED_VERSION = "0.17.1"
+SUPPORTED_VERSION = "0.18.0"
+LKG_VERSION = "0.17.1"
 CREATE_NO_WINDOW = 0x08000000
-# Retained only to document the old package lineage.  New work validates and
-# patches the published 0.17.1 package below; 0.16.1 is not accepted anymore.
+# Retained only to document the old pre-LKG package lineage. New work uses
+# PATCHES for 0.18.0; exact historical recovery uses LKG_PATCHES for 0.17.1.
+# Oracle 0.16.1 is not accepted anymore.
 PATCHES_0161 = {
     "dist/src/cli/browserTabs.js": {
         "patch": "browserTabs.patch",
@@ -78,7 +80,7 @@ PATCHES_0161 = {
     },
 }
 
-PATCHES = {
+LKG_PATCHES = {
     "dist/src/browser/actions/assistantResponse.js": {
         "patch": "assistantResponse.terminal-marker-fallback.patch",
         "pristine": "0bbc106f79c6abf253690c83794a2dab1b432378f57e16542d15cfcd5365e16d",
@@ -208,10 +210,61 @@ PATCHES = {
     },
 }
 
-# Keep 0.17.1 as the only version accepted by the default Windows/macOS
-# comprehensive workflow. WebJjonku's Linux Oracle host uses upstream 0.18.0
-# for its response-observer fixes and must opt into this narrower contract by
-# name; it does not inherit the broader 0.17.1 local compatibility patches.
+# The current contract follows upstream stable 0.18.0 while retaining 0.17.1
+# as the last-known-good rollback and exact legacy-recovery contract. Patches
+# reused from 0.17.1 are byte-gated against the published 0.18.0 payload; the
+# changed follow-up port/timeout and Windows copy-profile hunks are rebased in
+# the 0.18.0 directory.
+PATCHES = {
+    "dist/bin/oracle-cli.js": {
+        "patch": "oracle-cli.followup-port-and-timeout.patch",
+        "pristine": "6909a8fd25ff7e5459123637e90a79d72dc5733cc2af0c14220018cb663b1825",
+        "patched": "9a39768943d1b0d5c737d172b1a8a0815c80d002fe73a18b0d84af1bfc213b43",
+    },
+    "dist/src/cli/browserConfig.js": {
+        "patch": "browserConfig.followup-port-binding.patch",
+        "pristine": "52ddb9d0289849301f83863ed0b5209b8d9f071358e7784fcf4a5c8724b1c147",
+        "patched": "67c1230eb37cbc4d638814bab280402081b2d5baa239ed728e32c5140c8503b1",
+    },
+    "dist/src/browser/config.js": {
+        "patch": "browserConfig.copy-profile-windows.patch",
+        "pristine": "956eff0b47da8bc35abb940b37c7f55e64177733cc668931daf53fb444e8f9cb",
+        "patched": "3c24dbb5fb78e56a069103bbdb6dfe0d4f394215d9d1223a6f0b541c867b4b4d",
+    },
+    "dist/src/browser/actions/assistantResponse.js": {
+        "patch": "../0.17.1/assistantResponse.terminal-marker-fallback.patch",
+        "pristine": "93d2465ed7dce43d8093a91bada7656bc9ba7ba3729d2fcc43229fa8aa6e36de",
+        "patched": "7a4f3f4f3daa04d4db9c3d189f6da82827f5e1e256f0325761d5aa379e839400",
+    },
+    "dist/src/browser/actions/thinkingStatus.js": {
+        "patch": "../0.17.1/thinkingStatus.undetected-warning.patch",
+        "pristine": "0297df6855ce653ada2ec8509bba71651dd3ac9b78041ecb4343c765fd47e56c",
+        "patched": "707bc1b582ce36c5cb816c26490d8e204238b3948f794ec4715f69a27175b094",
+    },
+    "dist/src/browser/actions/navigation.js": {
+        "patch": "../0.17.1/navigation.resumed-hydration-recheck.patch",
+        "pristine": "e1383e1566134173c0799a2af82ba2feeb971d1f2a3df81dc61c6827aa6e3adb",
+        "patched": "ca039139c996acf1a22629bbcb398dff7952ce12c267de9334e1c01236c0aa8c",
+    },
+    "dist/src/cli/browserTabs.js": {
+        "patch": "../0.17.1/browserTabs.live-terminal-timeout.patch",
+        "pristine": "05256692ffa9b35415346963adde5ff42aeacd78ce46dd6f484496678f5d0281",
+        "patched": "9329e259f030ecb4a935fb9e368bf55074bf0afe7ed5e5a0c6206a5f2bbacee4",
+    },
+    "dist/src/browser/recoverConversation.js": {
+        "patch": "../0.17.1/recoverConversation.copy-profile.patch",
+        "pristine": "d7e39d21acf07e6d227e761944519e11cd8d93930629cc87555d7de75a42d1ca",
+        "patched": "31a17e1a2c3dccddf09db42b290fad517638b88c9a659e9fb5dba7307c588a61",
+    },
+    "dist/src/browser/profileCopy.js": {
+        "patch": "../0.17.1/profileCopy.windows-native.patch",
+        "pristine": "06c692861f8a4c1a8769f957b9c582426a13bf4972262c47c1f24a87b239064f",
+        "patched": "71459a25b7c46f57bae6f23a5498301f6f6a1d39addf0c1cd4eee1d99b03372c",
+    },
+}
+
+# WebJjonku remains a narrower archive-verified deployment profile. The normal
+# current path above is used by Windows/macOS and ordinary comprehensive runs.
 SCOPED_PATCHES = {
     "webjjonku-linux": {
         "0.18.0": {
@@ -230,6 +283,7 @@ SCOPED_PACKAGE_INTEGRITIES = {
     },
 }
 SCOPED_NODE_MAJOR_RANGES = {"webjjonku-linux": (24, 27)}
+CURRENT_NODE_MAJOR_RANGE = (24, 27)
 SCOPED_ARCHIVE_MAX_FILES = 10_000
 SCOPED_ARCHIVE_MAX_BYTES = 100 * 1024 * 1024
 WINDOWS_RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
@@ -280,14 +334,13 @@ def _safe_archive_relative(name: str) -> str | None:
     return PurePosixPath(*path.parts[1:]).as_posix()
 
 
-def _verify_scoped_node_runtime(profile: str) -> None:
-    minimum, maximum = SCOPED_NODE_MAJOR_RANGES[profile]
+def _verify_node_runtime(minimum: int, maximum: int, *, contract: str) -> None:
     node = shutil.which("node")
     if not node:
         raise OracleCompatError(
             "ORACLE_NODE_VERSION_UNSUPPORTED",
-            "Scoped Oracle compatibility requires its validated Node.js runtime",
-            {"profile": profile, "required": f">={minimum} <{maximum}"},
+            "Oracle compatibility requires its validated Node.js runtime",
+            {"contract": contract, "required": f">={minimum} <{maximum}"},
         )
     resolved = subprocess.run([node, "--version"], capture_output=True, text=True, check=False)
     value = resolved.stdout.strip().removeprefix("v")
@@ -298,9 +351,14 @@ def _verify_scoped_node_runtime(profile: str) -> None:
     if resolved.returncode != 0 or not minimum <= major < maximum:
         raise OracleCompatError(
             "ORACLE_NODE_VERSION_UNSUPPORTED",
-            "Scoped Oracle compatibility requires its validated Node.js runtime",
-            {"profile": profile, "resolved": value or None, "required": f">={minimum} <{maximum}"},
+            "Oracle compatibility requires its validated Node.js runtime",
+            {"contract": contract, "resolved": value or None, "required": f">={minimum} <{maximum}"},
         )
+
+
+def _verify_scoped_node_runtime(profile: str) -> None:
+    minimum, maximum = SCOPED_NODE_MAJOR_RANGES[profile]
+    _verify_node_runtime(minimum, maximum, contract=f"scoped:{profile}")
 
 
 def _scan_installed_package_tree(root: Path) -> dict[str, Path]:
@@ -729,18 +787,22 @@ def ensure_oracle_compatibility(
 ) -> dict[str, Any]:
     """Apply only the default comprehensive-workflow Oracle contract."""
     version = resolved_version.strip().removeprefix("oracle ").strip()
-    if version != SUPPORTED_VERSION:
+    if version not in {SUPPORTED_VERSION, LKG_VERSION}:
         raise OracleCompatError(
             "ORACLE_VERSION_UNVALIDATED",
-            "Oracle compatibility is validated only for the default tested version",
-            {"resolved": resolved_version, "supported": SUPPORTED_VERSION},
+            "Oracle compatibility is validated only for current and rollback-LKG versions",
+            {"resolved": resolved_version, "supported": [SUPPORTED_VERSION, LKG_VERSION]},
         )
+    if version == SUPPORTED_VERSION:
+        minimum, maximum = CURRENT_NODE_MAJOR_RANGE
+        _verify_node_runtime(minimum, maximum, contract=f"current:{version}")
+    contracts = PATCHES if version == SUPPORTED_VERSION else LKG_PATCHES
     return _apply_oracle_compatibility(
         version,
         package_root=package_root,
         backup_root=backup_root,
-        contracts=PATCHES,
-        patches=patch_root(),
+        contracts=contracts,
+        patches=patch_root(version),
     )
 
 

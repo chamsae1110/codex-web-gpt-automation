@@ -153,26 +153,26 @@ def build_oracle_argv(
 
 _BROWSER_TIMEOUT_RE = re.compile(r"^(?P<value>[0-9]+(?:\.[0-9]+)?)(?P<unit>ms|s|m|h)?$", re.IGNORECASE)
 MAX_BROWSER_OBSERVER_SECONDS = 7 * 24 * 60 * 60
-# Oracle 0.17.1 rejects an individual browser attachment above this upstream
-# input limit before it can create a ChatGPT conversation.  Keep this narrow:
-# context-packet construction may retain its broader configured envelope.
-ORACLE_0161_ATTACHMENT_MAX_BYTES = 1024 * 1024
+# Keep attachment-only transport below the browser data-transfer ceiling that
+# is validated for both the promoted Oracle release and the rollback LKG.
+# Context-packet construction may retain its broader configured envelope.
+ORACLE_ATTACHMENT_MAX_BYTES = 1024 * 1024
 
 
 def validate_oracle_attachment_sizes(config) -> None:
-    """Reject Pro attachments Oracle 0.17.1 cannot submit before any launch."""
+    """Reject attachments outside the validated Oracle browser envelope."""
     if not STATE.is_attachment_transport(config.transport):
         return
     oversized = [
-        {"path": str(path), "size_bytes": path.stat().st_size, "limit_bytes": ORACLE_0161_ATTACHMENT_MAX_BYTES}
+        {"path": str(path), "size_bytes": path.stat().st_size, "limit_bytes": ORACLE_ATTACHMENT_MAX_BYTES}
         for path in config.attachments
-        if path.stat().st_size > ORACLE_0161_ATTACHMENT_MAX_BYTES
+        if path.stat().st_size > ORACLE_ATTACHMENT_MAX_BYTES
     ]
     if oversized:
         raise OracleRunError(
             "ORACLE_ATTACHMENT_SIZE_PRELAUNCH_FAILED",
-            "Oracle 0.17.1 Pro attachments must not exceed 1 MiB each",
-            {"limit_bytes": ORACLE_0161_ATTACHMENT_MAX_BYTES, "attachments": oversized},
+            "Oracle browser attachments must not exceed the validated 1 MiB per-file envelope",
+            {"limit_bytes": ORACLE_ATTACHMENT_MAX_BYTES, "attachments": oversized},
         )
 
 
@@ -330,24 +330,30 @@ def terminate_owned_oracle_process_tree(
 
 
 ORACLE_VERSION_RESOLUTION_TIMEOUT_SECONDS = 90
+ORACLE_CURRENT_VERSION = COMPAT.SUPPORTED_VERSION
+ORACLE_LKG_VERSION = COMPAT.LKG_VERSION
 
 
 def cached_oracle_version(command: Sequence[str]) -> str | None:
     """Resolve the pinned Oracle from its validated npx cache without npm I/O."""
     normalized = tuple(str(item) for item in command)
     executable = Path(normalized[0]).name.casefold() if normalized else ""
-    if executable not in {"npx", "npx.cmd", "npx.exe"} or normalized[1:] not in {
-        ("-y", "@steipete/oracle@0.17.1"),
-        ("--yes", "@steipete/oracle@0.17.1"),
-        ("@steipete/oracle@0.17.1",),
-    }:
+    accepted_packages = {
+        f"@steipete/oracle@{ORACLE_CURRENT_VERSION}",
+        f"@steipete/oracle@{ORACLE_LKG_VERSION}",
+    }
+    if executable not in {"npx", "npx.cmd", "npx.exe"} or not normalized[1:]:
+        return None
+    package = normalized[-1]
+    if package not in accepted_packages or normalized[1:-1] not in {(), ("-y",), ("--yes",)}:
         return None
     try:
-        package_root = COMPAT.resolve_package_root("0.17.1")
+        requested_version = package.rsplit("@", 1)[-1]
+        package_root = COMPAT.resolve_package_root(requested_version)
         version = COMPAT.package_version(package_root)
     except Exception:
         return None
-    return f"oracle {version}" if version == "0.17.1" else None
+    return f"oracle {version}" if version == requested_version else None
 
 
 def resolve_oracle_version(
@@ -357,7 +363,7 @@ def resolve_oracle_version(
 ) -> str:
     """Resolve Oracle before launch with a bounded cold-cache allowance.
 
-    The returned value is still passed immediately to the exact 0.17.1
+    The returned value is still passed immediately to the current-or-LKG exact
     compatibility/hash contract before a browser can be launched.
     """
     completed = run_factory(
@@ -549,8 +555,9 @@ def conversation_url_conflict(state: dict[str, Any], observed: str | None) -> di
 def exact_recovery_binding_unavailable(*paths: Path) -> bool:
     """Return true only for Oracle's exact no-live-tab plus no-saved-URL proof.
 
-    Oracle 0.17.1 writes the no-live-tab line to stdout and the missing-URL
-    detail to stderr.  Both streams belong to one exact recovery attempt.
+    Supported Oracle current/LKG releases write the no-live-tab line to stdout
+    and the missing-URL detail to stderr. Both streams belong to one exact
+    recovery attempt.
     """
     chunks: list[str] = []
     for path in paths:

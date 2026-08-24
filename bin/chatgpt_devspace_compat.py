@@ -11,7 +11,11 @@ import time
 from pathlib import Path
 from typing import Any, Sequence
 
-SUPPORTED_VERSION = "1.0.4"
+SUPPORTED_VERSION = "1.0.7"
+# 1.0.4 remains the last-known-good rollback artifact.  It is intentionally
+# not accepted by the updater: applying current compatibility patches to an
+# old package would hide an incomplete rollback from the service health gates.
+LEGACY_LKG_VERSION = "1.0.4"
 CREATE_NO_WINDOW = 0x08000000
 PATCHES = {
     "dist/oauth-provider.js": {
@@ -20,20 +24,14 @@ PATCHES = {
         "patched": "51376673f3def7a3dc05884a409ef52b1ae8580510ba9de86d0b4014b3cd6239",
     },
     "dist/server.js": {
-        "patch": "directory-read.patch",
-        "pristine": "c49c1c607b42e040cdf0b15d5a4a93cfef9ddb8147d492a3cfa2a8c3889dab24",
-        "patched": "4ccb51f68e688c0ed1bbd971a15e33d2c1b6bb7eeb555285e1ab9ea75b01f741",
-        "upgrades": {
-            "d5d9b08c482b282f3390f415d69d460f4ee844046962a4013f11612cbb6b52e0": "delete-file.patch",
-            "6528326240308f096c64db9a9cf45040cb6670957b38df772fc0e62af7193b2c": "trash-file.patch",
-            "bc7293f3585cbbd0c5be8ef090d79654c2c79e1d79c698856e9d94613c99f746": "file-safety-to-read-chunk.patch",
-            "75c68feb2ba9073bae277a25f663cd4ab369736ce62f2b4140197123df27a85e": "directory-read-to-file-safety.patch",
-        },
+        "patch": "workspace-write-and-read-bridge.patch",
+        "pristine": "42d340924421182eea7f2580f96c8d1d5aae459061a6a90804e6900905ef2d72",
+        "patched": "259b5810206bc87e1e16e7963d084f4c90adc19ea9f54b4655d90ad51e49a967",
     },
     "dist/workspaces.js": {
         "patch": "workspaces.patch",
-        "pristine": "b4438d551f5ecccfa7942f8ec92f16fda1b0ab7b3256014c8983404acb0b9dcb",
-        "patched": "d5014ef0bcbab51750e3eea74f58fa131d258aa98f60bf65ed30cd8b732e42bf",
+        "pristine": "e11517f291cac33e37a66e84aeb80e1664a5abd0b6eb1e9bdb933d84c186efad",
+        "patched": "68a4c61ae0f509bd40d2a682e0b9bbbac72cb00dc96693f7646e6a535cc872ed",
     },
 }
 
@@ -270,7 +268,7 @@ def check_large_read_bridge(
             {"path": str(server_path)},
         ) from exc
     match = re.search(
-        r"export async function readUtf8Chunk\(path, offsetBytes, limitBytes\) \{.*?\n\}\n(?=function serverInstructions\()",
+        r"export async function readUtf8Chunk\(path, offsetBytes, limitBytes\) \{.*?\n\}\n(?=(?:const workspaceIdDescription|function serverInstructions)\b)",
         server_source,
         flags=re.DOTALL,
     )
@@ -572,7 +570,7 @@ def _apply_patch(package_root: Path, patch_path: Path) -> None:
     isolated_env["GIT_CEILING_DIRECTORIES"] = str(package_root.parent)
     patch_bytes = patch_path.read_bytes().replace(b"\r\n", b"\n")
     for check_only in (True, False):
-        argv = ["git", "-c", "core.autocrlf=false", "apply"]
+        argv = ["git", "-c", "core.autocrlf=false", "apply", "--ignore-space-change"]
         if check_only:
             argv.append("--check")
         argv.append("-")
@@ -765,7 +763,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser(
         description=(
-            "Apply the exact DevSpace 1.0.4 bounded workspace and OAuth refresh "
+            "Apply the exact DevSpace 1.0.7 bounded workspace and OAuth refresh "
             "compatibility patches."
         )
     )

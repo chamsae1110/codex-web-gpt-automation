@@ -2,9 +2,9 @@
 
 This repository ships no copy of agbrowse, the Oracle package, DevSpace,
 Codex, CodexPro, browser binaries, or account data. It does ship narrow
-textual compatibility patches for hash-verified Oracle 0.17.1, the explicitly
-scoped WebJjonku Linux Oracle 0.18.0 profile, the frozen legacy Oracle 0.16.1
-recovery lineage, and DevSpace 1.0.4 installations.
+textual compatibility patches for hash-verified Oracle 0.18.0 and DevSpace
+1.0.7, plus Oracle 0.17.1 and DevSpace 1.0.4 rollback-LKG assets and the frozen
+legacy Oracle 0.16.1 recovery lineage.
 
 - `hehee9/multi-gpt@4f5e130` is MIT-licensed. Its attribution and the recorded `server.mjs` hash must be preserved when its upstream-compatible integration is changed.
 - `agbrowse@0.1.18` is an external npm package retained only for recovery of
@@ -15,20 +15,20 @@ recovery lineage, and DevSpace 1.0.4 installations.
   metadata and re-check before any redistribution. This project installs the
   package externally and does not copy its source.
 - `@steipete/oracle` is an external MIT-licensed browser automation package.
-  The default tested version is 0.17.1. Oracle 0.18.0 is accepted only by the
-  named `webjjonku-linux` profile after its published npm archive integrity and
-  complete published package payload are verified. Separately installed
+  The default tested version is 0.18.0; its published npm integrity and exact
+  compatibility patch hashes are verified before use. Oracle 0.17.1 remains
+  the rollback LKG and exact historical-recovery contract. Separately installed
   dependencies remain governed by the invoking runtime lock. This release
-  rejects every other Oracle version until a new named, hash-bound compatibility
-  contract and its validation are added to source. Its package source is not vendored. Files
-  under `bin/oracle-compat/0.17.1` are current derivative patch instructions;
-  `bin/oracle-compat/0.18.0` contains the scoped follow-up timeout patch, and
+  rejects every other Oracle version until a reviewed, hash-bound compatibility
+  contract is promoted. Its package source is not vendored. Files
+  under `bin/oracle-compat/0.18.0` are current derivative patch instructions;
+  `bin/oracle-compat/0.17.1` is the rollback-LKG contract, and
   `bin/oracle-compat/0.16.1` remains frozen for exact legacy recovery. All retain
   the following upstream MIT notice.
 - `@waishnav/devspace` is an external MIT-licensed MCP workspace server. The
-  tested version is 1.0.4. Setup resolves it externally; this repository does
+  tested version is 1.0.7, with 1.0.4 retained as rollback LKG. Setup resolves it externally; this repository does
   not vendor its source. The derivative patch instruction under
-  `bin/devspace-compat/1.0.4` retains the upstream MIT license and is applied
+  `bin/devspace-compat/1.0.7` retains the upstream MIT license and is applied
   only when both the package version and exact source hash match.
 - OMO Codex Light (`lazycodex-ai`) and Tailscale are optional external
   installations. Their executables and source are not redistributed here.

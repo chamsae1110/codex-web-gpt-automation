@@ -53,7 +53,7 @@ def service_plists(
         "devspace": {
             **common,
             "Label": LABELS["devspace"],
-            "ProgramArguments": [npx, "--yes", "@waishnav/devspace@1.0.4", "serve"],
+            "ProgramArguments": [npx, "--yes", "@waishnav/devspace@1.0.7", "serve"],
             "RunAtLoad": True,
             "KeepAlive": {"SuccessfulExit": False},
             "ThrottleInterval": 15,

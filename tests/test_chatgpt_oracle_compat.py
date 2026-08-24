@@ -61,7 +61,7 @@ def test_exact_version_patch_is_hash_gated_idempotent_and_backed_up(tmp_path: Pa
     compat = load_compat()
     package = tmp_path / "package"
     package.mkdir()
-    (package / "package.json").write_text(json.dumps({"version": "0.17.1"}), encoding="utf-8")
+    (package / "package.json").write_text(json.dumps({"version": "0.18.0"}), encoding="utf-8")
     target = package / "sample.txt"
     target.write_bytes(b"before\n")
     patches = tmp_path / "patches"
@@ -71,11 +71,11 @@ def test_exact_version_patch_is_hash_gated_idempotent_and_backed_up(tmp_path: Pa
         encoding="utf-8",
     )
     compat.PATCHES = {"sample.txt": {"patch": "sample.patch", "pristine": digest(b"before\n"), "patched": digest(b"after\n")}}
-    compat.patch_root = lambda: patches
+    compat.patch_root = lambda version=compat.SUPPORTED_VERSION: patches
     backup = tmp_path / "backup"
 
-    first = compat.ensure_oracle_compatibility("oracle 0.17.1", package_root=package, backup_root=backup)
-    second = compat.ensure_oracle_compatibility("oracle 0.17.1", package_root=package, backup_root=backup)
+    first = compat.ensure_oracle_compatibility("oracle 0.18.0", package_root=package, backup_root=backup)
+    second = compat.ensure_oracle_compatibility("oracle 0.18.0", package_root=package, backup_root=backup)
 
     assert first["changed"] == ["sample.txt"]
     assert second["already_patched"] == ["sample.txt"]
@@ -87,7 +87,7 @@ def test_hash_specific_legacy_patch_migrates_without_backup(tmp_path: Path) -> N
     compat = load_compat()
     package = tmp_path / "package"
     package.mkdir()
-    (package / "package.json").write_text(json.dumps({"version": "0.17.1"}), encoding="utf-8")
+    (package / "package.json").write_text(json.dumps({"version": "0.18.0"}), encoding="utf-8")
     target = package / "sample.txt"
     target.write_bytes(b"middle\n")
     patches = tmp_path / "patches"
@@ -110,11 +110,11 @@ def test_hash_specific_legacy_patch_migrates_without_backup(tmp_path: Path) -> N
             "legacy_patches": {legacy_hash: "legacy.patch"},
         }
     }
-    compat.patch_root = lambda: patches
+    compat.patch_root = lambda version=compat.SUPPORTED_VERSION: patches
     backup = tmp_path / "backup"
 
     result = compat.ensure_oracle_compatibility(
-        "oracle 0.17.1",
+        "oracle 0.18.0",
         package_root=package,
         backup_root=backup,
     )
@@ -130,15 +130,15 @@ def test_unknown_oracle_version_or_file_hash_fails_closed(tmp_path: Path) -> Non
         compat.ensure_oracle_compatibility("oracle 0.17.0", package_root=tmp_path)
     assert version.value.code == "ORACLE_VERSION_UNVALIDATED"
     with pytest.raises(compat.OracleCompatError) as scoped_version_without_profile:
-        compat.ensure_oracle_compatibility("oracle 0.18.0", package_root=tmp_path)
+        compat.ensure_oracle_compatibility("oracle 0.18.1", package_root=tmp_path)
     assert scoped_version_without_profile.value.code == "ORACLE_VERSION_UNVALIDATED"
-    assert scoped_version_without_profile.value.evidence["supported"] == compat.SUPPORTED_VERSION
+    assert compat.SUPPORTED_VERSION in scoped_version_without_profile.value.evidence["supported"]
 
     package = tmp_path / "package"
     package.mkdir()
     (package / "package.json").write_text(json.dumps({"version": "0.17.1"}), encoding="utf-8")
     (package / "sample.txt").write_bytes(b"unknown\n")
-    compat.PATCHES = {"sample.txt": {"patch": "missing.patch", "pristine": digest(b"before\n"), "patched": digest(b"after\n")}}
+    compat.LKG_PATCHES = {"sample.txt": {"patch": "missing.patch", "pristine": digest(b"before\n"), "patched": digest(b"after\n")}}
     with pytest.raises(compat.OracleCompatError) as mismatch:
         compat.ensure_oracle_compatibility("oracle 0.17.1", package_root=package)
     assert mismatch.value.code == "ORACLE_FILE_HASH_MISMATCH"
@@ -182,9 +182,9 @@ def test_scoped_oracle_version_requires_its_profile_and_uses_its_own_contract(tm
     compat.SCOPED_PACKAGE_INTEGRITIES = {"webjjonku-linux": {"0.18.0": integrity}}
     compat.patch_root = lambda version=compat.SUPPORTED_VERSION: patches
 
-    with pytest.raises(compat.OracleCompatError) as default_path:
-        compat.ensure_oracle_compatibility("oracle 0.18.0", package_root=package)
-    assert default_path.value.code == "ORACLE_VERSION_UNVALIDATED"
+    compat.PATCHES = {}
+    default_path = compat.ensure_oracle_compatibility("oracle 0.18.0", package_root=package)
+    assert default_path["version"] == "0.18.0"
 
     with pytest.raises(compat.OracleCompatError) as unknown_profile:
         compat.ensure_scoped_oracle_compatibility(
@@ -297,6 +297,50 @@ def test_scoped_profile_rejects_missing_node_runtime(monkeypatch: pytest.MonkeyP
     assert unsupported.value.evidence["required"] == ">=24 <27"
 
 
+@pytest.mark.parametrize(
+    ("node", "stdout", "returncode"),
+    [
+        (None, "", 0),
+        ("node", "v23.11.1\n", 0),
+        ("node", "v27.0.0\n", 0),
+        ("node", "not-a-version\n", 0),
+        ("node", "v24.0.0\n", 1),
+    ],
+)
+def test_current_oracle_rejects_unvalidated_node_runtime(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, node: str | None, stdout: str, returncode: int
+) -> None:
+    compat = load_compat()
+    monkeypatch.setattr(compat.shutil, "which", lambda _name: node)
+    called: list[object] = []
+    monkeypatch.setattr(
+        compat.subprocess,
+        "run",
+        lambda *_args, **_kwargs: called.append(object())
+        or type("NodeResult", (), {"returncode": returncode, "stdout": stdout})(),
+    )
+    with pytest.raises(compat.OracleCompatError) as unsupported:
+        compat.ensure_oracle_compatibility("oracle 0.18.0", package_root=tmp_path)
+    assert unsupported.value.code == "ORACLE_NODE_VERSION_UNSUPPORTED"
+    assert unsupported.value.evidence["contract"] == "current:0.18.0"
+    assert unsupported.value.evidence["required"] == ">=24 <27"
+    assert bool(called) is (node is not None)
+
+
+def test_lkg_recovery_does_not_inherit_current_node_gate(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    compat = load_compat()
+    observed: dict[str, object] = {}
+    monkeypatch.setattr(compat.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(
+        compat,
+        "_apply_oracle_compatibility",
+        lambda version, **kwargs: observed.update(version=version, **kwargs) or {"ok": True, "version": version},
+    )
+    result = compat.ensure_oracle_compatibility("oracle 0.17.1", package_root=tmp_path)
+    assert result == {"ok": True, "version": "0.17.1"}
+    assert observed["contracts"] is compat.LKG_PATCHES
+
+
 def test_published_0180_followup_timeout_patch_preserves_parent_unless_cli_overrides(tmp_path: Path) -> None:
     compat = load_compat()
     configured = os.environ.get("ORACLE_018_PACKAGE_ROOT", "").strip()
@@ -328,6 +372,31 @@ def test_published_0180_followup_timeout_patch_preserves_parent_unless_cli_overr
     assert node is not None
     syntax = subprocess.run([node, "--check", str(target)], capture_output=True, text=True, check=False)
     assert syntax.returncode == 0, syntax.stderr
+
+
+def test_published_0180_default_contract_applies_every_current_patch(tmp_path: Path) -> None:
+    compat = load_compat()
+    configured = os.environ.get("ORACLE_018_PACKAGE_ROOT", "").strip()
+    source = Path(configured) if configured else Path("__oracle_018_cache_unset__")
+    if not source.is_dir():
+        if os.environ.get("CI"):
+            pytest.fail("CI must prepare the exact published Oracle 0.18.0 package")
+        pytest.skip("published Oracle 0.18.0 package root is unavailable")
+    package = tmp_path / "oracle-default"
+    shutil.copytree(source, package)
+
+    result = compat.ensure_oracle_compatibility(
+        "oracle 0.18.0", package_root=package, backup_root=tmp_path / "backup-default"
+    )
+    touched = set(result["changed"]) | set(result["already_patched"])
+    assert touched == set(compat.PATCHES)
+    node = shutil.which("node")
+    assert node is not None
+    for relative, contract in compat.PATCHES.items():
+        target = package / relative
+        assert compat.sha256_file(target) == contract["patched"]
+        syntax = subprocess.run([node, "--check", str(target)], capture_output=True, text=True, check=False)
+        assert syntax.returncode == 0, f"{relative}: {syntax.stderr}"
 
 
 def test_published_0171_patch_requires_extra_high_and_pro_selection_proof(tmp_path: Path) -> None:
@@ -441,14 +510,14 @@ def test_published_0171_terminal_marker_fallback_is_stable_exact_and_thinking_in
     oracle_cli = package / "dist/bin/oracle-cli.js"
     browser_config = package / "dist/src/cli/browserConfig.js"
     thinking = package / "dist/src/browser/actions/thinkingStatus.js"
-    assert compat.sha256_file(assistant) == compat.PATCHES[
+    assert compat.sha256_file(assistant) == compat.LKG_PATCHES[
         "dist/src/browser/actions/assistantResponse.js"
     ]["patched"]
-    assert compat.sha256_file(thinking) == compat.PATCHES[
+    assert compat.sha256_file(thinking) == compat.LKG_PATCHES[
         "dist/src/browser/actions/thinkingStatus.js"
     ]["patched"]
-    assert compat.sha256_file(oracle_cli) == compat.PATCHES["dist/bin/oracle-cli.js"]["patched"]
-    assert compat.sha256_file(browser_config) == compat.PATCHES["dist/src/cli/browserConfig.js"]["patched"]
+    assert compat.sha256_file(oracle_cli) == compat.LKG_PATCHES["dist/bin/oracle-cli.js"]["patched"]
+    assert compat.sha256_file(browser_config) == compat.LKG_PATCHES["dist/src/cli/browserConfig.js"]["patched"]
     assistant_text = assistant.read_text(encoding="utf-8")
     oracle_cli_text = oracle_cli.read_text(encoding="utf-8")
     assert "readAssistantSnapshot(Runtime, minTurnIndex, expectedConversationId)" in assistant_text
@@ -664,7 +733,7 @@ console.log(JSON.stringify({{ success, noop, unrelated }}));
         check=False,
     )
     assert syntax.returncode == 0, syntax.stderr
-    assert compat.sha256_file(target) == compat.PATCHES["dist/src/browser/actions/thinkingTime.js"]["patched"]
+    assert compat.sha256_file(target) == compat.LKG_PATCHES["dist/src/browser/actions/thinkingTime.js"]["patched"]
     slider_script = (
         f"import {{ ensureThinkingTime }} from {json.dumps(target.as_uri())};"
         "const hiddenView={textContent:'',querySelector:()=>null,"
@@ -755,7 +824,7 @@ console.log(JSON.stringify({{ success, noop, unrelated }}));
     browser_config = package / "dist/src/browser/config.js"
     browser_config_text = browser_config.read_text(encoding="utf-8")
     assert "config?.copyProfileSource" in browser_config_text
-    assert compat.sha256_file(browser_config) == compat.PATCHES["dist/src/browser/config.js"]["patched"]
+    assert compat.sha256_file(browser_config) == compat.LKG_PATCHES["dist/src/browser/config.js"]["patched"]
     config_syntax = subprocess.run(
         [node, "--check", str(browser_config)],
         capture_output=True,
@@ -787,7 +856,7 @@ console.log(JSON.stringify({{ success, noop, unrelated }}));
     profile_copy_text = profile_copy.read_text(encoding="utf-8")
     assert 'process.platform === "win32"' in profile_copy_text
     assert "recursive: true" in profile_copy_text
-    assert compat.sha256_file(profile_copy) == compat.PATCHES["dist/src/browser/profileCopy.js"]["patched"]
+    assert compat.sha256_file(profile_copy) == compat.LKG_PATCHES["dist/src/browser/profileCopy.js"]["patched"]
     profile_syntax = subprocess.run(
         [node, "--check", str(profile_copy)],
         capture_output=True,
@@ -831,7 +900,7 @@ console.log(JSON.stringify({{ success, noop, unrelated }}));
     assert not (copied_profile / "Default/Service Worker/CacheStorage").exists()
 
     second = compat.ensure_oracle_compatibility("oracle 0.17.1", package_root=package, backup_root=backup)
-    assert set(second["already_patched"]) == set(compat.PATCHES)
+    assert set(second["already_patched"]) == set(compat.LKG_PATCHES)
 
 
 def make_raw_package_archive(
@@ -1157,13 +1226,9 @@ def test_default_path_remains_isolated_from_scoped_tables(tmp_path: Path, monkey
     monkeypatch.setattr(compat, "SCOPED_PATCHES", None)
     monkeypatch.setattr(compat, "SCOPED_PACKAGE_INTEGRITIES", None)
     monkeypatch.setattr(compat, "SCOPED_NODE_MAJOR_RANGES", None)
-    with pytest.raises(compat.OracleCompatError) as rejected_018:
-        compat.ensure_oracle_compatibility("oracle 0.18.0", package_root=tmp_path)
-    assert rejected_018.value.code == "ORACLE_VERSION_UNVALIDATED"
-
     package = tmp_path / "default-package"
     package.mkdir()
-    (package / "package.json").write_text(json.dumps({"version": "0.17.1"}), encoding="utf-8")
+    (package / "package.json").write_text(json.dumps({"version": "0.18.0"}), encoding="utf-8")
     target = package / "sample.txt"
     target.write_bytes(b"before\n")
     patches = tmp_path / "default-patches"
@@ -1173,7 +1238,7 @@ def test_default_path_remains_isolated_from_scoped_tables(tmp_path: Path, monkey
         encoding="utf-8",
     )
     compat.PATCHES = {"sample.txt": {"patch": "sample.patch", "pristine": digest(b"before\n"), "patched": digest(b"after\n")}}
-    compat.patch_root = lambda: patches
-    result = compat.ensure_oracle_compatibility("oracle 0.17.1", package_root=package, backup_root=tmp_path / "backup")
+    compat.patch_root = lambda version=compat.SUPPORTED_VERSION: patches
+    result = compat.ensure_oracle_compatibility("oracle 0.18.0", package_root=package, backup_root=tmp_path / "backup")
     assert result["changed"] == ["sample.txt"]
     assert target.read_bytes() == b"after\n"

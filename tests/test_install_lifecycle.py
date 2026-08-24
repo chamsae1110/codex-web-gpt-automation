@@ -3,12 +3,23 @@ import os
 from pathlib import Path
 import subprocess
 import shutil
+import sys
 import tempfile
 import hashlib
+import importlib.util
 
 import pytest
 
 ROOT = Path(__file__).parents[1]
+
+
+def load_portable_lifecycle():
+    spec = importlib.util.spec_from_file_location('codexpro_lifecycle_install_test', ROOT / 'bin' / 'codexpro_lifecycle.py')
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def run_powershell(*args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
@@ -42,10 +53,54 @@ def test_public_file_hash_helpers_are_dotnet_stream_based() -> None:
         assert '.Dispose()' in text
         assert '.ToLowerInvariant()' in text
 
-def test_update_is_explicit_not_scheduled() -> None:
+def test_only_the_read_only_upstream_runtime_watcher_may_be_scheduled() -> None:
     workflows = list((ROOT / '.github/workflows').glob('*'))
     assert workflows
-    assert all('schedule' not in path.read_text(encoding='utf-8').lower() for path in workflows)
+    scheduled = [path for path in workflows if 'schedule:' in path.read_text(encoding='utf-8').lower()]
+    assert scheduled == [ROOT / '.github/workflows' / 'upstream-runtime-watch.yml']
+    watcher = scheduled[0].read_text(encoding='utf-8')
+    assert 'upstream-runtime-policy.json' in watcher
+    assert 'check_upstream_runtime_policy.py' in watcher
+    assert 'automatic_install' not in watcher
+    assert 'automatic_service_restart' not in watcher
+
+
+def test_upstream_runtime_policy_is_receipt_mapped_for_both_lifecycle_installers() -> None:
+    manifest = json.loads((ROOT / 'install-manifest.json').read_text(encoding='utf-8'))
+    assert 'upstream-runtime-policy.json' in manifest['include']
+    assert "pattern -eq 'upstream-runtime-policy.json'" in (ROOT / 'install.ps1').read_text(encoding='utf-8')
+    portable = (ROOT / 'bin' / 'codexpro_lifecycle.py').read_text(encoding='utf-8')
+    assert 'upstream-runtime-policy.json' in portable
+
+
+def test_portable_lifecycle_maps_the_exact_root_policy_file() -> None:
+    lifecycle = load_portable_lifecycle()
+    files = lifecycle.manifest_files(ROOT)
+    assert 'upstream-runtime-policy.json' in files
+    plan = lifecycle.install(ROOT, ROOT / '.codex-tmp' / 'portable-policy-plan', dry_run=True)
+    assert 'upstream-runtime-policy.json' in plan['files']
+
+
+def test_upstream_runtime_policy_install_and_rollback_are_exact_inverse() -> None:
+    with tempfile.TemporaryDirectory() as home:
+        codex_home = Path(home)
+        installed = run_powershell(
+            '-File', str(ROOT / 'install.ps1'), '-CodexHome', str(codex_home),
+            '-SkipDependencyInstall', '-DisableLocalMultiGpt',
+        )
+        assert installed.returncode == 0, installed.stderr
+        receipt_path = next((codex_home / 'receipts').glob('codexpro-automation-*.json'))
+        receipt = json.loads(receipt_path.read_text(encoding='utf-8-sig'))
+        record = next(entry for entry in receipt['files'] if entry['path'] == 'upstream-runtime-policy.json')
+        installed_policy = codex_home / 'upstream-runtime-policy.json'
+        assert installed_policy.read_bytes() == (ROOT / 'upstream-runtime-policy.json').read_bytes()
+        assert hashlib.sha256(installed_policy.read_bytes()).hexdigest() == record['installed_sha256']
+
+        rolled_back = run_powershell(
+            '-File', str(ROOT / 'rollback.ps1'), '-CodexHome', str(codex_home), '-Receipt', str(receipt_path),
+        )
+        assert rolled_back.returncode == 0, rolled_back.stderr
+        assert not installed_policy.exists()
 
 def test_update_records_and_validates_an_atomic_contract() -> None:
     text = (ROOT / 'update.ps1').read_text(encoding='utf-8')
@@ -319,6 +374,13 @@ def test_temp_codex_home_install_and_rollback_is_exact_inverse() -> None:
         installed_pro_metadata = codex_home / 'skills' / 'chatgpt-pro-browser' / 'agents' / 'openai.yaml'
         assert overwritten.read_bytes() != original
         assert created.is_file()
+        installed_policy = codex_home / 'upstream-runtime-policy.json'
+        policy_record = next(
+            record for record in json.loads(receipts[0].read_text(encoding='utf-8-sig'))['files']
+            if record['path'] == 'upstream-runtime-policy.json'
+        )
+        assert installed_policy.read_bytes() == (ROOT / 'upstream-runtime-policy.json').read_bytes()
+        assert hashlib.sha256(installed_policy.read_bytes()).hexdigest() == policy_record['installed_sha256']
         assert installed_pro_skill.read_bytes() == (
             ROOT / 'skills' / 'chatgpt-pro-browser' / 'SKILL.md'
         ).read_bytes()
@@ -335,6 +397,7 @@ def test_temp_codex_home_install_and_rollback_is_exact_inverse() -> None:
         assert rolled_back.returncode == 0, rolled_back.stderr
         assert overwritten.read_bytes() == original
         assert not created.exists()
+        assert not installed_policy.exists()
         assert not installed_pro_skill.exists()
         assert not installed_pro_metadata.exists()
         assert json.loads(rolled_back.stdout)['status'] == 'COMPLETE'

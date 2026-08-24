@@ -34,7 +34,8 @@ contract-validate agbrowse for an old persisted run.
 - Confirm `install-manifest.json` and `package.json` inventory every shipped runtime/schema file, the v4 runner, and both v7/v8 quiescent app-trace incident fixtures.
 - Confirm MIT copyright is `2026 ventianima-lab` and third-party notices retain the multi-gpt commit/hash attribution.
 - Do not vendor agbrowse, Codex, CodexPro, browser binaries, or account data.
-- Verify no workflow has `schedule`; CI must use Windows and macOS with mocked/offline lifecycle checks.
+- Only the read-only `upstream-runtime-watch.yml` may have `schedule`. It may query official npm metadata and maintain one drift issue, but must never promote, install, restart services, open ChatGPT, or touch a project. Other CI remains event/manual driven.
+- For Oracle/DevSpace promotion, verify archive integrity, package-tree and patch hashes, current/LKG registry bindings, Oracle no-submission behavior, DevSpace root/large-read/local-public health, and Windows/macOS CI before release.
 - Treat agbrowse update as an explicit, reviewed agent action. There is no background checker, scheduled updater, candidate slot, or promotion pointer.
 - Exercise `install.ps1`, `doctor.ps1`, `uninstall.ps1`, and `rollback.ps1` with a temporary `CODEX_HOME`; never require Git to bootstrap or verify a release.
 - Before a normal install, verify its read-only dependency preflight completes before any managed file mutation. The returned token binds selected version/integrity, prior dependency identity, and observed unlocked state; the subsequent update must reacquire the lock and reject drift. Before an explicit update, confirm no active or uncertain run state exists. The update receipt must preserve the prior npm version/integrity, executable and contract hashes, then capture and validate the reviewed public-command contract before replacing it.

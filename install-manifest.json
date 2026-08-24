@@ -1,6 +1,6 @@
 {
   "schema": "codexpro.install-manifest/v1",
-  "version": "1.19.7",
+  "version": "1.20.0",
   "include": [
     "bin/chatgpt_agbrowse_bridge.py",
     "bin/chatgpt_agbrowse_composer.py",
@@ -19,6 +19,9 @@
     "bin/devspace-compat/1.0.4/directory-read-to-file-safety.patch",
     "bin/devspace-compat/1.0.4/file-safety-to-read-chunk.patch",
     "bin/devspace-compat/1.0.4/workspaces.patch",
+    "bin/devspace-compat/1.0.7/oauth-refresh-replay.patch",
+    "bin/devspace-compat/1.0.7/workspace-write-and-read-bridge.patch",
+    "bin/devspace-compat/1.0.7/workspaces.patch",
     "bin/chatgpt_oracle_compat.py",
     "bin/oracle-compat/0.17.1/assistantResponse.terminal-marker-fallback.patch",
     "bin/oracle-compat/0.17.1/assistantResponse.terminal-marker-fallback.v1.19.6.patch",
@@ -52,6 +55,9 @@
     "bin/oracle-compat/0.17.1/browserIndex.unarchive-followup.v1.18.4.patch",
     "bin/oracle-compat/0.17.1/navigation.resumed-hydration-recheck.patch",
     "bin/oracle-compat/0.18.0/oracle-cli.followup-timeout.patch",
+    "bin/oracle-compat/0.18.0/oracle-cli.followup-port-and-timeout.patch",
+    "bin/oracle-compat/0.18.0/browserConfig.followup-port-binding.patch",
+    "bin/oracle-compat/0.18.0/browserConfig.copy-profile-windows.patch",
     "bin/chatgpt_oracle_state.py",
     "bin/chatgpt_oracle_profiles.py",
     "bin/chatgpt_oracle_dispatch.py",
@@ -78,6 +84,8 @@
     "bin/codexpro_exact_unit_cloudflare_bootstrap.ps1",
     "bin/codexpro_fixed_runtime_watchdog.py",
     "bin/codexpro_harness.py",
+    "scripts/check_upstream_runtime_policy.py",
+    "upstream-runtime-policy.json",
     "bin/codexpro_cloudflared_launchd.py",
     "bin/codexpro_macos_launchd.py",
     "bin/codexpro_mcp_identity.py",
@@ -185,9 +193,13 @@
     },
     "oracle": {
       "package": "@steipete/oracle",
-      "tested_version": "0.17.1",
+      "tested_version": "0.18.0",
       "license": "MIT",
-      "integrity": "sha512-bq4SqMvRtT5Im+R57UPSXTV5p/BFTU24OXgGXqx2ckABWFX9uLDuKeJLoOdfBm7RzllrzjrlSSGgiMsrrvh+9Q==",
+      "integrity": "sha512-o8KFd66zNt36jw5zdtQAV74bgrOlJibbyvnLsVikIWDamesYtez/dIUhQ4zqtD9jkx+7A6vcP9+JgcJt0H5pOw==",
+      "last_known_good": {
+        "version": "0.17.1",
+        "integrity": "sha512-bq4SqMvRtT5Im+R57UPSXTV5p/BFTU24OXgGXqx2ckABWFX9uLDuKeJLoOdfBm7RzllrzjrlSSGgiMsrrvh+9Q=="
+      },
       "scoped_tested_versions": {
         "webjjonku-linux": {
           "version": "0.18.0",
@@ -195,13 +207,18 @@
           "node": ">=24 <27"
         }
       },
-      "installation": "default comprehensive runs resolve explicit npx @steipete/oracle@0.17.1; Oracle 0.18.0 requires its exact npm archive plus the explicit webjjonku-linux compatibility profile, which verifies archive integrity and the complete published package payload before patching, while the invoking runtime lock owns the separately installed dependency tree; unknown versions, profiles, and hash mismatches fail closed"
+      "installation": "new runs resolve explicit npx @steipete/oracle@0.18.0 and apply its exact hash-gated compatibility contract; 0.17.1 is retained only as rollback LKG and exact historical recovery; the webjjonku-linux profile additionally verifies the complete published 0.18.0 archive; unknown versions and hash mismatches fail closed"
     },
     "devspace": {
       "package": "@waishnav/devspace",
-      "tested_version": "1.0.4",
+      "tested_version": "1.0.7",
       "license": "MIT",
-      "installation": "resolved by the explicit setup skill; exact workspaces.js hash is compatibility-patched to bound transient-tree discovery"
+      "integrity": "sha512-kP+Wk52qiMRwdqAP+nV4OZ4HU8feivZQ0k6u4ZUkvqxu8j0Rp/AU8H0K4T43G+zmu9WJKlYLTet7vIUeZHU72A==",
+      "last_known_good": {
+        "version": "1.0.4",
+        "integrity": "sha512-gYaaweaKWTK7Xb4uImpso2mbp87I7TuCmpenOR1jh1rp0nXisId10UHB9HxU5N1Qa5bDmRcIyHe85Bln2zCuzg=="
+      },
+      "installation": "resolved by the explicit setup skill at 1.0.7; exact published hashes are compatibility-patched for bounded OAuth replay, workspace writes, large reads, and context discovery; 1.0.4 remains rollback LKG only"
     },
     "codexpro": {
       "package": "codexpro",

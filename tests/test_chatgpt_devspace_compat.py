@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -46,7 +47,7 @@ def test_native_runtime_probe_loads_exact_binding_and_fails_actionably(tmp_path:
     compat = load_compat()
     package = tmp_path / "devspace"
     package.mkdir()
-    (package / "package.json").write_text(json.dumps({"version": "1.0.4"}), encoding="utf-8")
+    (package / "package.json").write_text(json.dumps({"version": "1.0.7"}), encoding="utf-8")
     calls: list[tuple[list[str], dict]] = []
 
     def passing(argv, **kwargs):
@@ -162,7 +163,7 @@ def test_exact_devspace_patch_is_hash_gated_idempotent_and_backed_up(
     compat = load_compat()
     package = tmp_path / "package"
     package.mkdir()
-    (package / "package.json").write_text(json.dumps({"version": "1.0.4"}), encoding="utf-8")
+    (package / "package.json").write_text(json.dumps({"version": "1.0.7"}), encoding="utf-8")
     target = package / "sample.txt"
     target.write_bytes(b"before\n")
     patches = tmp_path / "patches"
@@ -217,7 +218,7 @@ def test_exact_devspace_patch_accepts_only_hash_bound_upgrade_chain(
     compat = load_compat()
     package = tmp_path / "package"
     package.mkdir()
-    (package / "package.json").write_text(json.dumps({"version": "1.0.4"}), encoding="utf-8")
+    (package / "package.json").write_text(json.dumps({"version": "1.0.7"}), encoding="utf-8")
     target = package / "sample.txt"
     target.write_bytes(b"middle-one\n")
     patches = tmp_path / "patches"
@@ -266,7 +267,7 @@ def test_restart_confirmation_rejects_old_or_foreign_listener(
     compat = load_compat()
     package = tmp_path / "package"
     package.mkdir()
-    (package / "package.json").write_text(json.dumps({"version": "1.0.4"}), encoding="utf-8")
+    (package / "package.json").write_text(json.dumps({"version": "1.0.7"}), encoding="utf-8")
     (package / "sample.txt").write_bytes(b"after\n")
     compat.PATCHES = {
         "sample.txt": {
@@ -399,6 +400,7 @@ def test_service_identity_rejects_posix_npm_shim_for_foreign_package(
 
 def test_unknown_devspace_version_or_file_hash_fails_closed(tmp_path: Path) -> None:
     compat = load_compat()
+    assert compat.LEGACY_LKG_VERSION == "1.0.4"
     package = tmp_path / "package"
     package.mkdir()
     (package / "package.json").write_text(json.dumps({"version": "2.0.0"}), encoding="utf-8")
@@ -406,7 +408,12 @@ def test_unknown_devspace_version_or_file_hash_fails_closed(tmp_path: Path) -> N
         compat.ensure_devspace_compatibility(package_root=package)
     assert version.value.code == "DEVSPACE_VERSION_UNVALIDATED"
 
-    (package / "package.json").write_text(json.dumps({"version": "1.0.4"}), encoding="utf-8")
+    (package / "package.json").write_text(json.dumps({"version": compat.LEGACY_LKG_VERSION}), encoding="utf-8")
+    with pytest.raises(compat.DevSpaceCompatError) as legacy:
+        compat.ensure_devspace_compatibility(package_root=package)
+    assert legacy.value.code == "DEVSPACE_VERSION_UNVALIDATED"
+
+    (package / "package.json").write_text(json.dumps({"version": "1.0.7"}), encoding="utf-8")
     (package / "sample.txt").write_bytes(b"unknown\n")
     compat.PATCHES = {
         "sample.txt": {
@@ -459,36 +466,22 @@ def test_oauth_refresh_patch_is_hash_gated_bounded_and_revocation_aware() -> Non
     assert "this.refreshReplays.clear();" in patch
 
 
-def test_directory_read_patch_routes_directories_and_adds_bounded_read_chunk() -> None:
+def test_107_workspace_bridge_patch_preserves_write_tools_and_adds_bounded_read_chunk() -> None:
     compat = load_compat()
     patch = (
         MODULE_PATH.parent
         / "devspace-compat"
         / compat.SUPPORTED_VERSION
-        / "directory-read.patch"
+        / "workspace-write-and-read-bridge.patch"
     ).read_text(encoding="utf-8")
 
     assert compat.PATCHES["dist/server.js"] == {
-        "patch": "directory-read.patch",
-        "pristine": "c49c1c607b42e040cdf0b15d5a4a93cfef9ddb8147d492a3cfa2a8c3889dab24",
-        "patched": "4ccb51f68e688c0ed1bbd971a15e33d2c1b6bb7eeb555285e1ab9ea75b01f741",
-        "upgrades": {
-            "d5d9b08c482b282f3390f415d69d460f4ee844046962a4013f11612cbb6b52e0":
-                "delete-file.patch",
-            "6528326240308f096c64db9a9cf45040cb6670957b38df772fc0e62af7193b2c":
-                "trash-file.patch",
-            "bc7293f3585cbbd0c5be8ef090d79654c2c79e1d79c698856e9d94613c99f746":
-                "file-safety-to-read-chunk.patch",
-            "75c68feb2ba9073bae277a25f663cd4ab369736ce62f2b4140197123df27a85e":
-                "directory-read-to-file-safety.patch",
-        },
+        "patch": "workspace-write-and-read-bridge.patch",
+        "pristine": "42d340924421182eea7f2580f96c8d1d5aae459061a6a90804e6900905ef2d72",
+        "patched": "259b5810206bc87e1e16e7963d084f4c90adc19ea9f54b4655d90ad51e49a967",
     }
-    assert "const readPath = workspaces.resolveReadPath(workspace, input.path);" in patch
-    assert "isDirectory = (await stat(readPath.absolutePath)).isDirectory();" in patch
-    assert "? await listDirectoryTool({ path: readPath.absolutePath }, {" in patch
-    assert "+                root: workspace.root," in patch
-    assert ": await readFileTool({ ...input, path: readPath.absolutePath }, {" in patch
-    assert "+                readRoots: readPath.readRoots," in patch
+    assert 'delete: "delete_file"' in patch
+    assert 'trash: "trash_file"' in patch
     assert '+    readChunk: "read_chunk",' in patch
     assert "+const MAX_READ_CHUNK_BYTES = 24 * 1024;" in patch
     assert "+export async function readUtf8Chunk" in patch
@@ -499,22 +492,17 @@ def test_directory_read_patch_routes_directories_and_adds_bounded_read_chunk() -
         MODULE_PATH.parent
         / "devspace-compat"
         / compat.SUPPORTED_VERSION
-        / "directory-read-to-chunk.patch"
+        / "workspace-write-and-read-bridge.patch"
     ).read_text(encoding="utf-8")
     assert "-import { randomUUID } from \"node:crypto\";" in migration
     assert '+    readChunk: "read_chunk",' in migration
 
 
-def test_delete_file_patch_is_hash_gated_and_preserves_read_write_registration() -> None:
-    patch_path = (
-        MODULE_PATH.parent
-        / "devspace-compat"
-        / "1.0.4"
-        / "delete-file.patch"
-    )
+def test_delete_file_contract_is_part_of_the_107_hash_gated_bridge() -> None:
+    compat = load_compat()
+    patch_path = MODULE_PATH.parent / "devspace-compat" / compat.SUPPORTED_VERSION / "workspace-write-and-read-bridge.patch"
     patch = patch_path.read_text(encoding="utf-8")
 
-    assert digest(patch_path.read_bytes()) == "ba495e1b7430843528a684654b422253d2bea83a30102ffcd76857ff05efac5d"
     assert 'delete: "delete_file"' in patch
     assert "await unlink(target);" in patch
     assert "existsAfter: false" in patch
@@ -523,27 +511,62 @@ def test_delete_file_patch_is_hash_gated_and_preserves_read_write_registration()
     assert "readOnlyHint: false" in patch
 
 
-def test_trash_file_patch_is_hash_gated_and_preserves_delete_registration() -> None:
+def test_trash_file_contract_is_part_of_the_107_hash_gated_bridge() -> None:
     compat = load_compat()
     patch = (
         MODULE_PATH.parent
         / "devspace-compat"
         / compat.SUPPORTED_VERSION
-        / "trash-file.patch"
+        / "workspace-write-and-read-bridge.patch"
     ).read_text(encoding="utf-8")
 
-    assert compat.PATCHES["dist/server.js"]["upgrades"][
-        "6528326240308f096c64db9a9cf45040cb6670957b38df772fc0e62af7193b2c"
-    ] == "trash-file.patch"
+    assert compat.PATCHES["dist/server.js"]["patch"] == "workspace-write-and-read-bridge.patch"
     assert 'trash: "trash_file"' in patch
     assert "await rename(target, destination);" in patch
-    assert "await unlink(target);" not in patch
+    trash_contract = patch[patch.index("export async function trashWorkspaceFile"):]
+    assert "await unlink(target);" not in trash_contract
     assert "originalRelativePath: segments.join" in patch
     assert "trashRelativePath:" in patch
     assert "before.sha256 !== after.sha256" in patch
     assert "annotations: TRASH_TOOL_ANNOTATIONS" in patch
     assert "destructiveHint: true" in patch
     assert "readOnlyHint: false" in patch
+
+
+def test_published_107_default_contract_applies_every_current_patch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    compat = load_compat()
+    configured = os.environ.get("DEVSPACE_107_PACKAGE_ROOT", "").strip()
+    source = Path(configured) if configured else Path("__devspace_107_cache_unset__")
+    if not source.is_dir():
+        if os.environ.get("CI"):
+            pytest.fail("CI must prepare the exact published DevSpace 1.0.7 package")
+        pytest.skip("published DevSpace 1.0.7 package root is unavailable")
+    package = tmp_path / "devspace-published"
+    shutil.copytree(source, package)
+    monkeypatch.setenv("CODEX_DEVSPACE_COMPAT_STATE_ROOT", str(tmp_path / "state"))
+    post_patch_checks: list[tuple[str, Path]] = []
+    monkeypatch.setattr(
+        compat,
+        "check_oauth_refresh_replay",
+        lambda *, package_root: post_patch_checks.append(("oauth", package_root)) or {"ok": True},
+    )
+    monkeypatch.setattr(
+        compat,
+        "check_large_read_bridge",
+        lambda *, package_root: post_patch_checks.append(("large-read", package_root)) or {"ok": True},
+    )
+
+    result = compat.ensure_devspace_compatibility(package_root=package, backup_root=tmp_path / "backup")
+    touched = set(result["changed"]) | set(result["already_patched"])
+    assert touched == set(compat.PATCHES)
+    node = shutil.which("node")
+    assert node is not None
+    for relative, contract in compat.PATCHES.items():
+        target = package / relative
+        assert compat.sha256_file(target) == contract["patched"]
+        syntax = subprocess.run([node, "--check", str(target)], capture_output=True, text=True, check=False)
+        assert syntax.returncode == 0, f"{relative}: {syntax.stderr}"
+    assert post_patch_checks == [("oauth", package.resolve()), ("large-read", package.resolve())]
 
 
 def test_delete_file_patch_safety_contract_on_temporary_workspace(
@@ -554,11 +577,11 @@ def test_delete_file_patch_safety_contract_on_temporary_workspace(
     try:
         source_root = compat.resolve_package_roots()[0]
     except compat.DevSpaceCompatError as exc:
-        pytest.skip(f"DevSpace 1.0.4 package unavailable: {exc.code}")
+        pytest.skip(f"DevSpace 1.0.7 package unavailable: {exc.code}")
     package = tmp_path / "devspace"
     (package / "dist").mkdir(parents=True)
     shutil.copy2(source_root / "dist" / "server.js", package / "dist" / "server.js")
-    (package / "package.json").write_text(json.dumps({"version": "1.0.4"}), encoding="utf-8")
+    (package / "package.json").write_text(json.dumps({"version": "1.0.7"}), encoding="utf-8")
     monkeypatch.setenv("CODEX_DEVSPACE_COMPAT_STATE_ROOT", str(tmp_path / "state"))
     compat.PATCHES = {"dist/server.js": compat.PATCHES["dist/server.js"]}
     compat.ensure_devspace_compatibility(package_root=package, backup_root=tmp_path / "backup")
@@ -619,11 +642,11 @@ def test_trash_file_patch_safety_and_byte_identity_on_temporary_workspace(
     try:
         source_root = compat.resolve_package_roots()[0]
     except compat.DevSpaceCompatError as exc:
-        pytest.skip(f"DevSpace 1.0.4 package unavailable: {exc.code}")
+        pytest.skip(f"DevSpace 1.0.7 package unavailable: {exc.code}")
     package = tmp_path / "devspace"
     (package / "dist").mkdir(parents=True)
     shutil.copy2(source_root / "dist" / "server.js", package / "dist" / "server.js")
-    (package / "package.json").write_text(json.dumps({"version": "1.0.4"}), encoding="utf-8")
+    (package / "package.json").write_text(json.dumps({"version": "1.0.7"}), encoding="utf-8")
     monkeypatch.setenv("CODEX_DEVSPACE_COMPAT_STATE_ROOT", str(tmp_path / "state"))
     compat.PATCHES = {"dist/server.js": compat.PATCHES["dist/server.js"]}
 
@@ -688,7 +711,7 @@ def test_directory_read_patch_unknown_upstream_hash_fails_closed(tmp_path: Path)
     compat = load_compat()
     package = tmp_path / "package"
     package.mkdir()
-    (package / "package.json").write_text(json.dumps({"version": "1.0.4"}), encoding="utf-8")
+    (package / "package.json").write_text(json.dumps({"version": "1.0.7"}), encoding="utf-8")
     server = package / "dist" / "server.js"
     server.parent.mkdir()
     server.write_text("unknown upstream bytes\\n", encoding="utf-8")

@@ -39,6 +39,7 @@ route, then open a specialized guide only when that mode applies.
 | [Architecture](ARCHITECTURE.md) | Current Oracle/DevSpace execution and lifecycle overview |
 | [Brand guide](BRAND.md) | Product name, visual assets, terminology, attribution |
 | [Versioning](VERSIONING.md) | SemVer policy and release source of truth |
+| [Upstream runtime policy](UPSTREAM_RUNTIME_POLICY.md) | Newest-validated Oracle/DevSpace promotion, drift, and rollback LKG |
 | [Changelog](CHANGELOG.md) | User-visible changes by release |
 | [Release checklist](RELEASE_CHECKLIST.md) | Maintainer verification before tags and releases |
 | [Security policy](../SECURITY.md) | Supported versions and private reporting |

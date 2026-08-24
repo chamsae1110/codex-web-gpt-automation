@@ -31,6 +31,12 @@ must not be created until the exact commit passes both Windows and macOS CI.
 
 ## Release flow
 
+An upstream Oracle or DevSpace stable release is detected by the scheduled
+read-only drift workflow. Promotion is a reviewed release change: validate the
+candidate, update `upstream-runtime-policy.json`, retain the prior current as
+rollback LKG, and complete the normal release/install gates. Never execute the
+moving npm `latest` tag directly.
+
 1. Choose the SemVer impact and update the three machine-readable sources.
 2. Add a user-oriented changelog entry.
 3. Run focused tests, the fast gate, portability, package/link checks, and the

@@ -64,7 +64,7 @@ python skills/chatgpt-oracle-runtime/scripts/run_chatgpt_oracle.py run --manifes
 ```
 
 The preview must include final argv, prompt first line, absolute mission path, SHA-256, and artifact paths without launching Oracle or a browser.
-Use this wrapper preview only. Do not substitute Oracle's own browser `--dry-run`, because Oracle 0.17.1 may still enter browser preflight.
+Use this wrapper preview only. Do not substitute Oracle's own browser `--dry-run`, because a supported Oracle current/LKG runtime may still enter browser preflight.
 
 Execute only after an explicit live-run request:
 
@@ -182,13 +182,13 @@ saved-URL recovery evidence does not mechanically prove non-submission. A
 task-bound qualified-Pro run can fail before its conversation-bound browser
 receipt exists. In that exact case only, `harvest --dry-run` may report
 `bounded-prompt-timeout-harvest` after validating the immutable task/run/mission
-ownership receipt, Oracle 0.17.1 zero-turn commit probe, root composer, dynamic
+ownership receipt, the exact recorded Oracle version's zero-turn commit probe, root composer, dynamic
 CDP port, isolated profile and target, and absence of output or conversation.
 Only prompt-free `harvest` is allowed; `live`, a foreign task, and any URL,
 probe, port, profile, target, or output contradiction remain blocked. Run the
 same exact-slug harvest once to create the normal no-tab/no-URL recovery
 evidence; it does not release ownership.
-An ordinary `devspace` run may instead fail because Oracle 0.17.1 cannot find
+An ordinary `devspace` run may instead fail because the recorded Oracle runtime cannot find
 the requested model option before submission. That case remains
 `submitted_unknown` until the same exact no-live/no-URL harvest and explicit
 user confirmation are present. Settlement additionally binds the complete

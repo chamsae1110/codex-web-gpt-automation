@@ -37,6 +37,15 @@ FAST_TARGETS = [
     "tests/test_ultra_economy_mode.py",
 ]
 
+# This LKG archived-parent DOM integration test intentionally exercises several
+# real browser polling windows and takes about 12 seconds by itself. The full
+# v4/CI suite still runs it; the fast pre-submit gate keeps the surrounding
+# hash/patch/ownership tests while omitting only this terminal follow-up UI
+# simulation so normal host jitter cannot consume the entire gate budget.
+FAST_DESELECTS = [
+    "tests/test_chatgpt_oracle_compat.py::test_archived_parent_direct_restore_requires_exact_control_and_composer_transition",
+]
+
 # The onboarding wizard added resumable-state, language, fail-closed
 # confirmation, and forged-evidence coverage to this gate, so the wall-clock
 # ceiling moved from 60s to 100s.  It must still finish fast enough to run
@@ -61,6 +70,7 @@ def run_fast_gate(*, budget_seconds: float = DEFAULT_BUDGET_SECONDS) -> dict[str
         command = [
             sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
             *FAST_TARGETS,
+            *(f"--deselect={item}" for item in FAST_DESELECTS),
             "--basetemp", basetemp,
         ]
         started = time.monotonic()

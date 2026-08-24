@@ -7,8 +7,8 @@
   <a href="https://github.com/ventianima-lab/codex-web-gpt-automation/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/tag/ventianima-lab/codex-web-gpt-automation?sort=semver&label=release"></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/ventianima-lab/codex-web-gpt-automation"></a>
   <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS-334155">
-  <img alt="Oracle" src="https://img.shields.io/badge/Oracle-0.17.1-8B5CF6">
-  <img alt="DevSpace" src="https://img.shields.io/badge/DevSpace-1.0.4-14B8A6">
+  <img alt="Oracle" src="https://img.shields.io/badge/Oracle-0.18.0-8B5CF6">
+  <img alt="DevSpace" src="https://img.shields.io/badge/DevSpace-1.0.7-14B8A6">
 </p>
 
 <p align="center">
@@ -184,10 +184,14 @@ python "$env:USERPROFILE\.codex\bin\chatgpt_oracle_dispatch.py" `
 GitHub Release가 같은 버전을 가리켜야 합니다. 업그레이드 전에는
 [변경 기록](docs/CHANGELOG.md)을 확인하세요.
 
-현재 기본 검증 기준은 Oracle `0.17.1`, DevSpace `1.0.4`, Node.js `>=22.19 <27`,
-Windows 11 및 macOS 12 이상입니다.
+현재 기본 검증 기준은 Oracle `0.18.0`, DevSpace `1.0.7`, Node.js `>=24 <27`,
+Windows 11 및 macOS 12 이상입니다. 공식 npm `latest`는 즉시 후보로 감지하지만,
+격리된 archive·패치·무전송·교차 플랫폼 검증과 리뷰를 통과한 버전만 current로
+승격합니다. 직전 Oracle `0.17.1`과 DevSpace `1.0.4`는 롤백 LKG 및 과거 실행
+복구용으로 보존하며 신규 작업의 기본값으로 사용하지 않습니다. 자세한 계약은
+[업스트림 런타임 정책](docs/UPSTREAM_RUNTIME_POLICY.md)을 참고하세요.
 
-Oracle `0.18.0`은 Node.js `>=24 <27`인 WebJjonku Linux 호스트용 범위 제한 검증 버전입니다. Upstream 응답 관찰 개선은 그대로 사용하고, browser follow-up에서 명시한 `--browser-timeout`이 부모 세션 timeout에 묻히는 결함만 해시 검증형 호환 패치로 보정합니다. 이 버전은 npm archive를 `--package-archive`로 함께 제공하고 `chatgpt_oracle_compat.py --profile webjjonku-linux`를 명시한 경우에만 허용됩니다. 도구는 archive integrity와 설치된 Oracle의 published package payload 전체를 대조한 뒤 패치합니다. 설치 시 별도로 생기는 `node_modules` dependency tree는 호출 측 lock의 검증 대상이며, 기본 Windows/macOS comprehensive 경로는 계속 `0.17.1` 이외의 버전을 거부합니다.
+WebJjonku Linux의 archive 검증 프로필도 같은 Oracle `0.18.0` current를 사용합니다.
 
 ```sh
 python bin/chatgpt_oracle_compat.py --profile webjjonku-linux --resolved-version "oracle 0.18.0" --package-root /exact/node_modules/@steipete/oracle --package-archive /exact/steipete-oracle-0.18.0.tgz

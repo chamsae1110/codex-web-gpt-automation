@@ -254,7 +254,7 @@ python skills/chatgpt-workspace-setup/scripts/devspace_tailscale_setup.py setup 
 
 1. 먼저 고정 hostname을 만들고 `http://127.0.0.1:7676`으로 전달합니다.
 2. 터널 클라이언트를 OS 로그인/서비스로 등록합니다.
-3. `npx --yes @waishnav/devspace@1.0.4 init`을 실행합니다.
+3. `npx --yes @waishnav/devspace@1.0.7 init`을 실행합니다.
 4. exact roots와 public origin을 입력합니다. public origin에는 `/mcp`를 빼고,
    ChatGPT 등록 URL에는 `/mcp`를 붙입니다.
 5. DevSpace 관리 실행 환경에 아래 두 값을 유지합니다.
@@ -309,7 +309,7 @@ python skills/chatgpt-workspace-setup/scripts/devspace_tailscale_setup.py doctor
 일상 Chrome 프로필이 아닌 Oracle 전용 프로필을 초기화합니다.
 
 ```powershell
-npx --yes @steipete/oracle@0.17.1 --engine browser `
+npx --yes @steipete/oracle@0.18.0 --engine browser `
   --browser-manual-login --browser-keep-browser `
   --browser-manual-login-profile-dir "$env:USERPROFILE\.oracle\browser-profile" `
   -p "HI"

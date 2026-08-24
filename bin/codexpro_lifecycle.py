@@ -45,6 +45,7 @@ SUPPORTED_ROOTS = {
     "plugins",
     "marketplace",
 }
+ROOT_FILE_ALLOWLIST = frozenset({"upstream-runtime-policy.json"})
 
 
 class LifecycleError(RuntimeError):
@@ -134,7 +135,7 @@ def manifest_files(repo_root: Path, *, include_local_multi_gpt: bool = False) ->
         path = Path(str(pattern))
         if path.is_absolute() or any(part in {".", ".."} for part in path.parts):
             raise LifecycleError(f"unsafe manifest pattern: {pattern}")
-        if not path.parts or path.parts[0] not in SUPPORTED_ROOTS:
+        if not path.parts or (path.parts[0] not in SUPPORTED_ROOTS and str(path) not in ROOT_FILE_ALLOWLIST):
             raise LifecycleError(f"unsupported manifest root: {pattern}")
         matches = [item for item in repo_root.glob(str(pattern)) if item.is_file()]
         if not matches:

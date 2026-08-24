@@ -7,8 +7,8 @@
   <a href="https://github.com/ventianima-lab/codex-web-gpt-automation/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/tag/ventianima-lab/codex-web-gpt-automation?sort=semver&label=release"></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/ventianima-lab/codex-web-gpt-automation"></a>
   <img alt="Platforms" src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS-334155">
-  <img alt="Oracle" src="https://img.shields.io/badge/Oracle-0.17.1-8B5CF6">
-  <img alt="DevSpace" src="https://img.shields.io/badge/DevSpace-1.0.4-14B8A6">
+  <img alt="Oracle" src="https://img.shields.io/badge/Oracle-0.18.0-8B5CF6">
+  <img alt="DevSpace" src="https://img.shields.io/badge/DevSpace-1.0.7-14B8A6">
 </p>
 
 <p align="center">
@@ -179,19 +179,16 @@ This project follows [Semantic Versioning](https://semver.org/) using
 `install-manifest.json`, the Git tag, and the GitHub Release must identify the
 same version. Read the [changelog](docs/CHANGELOG.md) before upgrading.
 
-The current tested baseline is Oracle `0.17.1`, DevSpace `1.0.4`, Node.js
-`>=22.19 <27`, Windows 11, and macOS 12 or newer.
+The current tested baseline is Oracle `0.18.0`, DevSpace `1.0.7`, Node.js
+`>=24 <27`, Windows 11, and macOS 12 or newer. Official npm `latest` releases
+become candidates immediately, but only an isolated archive, patch,
+no-submission, and cross-platform validation plus review can promote them to
+current. Oracle `0.17.1` and DevSpace `1.0.4` remain rollback LKG and exact
+legacy-recovery versions, not defaults for new work. See the
+[upstream runtime policy](docs/UPSTREAM_RUNTIME_POLICY.md).
 
-Oracle `0.18.0` is a scoped compatibility version for the WebJjonku Linux
-host running Node.js `>=24 <27`. It keeps the upstream response-observer improvements and patches only
-the browser follow-up timeout inheritance defect. The caller must provide the
-published npm archive with `--package-archive` and explicitly select
-`chatgpt_oracle_compat.py --profile webjjonku-linux`; the tool verifies the
-archive integrity and the complete published Oracle package payload before
-patching. Any separately installed `node_modules` dependency tree remains the
-invoking runtime lock's responsibility.
-The default Windows/macOS comprehensive path continues to reject every Oracle
-version other than `0.17.1`.
+The WebJjonku Linux archive-verification profile uses the same Oracle `0.18.0`
+current.
 
 ```sh
 python bin/chatgpt_oracle_compat.py --profile webjjonku-linux --resolved-version "oracle 0.18.0" --package-root /exact/node_modules/@steipete/oracle --package-archive /exact/steipete-oracle-0.18.0.tgz

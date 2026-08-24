@@ -4,7 +4,7 @@ This repository does not modify DevSpace upstream and does not automate the Chat
 
 ## Prerequisites
 
-- Node.js 22.19–26.x, npm, and Git Bash on Windows.
+- Node.js 24–26.x, npm, and Git Bash on Windows.
 - Tailscale with MagicDNS, HTTPS, and Funnel permission enabled for this device.
 - A stable MagicDNS hostname, for example `your-device.your-tailnet.ts.net`.
 
@@ -118,7 +118,7 @@ three-artifact hash-bound `settle-recursive-self-observation` receipt; a general
 BLOCKED answer or a simple run-ID mention never qualifies.
 
 When a previously healthy long-running session fails only as its access token
-expires, the managed DevSpace 1.0.4 compatibility layer also checks a bounded
+expires, the managed DevSpace 1.0.7 compatibility layer also checks a bounded
 server-side refresh replay grace. It returns the same rotated pair only for an
 identical client, scope, and resource during a 30-second window, keeps at most
 32 entries in memory, and rejects expiry, mismatch, or revocation. This avoids

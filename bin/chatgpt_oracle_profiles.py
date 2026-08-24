@@ -33,7 +33,8 @@ WORKSPACE_CONFIG = importlib.util.module_from_spec(_CONFIG_SPEC)
 _CONFIG_SPEC.loader.exec_module(WORKSPACE_CONFIG)
 DEVSPACE_APP_NAME = WORKSPACE_CONFIG.DEFAULT_APP_NAME
 # Current ChatGPT exposes Pro as the maximum effort for GPT-5.6 Sol, not as a
-# separate model row.  Oracle 0.17.1 verifies that Pro effort independently.
+# separate model row.  The validated Oracle current/LKG contracts verify that
+# Pro effort independently.
 PRO_MODEL = "gpt-5.6-sol"
 PRO_COMPOSER_PROMPT = (
     "Read the attached prompt/instructions and all attached files, then provide read-only analysis only. "
@@ -263,7 +264,7 @@ def build_launch_contract(
         "app_policy": "prompt-mention-only",
         "app_name": resolved_app_name,
         "reasoning_level": reasoning,
-        # Oracle 0.17.1 keeps `extra-high` distinct from the separate Pro
+        # The validated Oracle current/LKG contracts keep `extra-high` distinct from the separate Pro
         # effort. Keep this in the mode contract so dispatch cannot silently
         # turn a requested High run into Extra High or Pro.
         "thinking_time": REGULAR_THINKING_TIME[reasoning],
