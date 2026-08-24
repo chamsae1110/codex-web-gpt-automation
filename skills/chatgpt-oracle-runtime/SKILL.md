@@ -136,6 +136,17 @@ python skills/chatgpt-oracle-runtime/scripts/run_chatgpt_oracle.py recover --run
 ```
 
 Use `--action live` only to keep following the same stored session. A successful recovery must write a nonempty stored `output.md`, update `state.json` to `complete`, and refresh `transcript.md`; exit code zero without output is `attention_required`.
+If Oracle itself has already written the exact nonempty `output.md` and its
+strict session metadata is `completed`, but the outer runner exited before
+updating a still-`running` state, do not use recovery and never edit state by
+hand. The owning Codex task may preview `settle-saved-output` with the exact
+state, output, stdout, and Oracle-meta SHA-256 values, then remove only
+`--dry-run`. This bounded path additionally requires the immutable ownership
+and follow-up receipts, the exact parent conversation, one canonical stdout
+saved-output record, a valid terminal outcome/schema, an empty stderr, and all
+observer/controller/Chrome PIDs stopped. It writes an append-only settlement
+receipt and is unavailable to foreign tasks, active processes, ordinary runs
+with browser identity receipts, or changed/ambiguous evidence.
 Exact recovery is serialized by an exact-run mutex rather than re-entering the
 project submission mutex. This lets the same slug harvest a provider-terminal
 answer when a disconnected original observer still holds the submission mutex;

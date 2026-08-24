@@ -155,6 +155,9 @@ python "$env:USERPROFILE\.codex\bin\chatgpt_oracle_dispatch.py" `
 - 같은 읽기 전용 Pro 대화를 이어갈 때는 task-bound terminal parent에 내부 `followup` 라운드만 추가합니다. 신규 `pro-devspace-readonly` 부모의 기본 `archive=auto`는 `never`로 정규화되어 후속 입력창을 보존합니다. 명시적으로 보관했거나 과거에 자동 보관된 부모만 exact conversation URL의 제한된 복원을 사용합니다. 복원이 composer 전에 실패하면 harvest하지 않고 exact run을 보존한 채 사용자 미제출 확인 후 `settle-no-submission`으로 정산합니다. 각 라운드는 같은 conversation과 보관 전이를 다시 증명하고 mission/state/output/transcript hash 영수증을 남기며, raw Oracle follow-up 인자나 새 대화 fallback은 허용하지 않습니다.
 - 제출 후 오류는 기존 실행 신원으로 정확히 복구하며, 저장된 slug와 대화
   URL만 회수하고 자동 재제출하지 않습니다.
+- Oracle이 공식 `output.md`와 완료 메타를 이미 저장했지만 외부 state 전이만
+  끊긴 경우에는 소유 task의 해시 결속 `settle-saved-output`만 사용합니다.
+  일반 recovery의 브라우저 신원 게이트를 완화하거나 state를 직접 고치지 않습니다.
 - 브라우저나 로컬 프로세스 종료만으로 웹 작업 실패를 판정하지 않습니다.
 - 비밀, Owner 암호, OAuth 토큰, 브라우저 프로필은 저장소에 넣지 않습니다.
 - `codexpro-*` 이름은 기존 영수증·스키마·복구 자산의 내부 호환 ID일 뿐,

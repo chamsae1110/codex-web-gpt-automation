@@ -1,5 +1,22 @@
 # 기술 변경 기록
 
+## 1.19.5 - reconcile Oracle-saved terminal output
+
+- Added an owner-only `settle-saved-output` lifecycle command for the narrow
+  crash boundary where Oracle has already saved official terminal output and
+  strict completed session metadata, but the outer runner did not commit the
+  final state transition. It never sends, recovers, retries, or edits a foreign
+  task's run.
+- Reconciliation is hash-bound to the prior state, official output, stdout,
+  Oracle metadata, immutable ownership receipt, and exact follow-up binding.
+  It also requires one canonical saved-output log record, the unchanged parent
+  conversation and isolated profile, a valid terminal outcome/Pro schema,
+  empty stderr, and stopped observer/controller/Chrome processes.
+- The command writes an append-only receipt before marking the exact run
+  `complete / terminal / terminal_harvested`. Existing browser-receipt recovery
+  remains unchanged; path drift, symlinks, live PIDs, foreign ownership,
+  conversation mismatch, and ambiguous output continue to fail closed.
+
 ## 1.19.4 - bound follow-up browser and terminal detection
 
 - Oracle follow-up runs now keep the child's newly reserved CDP port instead

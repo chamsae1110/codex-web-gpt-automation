@@ -812,6 +812,399 @@ def pro_output_satisfies_required_schema(state: dict[str, Any], output_path: Pat
     return all(label.casefold() in sections for label in labels)
 
 
+SAVED_ASSISTANT_OUTPUT_RE = re.compile(r"^Saved assistant output to (?P<path>.+?)\s*$")
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+
+def _strict_json_regular_file(path: Path, *, label: str) -> tuple[dict[str, Any], bytes]:
+    exact = STATE.exact_regular_file(path, label=label)
+    raw = exact.read_bytes()
+
+    def reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate {label} key")
+            result[key] = value
+        return result
+
+    try:
+        payload = json.loads(raw.decode("utf-8", errors="strict"), object_pairs_hook=reject_duplicates)
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise OracleRunError(
+            "SAVED_OUTPUT_JSON_INVALID",
+            f"{label} must be strict JSON without duplicate keys",
+        ) from exc
+    if not isinstance(payload, dict):
+        raise OracleRunError("SAVED_OUTPUT_JSON_INVALID", f"{label} must be a JSON object")
+    return payload, raw
+
+
+def _saved_output_receipt_payload(path: Path) -> tuple[dict[str, Any], bytes] | None:
+    if not path.exists():
+        return None
+    return _strict_json_regular_file(path, label="saved_output_settlement")
+
+
+def _expected_transcript_sha256(stdout_path: Path, stderr_path: Path, output_path: Path) -> str:
+    chunks: list[bytes] = []
+    for path in (stdout_path, stderr_path, output_path):
+        data = path.read_bytes()
+        if data:
+            chunks.append(data.rstrip() + b"\n")
+    return hashlib.sha256(b"".join(chunks)).hexdigest()
+
+
+def settle_saved_terminal_output(
+    run_dir: Path,
+    *,
+    expected_state_sha256: str,
+    expected_output_sha256: str,
+    expected_stdout_sha256: str,
+    expected_oracle_meta_sha256: str,
+    dry_run: bool = False,
+    process_alive: Callable[[int], bool] = process_is_alive,
+) -> dict[str, Any]:
+    """Reconcile one owner-bound run after Oracle saved terminal output.
+
+    This does not relax recovery's browser-identity receipt gate.  It covers
+    only the narrower crash boundary where the exact Oracle session is already
+    completed, its official output was durably written, every run-owned process
+    has exited, and the outer state transition alone was missed.
+    """
+    directory = run_dir.expanduser().resolve(strict=True)
+    state_path = STATE.exact_regular_file(directory / "state.json", label="saved_output_state")
+    state = STATE.load_state(state_path)
+    require_current_task_owns_run(state)
+    receipt_path = directory / "settlements" / "saved-terminal-output.json"
+    existing = _saved_output_receipt_payload(receipt_path)
+    pending_receipt: tuple[dict[str, Any], bytes] | None = None
+    if existing is not None:
+        receipt, raw = existing
+        reference = state.get("saved_terminal_output_settlement")
+        if (
+            receipt.get("schema") == "codex.chatgpt.oracle-saved-terminal-output/v1"
+            and isinstance(reference, dict)
+            and Path(str(reference.get("path") or "")).resolve() == receipt_path.resolve()
+            and reference.get("sha256") == hashlib.sha256(raw).hexdigest()
+            and state.get("status") == "complete"
+            and state.get("session_authority") == "terminal"
+            and state.get("terminal_harvested") is True
+            and state.get("artifact_sha256") == receipt.get("output_sha256")
+            and state.get("task_outcome") == receipt.get("task_outcome")
+        ):
+            artifacts = state.get("artifacts") if isinstance(state.get("artifacts"), dict) else {}
+            output_path = STATE.exact_regular_file(artifacts.get("output"), label="settled_saved_output")
+            stdout_path = STATE.exact_regular_file(artifacts.get("stdout"), label="settled_saved_output_stdout")
+            stderr_path = STATE.exact_regular_file(artifacts.get("stderr"), label="settled_saved_output_stderr")
+            transcript_path = STATE.exact_regular_file(
+                artifacts.get("transcript"), label="settled_saved_output_transcript"
+            )
+            session_root = Path(
+                os.environ.get("ORACLE_SESSION_ROOT") or (Path.home() / ".oracle" / "sessions")
+            ).expanduser().resolve()
+            slug = str((state.get("oracle") or {}).get("slug") or "")
+            meta_path = STATE.exact_regular_file(
+                session_root / slug / "meta.json", label="settled_saved_output_oracle_meta"
+            )
+            current_hashes = {
+                "output_sha256": STATE.sha256_file(output_path),
+                "stdout_sha256": STATE.sha256_file(stdout_path),
+                "oracle_meta_sha256": STATE.sha256_file(meta_path),
+                "transcript_sha256": STATE.sha256_file(transcript_path),
+            }
+            if (
+                output_path.resolve() != (directory / "output.md").resolve()
+                or stdout_path.resolve() != (directory / "stdout.log").resolve()
+                or stderr_path.resolve() != (directory / "stderr.log").resolve()
+                or transcript_path.resolve() != (directory / "transcript.md").resolve()
+                or stderr_path.read_bytes()
+                or any(receipt.get(key) != value for key, value in current_hashes.items())
+            ):
+                raise OracleRunError(
+                    "SAVED_OUTPUT_SETTLEMENT_ARTIFACT_DRIFT",
+                    "settled saved-output artifacts changed after reconciliation",
+                    {"current": current_hashes},
+                )
+            return {
+                "ok": True,
+                "status": "saved_terminal_output_already_reconciled",
+                "run_dir": str(directory),
+                "settlement_path": str(receipt_path),
+                "settlement_sha256": reference["sha256"],
+                "result": state,
+            }
+        stale_boundary = (
+            receipt.get("schema") == "codex.chatgpt.oracle-saved-terminal-output/v1"
+            and not isinstance(reference, dict)
+            and state.get("status") == "running"
+            and state.get("session_authority") == "submitted_unknown"
+            and state.get("terminal_harvested") is False
+        )
+        if stale_boundary:
+            pending_receipt = (receipt, raw)
+        else:
+            raise OracleRunError(
+                "SAVED_OUTPUT_SETTLEMENT_CONFLICT",
+                "append-only saved-output settlement exists but does not validate against terminal state",
+                {"path": str(receipt_path)},
+            )
+
+    exact_expected = {
+        "state_sha256": expected_state_sha256.strip().casefold(),
+        "output_sha256": expected_output_sha256.strip().casefold(),
+        "stdout_sha256": expected_stdout_sha256.strip().casefold(),
+        "oracle_meta_sha256": expected_oracle_meta_sha256.strip().casefold(),
+    }
+    if any(re.fullmatch(r"[0-9a-f]{64}", value) is None for value in exact_expected.values()):
+        raise OracleRunError("SAVED_OUTPUT_HASH_INVALID", "every expected hash must be exact SHA-256")
+    if (
+        state.get("status") != "running"
+        or state.get("session_authority") != "submitted_unknown"
+        or state.get("transport_status") != "prepared"
+        or state.get("terminal_harvested") is not False
+        or state.get("task_outcome") != "pending"
+    ):
+        raise OracleRunError(
+            "SAVED_OUTPUT_STALE_STATE_REQUIRED",
+            "reconciliation requires the exact stale post-output state boundary",
+        )
+    if STATE.proven_ownership_receipt(state_path) is None:
+        raise OracleRunError("SAVED_OUTPUT_OWNERSHIP_INVALID", "exact ownership receipt is invalid")
+    binding = STATE.proven_followup_binding(state_path)
+    if binding is None:
+        raise OracleRunError("SAVED_OUTPUT_FOLLOWUP_BINDING_INVALID", "exact follow-up binding is invalid")
+    browser_reference = state.get("browser_identity") if isinstance(state.get("browser_identity"), dict) else {}
+    if (
+        browser_reference.get("receipt_path") is not None
+        or browser_reference.get("receipt_sha256") is not None
+        or (directory / "browser-identity-receipt.json").exists()
+    ):
+        raise OracleRunError(
+            "SAVED_OUTPUT_BROWSER_RECEIPT_PRESENT",
+            "runs with a browser identity receipt must use the ordinary exact-session path",
+        )
+    artifacts = state.get("artifacts") if isinstance(state.get("artifacts"), dict) else {}
+    output_path = STATE.exact_regular_file(artifacts.get("output"), label="saved_output")
+    stdout_path = STATE.exact_regular_file(artifacts.get("stdout"), label="saved_output_stdout")
+    stderr_path = STATE.exact_regular_file(artifacts.get("stderr"), label="saved_output_stderr")
+    if (
+        output_path.resolve() != (directory / "output.md").resolve()
+        or stdout_path.resolve() != (directory / "stdout.log").resolve()
+        or stderr_path.resolve() != (directory / "stderr.log").resolve()
+        or stderr_path.read_bytes()
+        or not STATE.output_is_nonempty(output_path)
+    ):
+        raise OracleRunError(
+            "SAVED_OUTPUT_ARTIFACT_INVALID",
+            "official output/stdout/stderr artifacts do not match the exact run boundary",
+        )
+    slug = str((state.get("oracle") or {}).get("slug") or "")
+    session_root = Path(
+        os.environ.get("ORACLE_SESSION_ROOT") or (Path.home() / ".oracle" / "sessions")
+    ).expanduser().resolve()
+    meta_path = session_root / slug / "meta.json"
+    meta, meta_raw = _strict_json_regular_file(meta_path, label="saved_output_oracle_meta")
+    actual_hashes = {
+        "state_sha256": STATE.sha256_file(state_path),
+        "output_sha256": STATE.sha256_file(output_path),
+        "stdout_sha256": STATE.sha256_file(stdout_path),
+        "oracle_meta_sha256": hashlib.sha256(meta_raw).hexdigest(),
+    }
+    if actual_hashes != exact_expected:
+        raise OracleRunError(
+            "SAVED_OUTPUT_HASH_MISMATCH",
+            "exact saved-output evidence changed before reconciliation",
+            {"expected": exact_expected, "actual": actual_hashes},
+        )
+    stdout_text = stdout_path.read_text(encoding="utf-8", errors="strict")
+    saved_paths = []
+    clean_nonempty_lines = [
+        ANSI_ESCAPE_RE.sub("", line).strip()
+        for line in stdout_text.splitlines()
+        if ANSI_ESCAPE_RE.sub("", line).strip()
+    ]
+    for line in clean_nonempty_lines:
+        match = SAVED_ASSISTANT_OUTPUT_RE.fullmatch(line)
+        if match is not None:
+            saved_paths.append(Path(match.group("path")).expanduser().resolve(strict=False))
+    if (
+        saved_paths != [output_path.resolve()]
+        or not clean_nonempty_lines
+        or SAVED_ASSISTANT_OUTPUT_RE.fullmatch(clean_nonempty_lines[-1]) is None
+    ):
+        raise OracleRunError(
+            "SAVED_OUTPUT_STDOUT_BINDING_INVALID",
+            "stdout must contain exactly one canonical saved-output record for this run",
+            {"observed_paths": [str(path) for path in saved_paths]},
+        )
+    browser = meta.get("browser") if isinstance(meta.get("browser"), dict) else {}
+    runtime = browser.get("runtime") if isinstance(browser.get("runtime"), dict) else {}
+    conversation_url = str(runtime.get("tabUrl") or "").strip()
+    conversation_id = str(runtime.get("conversationId") or "").strip()
+    expected_url = str((binding.get("payload") or {}).get("conversation_url") or "").strip()
+    expected_id = expected_url.rstrip("/").rsplit("/", 1)[-1] if expected_url else ""
+    profile_path = Path(str(runtime.get("userDataDir") or "")).expanduser()
+    raw_browser_temp = Path(str(artifacts.get("browser_temp") or "")).expanduser()
+    browser_temp = raw_browser_temp.resolve()
+    runtime_pids = tuple(
+        sorted({
+            value for value in (runtime.get("controllerPid"), runtime.get("chromePid"))
+            if isinstance(value, int) and value > 0
+        })
+    )
+    runtime_port = runtime.get("chromePort")
+    if (
+        meta.get("status") != "completed"
+        or not str(meta.get("completedAt") or "").strip()
+        or meta.get("error") is not None
+        or runtime.get("promptSubmitted") is not True
+        or STATE.CHATGPT_CONVERSATION_URL_RE.fullmatch(conversation_url) is None
+        or conversation_url != expected_url
+        or conversation_id != expected_id
+        or not isinstance(runtime_port, int)
+        or not 1024 <= runtime_port <= 65535
+        or not str(runtime.get("chromeTargetId") or "").strip()
+        or not profile_path.is_dir()
+        or profile_path.is_symlink()
+        or browser_temp != (directory / "browser-temp").resolve()
+        or not browser_temp.is_dir()
+        or raw_browser_temp.is_symlink()
+        or not STATE.is_within(browser_temp, profile_path.resolve())
+    ):
+        raise OracleRunError(
+            "SAVED_OUTPUT_ORACLE_META_INVALID",
+            "Oracle terminal metadata is not exactly bound to this follow-up conversation and browser profile",
+        )
+    checked_pids = tuple(sorted(set(run_owned_process_ids(directory, state)) | set(runtime_pids)))
+    active_pids = [pid for pid in checked_pids if process_alive(pid)]
+    if active_pids:
+        raise OracleRunError(
+            "SAVED_OUTPUT_PROCESS_ACTIVE",
+            "every exact run-owned Oracle, controller, and Chrome process must be stopped",
+            {"active_pids": active_pids},
+        )
+    if any(directory.glob("recovery-*-candidate.md")):
+        raise OracleRunError(
+            "SAVED_OUTPUT_RECOVERY_CONFLICT",
+            "a recovery candidate exists; saved-output reconciliation is ambiguous",
+        )
+    task_outcome = STATE.classify_task_outcome(
+        output_path,
+        contract=str(state.get("task_outcome_contract") or "legacy"),
+        transport=str(state.get("transport") or "devspace"),
+    )
+    if task_outcome not in {"executed", "not_executed", "blocked"}:
+        raise OracleRunError(
+            "SAVED_OUTPUT_TASK_OUTCOME_INVALID",
+            "official output does not contain one unambiguous terminal task outcome",
+        )
+    if not pro_output_satisfies_required_schema(state, output_path):
+        raise OracleRunError(
+            "SAVED_OUTPUT_SCHEMA_INCOMPLETE",
+            "official output does not satisfy the exact Pro required-answer schema",
+        )
+    receipt = {
+        "schema": "codex.chatgpt.oracle-saved-terminal-output/v1",
+        "source_thread_id": STATE.source_thread_id_from_state(state),
+        "project_root": state.get("project_root"),
+        "run_id": state.get("run_id"),
+        "slug": slug,
+        "mission_sha256": (state.get("mission") or {}).get("sha256"),
+        **actual_hashes,
+        "ownership_receipt_sha256": STATE.proven_ownership_receipt(state_path)["sha256"],
+        "followup_binding_sha256": binding["sha256"],
+        "conversation_url": conversation_url,
+        "conversation_id": conversation_id,
+        "chrome_target_id": runtime.get("chromeTargetId"),
+        "profile_path": str(profile_path.resolve()),
+        "expected_cdp_port": browser_reference.get("expected_cdp_port"),
+        "observed_cdp_port": runtime_port,
+        "oracle_completed_at": meta.get("completedAt"),
+        "run_owned_pids_checked": list(checked_pids),
+        "task_outcome": task_outcome,
+        "transcript_sha256": _expected_transcript_sha256(stdout_path, stderr_path, output_path),
+        "reconciled_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+    preview = {
+        "ok": True,
+        "status": "dry-run" if dry_run else "saved_terminal_output_reconciled",
+        "run_dir": str(directory),
+        "output_path": str(output_path),
+        "settlement_path": str(receipt_path),
+        "settlement_payload": receipt,
+        "submission_action": "none",
+    }
+    if dry_run:
+        return preview
+    transcript_path = Path(str(artifacts.get("transcript") or directory / "transcript.md")).resolve()
+    if transcript_path != (directory / "transcript.md").resolve() or transcript_path.is_symlink():
+        raise OracleRunError("SAVED_OUTPUT_TRANSCRIPT_INVALID", "exact transcript path is unsafe")
+    layout = STATE.RunLayout(
+        str(state["run_id"]), slug, directory, state_path, output_path, transcript_path,
+        stdout_path, stderr_path, browser_temp,
+    )
+    STATE.write_transcript(layout)
+    if STATE.sha256_file(transcript_path) != receipt["transcript_sha256"]:
+        raise OracleRunError(
+            "SAVED_OUTPUT_TRANSCRIPT_HASH_MISMATCH",
+            "exact transcript bytes differ from the planned terminal transcript",
+        )
+    if receipt_path.parent.exists() and (
+        receipt_path.parent.is_symlink() or receipt_path.parent.resolve().parent != directory
+    ):
+        raise OracleRunError("SAVED_OUTPUT_SETTLEMENT_PATH_UNSAFE", "settlement directory is unsafe")
+    receipt_path.parent.mkdir(parents=True, exist_ok=True)
+    encoded = (json.dumps(receipt, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    if pending_receipt is not None:
+        recorded, raw = pending_receipt
+        recorded_stable = {key: value for key, value in recorded.items() if key != "reconciled_at"}
+        planned_stable = {key: value for key, value in receipt.items() if key != "reconciled_at"}
+        if recorded_stable != planned_stable:
+            raise OracleRunError(
+                "SAVED_OUTPUT_SETTLEMENT_CONFLICT",
+                "interrupted append-only settlement does not match the exact current evidence",
+            )
+        encoded = raw
+    else:
+        try:
+            with receipt_path.open("xb") as handle:
+                handle.write(encoded)
+                handle.flush()
+                os.fsync(handle.fileno())
+        except FileExistsError as exc:
+            raise OracleRunError("SAVED_OUTPUT_SETTLEMENT_EXISTS", "append-only settlement already exists") from exc
+    updated = STATE.update_state(
+        state_path,
+        status="complete",
+        exit_code=state.get("exit_code"),
+        session_authority="terminal",
+        terminal_harvested=True,
+        artifact_sha256=actual_hashes["output_sha256"],
+        transport_status="complete",
+        task_outcome=task_outcome,
+        task_outcome_reason="oracle-saved-terminal-output-reconciliation",
+        conversation_url=conversation_url,
+    )
+    updated["saved_terminal_output_settlement"] = {
+        "schema": "codex.chatgpt.oracle-settlement-reference/v1",
+        "path": str(receipt_path),
+        "sha256": hashlib.sha256(encoded).hexdigest(),
+    }
+    updated["browser_observer"] = {
+        **(updated.get("browser_observer") if isinstance(updated.get("browser_observer"), dict) else {}),
+        "status": "process-exited-terminal-output-reconciled",
+    }
+    STATE.write_json_atomic(state_path, updated)
+    return {
+        **preview,
+        "settlement_sha256": hashlib.sha256(encoded).hexdigest(),
+        "output_sha256": actual_hashes["output_sha256"],
+        "task_outcome": task_outcome,
+        "result": updated,
+    }
+
+
 def promote_terminal_harvest_candidate(
     run_dir: Path,
     *,
@@ -2764,6 +3157,13 @@ def build_parser() -> argparse.ArgumentParser:
     promote_parser.add_argument("--run-dir", type=Path, required=True)
     promote_parser.add_argument("--candidate-path", type=Path, required=True)
     promote_parser.add_argument("--expected-candidate-sha256", required=True)
+    saved_output_parser = commands.add_parser("settle-saved-output")
+    saved_output_parser.add_argument("--run-dir", type=Path, required=True)
+    saved_output_parser.add_argument("--expected-state-sha256", required=True)
+    saved_output_parser.add_argument("--expected-output-sha256", required=True)
+    saved_output_parser.add_argument("--expected-stdout-sha256", required=True)
+    saved_output_parser.add_argument("--expected-oracle-meta-sha256", required=True)
+    saved_output_parser.add_argument("--dry-run", action="store_true")
     settle_parser = commands.add_parser("settle-no-submission")
     settle_parser.add_argument("--run-dir", type=Path, required=True)
     settle_parser.add_argument(
@@ -2836,6 +3236,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.run_dir,
                 candidate_path=args.candidate_path,
                 expected_candidate_sha256=args.expected_candidate_sha256,
+            )
+        elif args.command == "settle-saved-output":
+            payload = settle_saved_terminal_output(
+                args.run_dir,
+                expected_state_sha256=args.expected_state_sha256,
+                expected_output_sha256=args.expected_output_sha256,
+                expected_stdout_sha256=args.expected_stdout_sha256,
+                expected_oracle_meta_sha256=args.expected_oracle_meta_sha256,
+                dry_run=args.dry_run,
             )
         elif args.command == "settle-no-submission":
             payload = settle_user_confirmed_no_submission(

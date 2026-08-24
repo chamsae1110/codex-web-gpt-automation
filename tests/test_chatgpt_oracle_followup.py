@@ -196,6 +196,292 @@ def test_followup_child_executes_with_durable_v1_watchdog_contract(
     }
 
 
+def make_saved_terminal_output_child(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    runner, parent, mission = make_parent(tmp_path, monkeypatch)
+    child_run_id = "followup-saved-terminal-output-a1b2c3d4"
+    plan = runner.followup_run(
+        parent.run_dir,
+        mission_path=mission,
+        round_key="saved-terminal-output",
+        run_id=child_run_id,
+        dry_run=True,
+    )
+    reservation_path = Path(plan["round_receipt_path"])
+    reservation_path.parent.mkdir(parents=True)
+    reservation_path.write_text(
+        json.dumps(plan["round_receipt_plan"], ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    reservation_sha256 = hashlib.sha256(reservation_path.read_bytes()).hexdigest()
+    parent_state = runner.STATE.load_state(parent.state_path)
+    manifest_payload = runner._followup_manifest_payload(
+        parent_state,
+        mission_path=mission,
+        run_id=child_run_id,
+        archive_contract=plan["round_receipt_plan"]["parent"]["archive_contract"],
+    )
+    manifest_payload["run_root"] = str(parent.run_dir.parent)
+    manifest = tmp_path / "saved-terminal-child.json"
+    manifest.write_text(json.dumps(manifest_payload), encoding="utf-8")
+    config = runner.STATE.load_manifest(manifest, bind_runtime_task=True)
+    child = runner.STATE.create_layout(config, run_id=child_run_id)
+    child.run_dir.mkdir()
+    child.browser_temp_path.mkdir()
+    profile = child.browser_temp_path / "profile"
+    profile.mkdir()
+    (child.run_dir / "mission.md").write_bytes(mission.read_bytes())
+    child.output_path.write_text("saved answer\nTASK_OUTCOME: EXECUTED\n", encoding="utf-8")
+    child.stdout_path.write_text(
+        f"1h42m · gpt-5.6-sol[browser]\nSaved assistant output to {child.output_path}\n",
+        encoding="utf-8",
+    )
+    child.stderr_path.write_bytes(b"")
+    state = runner.STATE.state_payload(
+        config,
+        child,
+        status="running",
+        resolved_version="oracle 0.17.1",
+        cdp_port=plan["round_receipt_plan"]["child"]["expected_cdp_port"],
+    )
+    state.update({
+        "session_authority": "submitted_unknown",
+        "transport_status": "prepared",
+        "task_outcome": "pending",
+        "terminal_harvested": False,
+        "browser_observer": {"status": "running", "oracle_process_pid": 45001},
+    })
+    runner.STATE.write_json_atomic(child.state_path, state)
+    binding = {
+        "schema": "codex.chatgpt.oracle-followup-binding/v1",
+        "source_thread_id": OWNER,
+        "round_key": "saved-terminal-output",
+        "reservation_path": str(reservation_path),
+        "reservation_sha256": reservation_sha256,
+        "parent": plan["round_receipt_plan"]["parent"],
+        "child": plan["round_receipt_plan"]["child"],
+        "conversation_url": plan["parent_conversation_url"],
+    }
+    runner.STATE.persist_followup_binding(child.state_path, binding)
+    runner.STATE.persist_ownership_receipt(child.state_path, oracle_process_pid=45001)
+    meta_path = Path(os.environ["ORACLE_SESSION_ROOT"]) / child.slug / "meta.json"
+    meta_path.parent.mkdir(parents=True, exist_ok=True)
+    conversation_url = plan["parent_conversation_url"]
+    meta_path.write_text(json.dumps({
+        "status": "completed",
+        "completedAt": "2026-08-24T09:04:40.25Z",
+        "error": None,
+        "browser": {"runtime": {
+            "chromePid": 45003,
+            "controllerPid": 45002,
+            "chromePort": 43122,
+            "userDataDir": str(profile),
+            "chromeTargetId": "saved-terminal-target",
+            "tabUrl": conversation_url,
+            "conversationId": conversation_url.rsplit("/", 1)[-1],
+            "promptSubmitted": True,
+        }},
+    }), encoding="utf-8")
+    hashes = {
+        "expected_state_sha256": runner.STATE.sha256_file(child.state_path),
+        "expected_output_sha256": runner.STATE.sha256_file(child.output_path),
+        "expected_stdout_sha256": runner.STATE.sha256_file(child.stdout_path),
+        "expected_oracle_meta_sha256": runner.STATE.sha256_file(meta_path),
+    }
+    return runner, parent, child, meta_path, hashes
+
+
+def test_saved_terminal_output_reconciliation_is_owner_bound_and_idempotent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, parent, child, _meta_path, hashes = make_saved_terminal_output_child(tmp_path, monkeypatch)
+    before = child.state_path.read_bytes()
+    preview = runner.settle_saved_terminal_output(
+        child.run_dir, dry_run=True, process_alive=lambda _pid: False, **hashes
+    )
+    assert preview["status"] == "dry-run"
+    assert child.state_path.read_bytes() == before
+    assert not Path(preview["settlement_path"]).exists()
+
+    result = runner.settle_saved_terminal_output(
+        child.run_dir, process_alive=lambda _pid: False, **hashes
+    )
+    assert result["task_outcome"] == "executed"
+    settled = runner.STATE.load_state(child.state_path)
+    assert settled["status"] == "complete"
+    assert settled["session_authority"] == "terminal"
+    assert settled["terminal_harvested"] is True
+    assert settled["transport_status"] == "complete"
+    assert settled["oracle"]["conversation_url"] == "https://chatgpt.com/c/exact-parent-conversation"
+    assert runner.STATE.unresolved_project_sessions(
+        child.run_dir.parent,
+        Path(settled["project_root"]),
+        source_thread_id=OWNER,
+    ) == []
+    repeated = runner.settle_saved_terminal_output(
+        child.run_dir, process_alive=lambda _pid: False, **hashes
+    )
+    assert repeated["status"] == "saved_terminal_output_already_reconciled"
+
+
+def test_saved_terminal_output_reconciliation_rejects_foreign_and_live_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, _parent, child, _meta_path, hashes = make_saved_terminal_output_child(tmp_path, monkeypatch)
+    monkeypatch.setenv("CODEX_THREAD_ID", FOREIGN)
+    with pytest.raises(runner.OracleRunError) as foreign:
+        runner.settle_saved_terminal_output(
+            child.run_dir, process_alive=lambda _pid: False, **hashes
+        )
+    assert foreign.value.code == "FOREIGN_TASK_SESSION"
+    monkeypatch.setenv("CODEX_THREAD_ID", OWNER)
+    with pytest.raises(runner.OracleRunError) as active:
+        runner.settle_saved_terminal_output(
+            child.run_dir, process_alive=lambda pid: pid == 45003, **hashes
+        )
+    assert active.value.code == "SAVED_OUTPUT_PROCESS_ACTIVE"
+
+
+def test_saved_terminal_output_reconciliation_rejects_drift_and_conversation_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, _parent, child, meta_path, hashes = make_saved_terminal_output_child(tmp_path, monkeypatch)
+    child.stdout_path.write_text("Saved assistant output to C:\\elsewhere\\output.md\n", encoding="utf-8")
+    changed = {**hashes, "expected_stdout_sha256": runner.STATE.sha256_file(child.stdout_path)}
+    with pytest.raises(runner.OracleRunError) as wrong_path:
+        runner.settle_saved_terminal_output(
+            child.run_dir, process_alive=lambda _pid: False, **changed
+        )
+    assert wrong_path.value.code == "SAVED_OUTPUT_STDOUT_BINDING_INVALID"
+
+    second = tmp_path / "second"
+    second.mkdir()
+    runner, _parent, child, meta_path, hashes = make_saved_terminal_output_child(second, monkeypatch)
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["browser"]["runtime"]["tabUrl"] = "https://chatgpt.com/c/foreign-conversation"
+    meta["browser"]["runtime"]["conversationId"] = "foreign-conversation"
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+    changed = {**hashes, "expected_oracle_meta_sha256": runner.STATE.sha256_file(meta_path)}
+    with pytest.raises(runner.OracleRunError) as mismatch:
+        runner.settle_saved_terminal_output(
+            child.run_dir, process_alive=lambda _pid: False, **changed
+        )
+    assert mismatch.value.code == "SAVED_OUTPUT_ORACLE_META_INVALID"
+
+
+def test_saved_terminal_output_reconciliation_resumes_after_receipt_only_crash(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, _parent, child, _meta_path, hashes = make_saved_terminal_output_child(tmp_path, monkeypatch)
+    preview = runner.settle_saved_terminal_output(
+        child.run_dir, dry_run=True, process_alive=lambda _pid: False, **hashes
+    )
+    receipt_path = Path(preview["settlement_path"])
+    receipt_path.parent.mkdir()
+    receipt_path.write_text(
+        json.dumps(preview["settlement_payload"], ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    result = runner.settle_saved_terminal_output(
+        child.run_dir, process_alive=lambda _pid: False, **hashes
+    )
+    assert result["status"] == "saved_terminal_output_reconciled"
+    assert runner.STATE.load_state(child.state_path)["terminal_harvested"] is True
+
+
+def test_saved_terminal_output_reconciliation_rechecks_idempotent_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, _parent, child, _meta_path, hashes = make_saved_terminal_output_child(tmp_path, monkeypatch)
+    runner.settle_saved_terminal_output(
+        child.run_dir, process_alive=lambda _pid: False, **hashes
+    )
+    child.output_path.write_text("tampered\nTASK_OUTCOME: EXECUTED\n", encoding="utf-8")
+    with pytest.raises(runner.OracleRunError) as drift:
+        runner.settle_saved_terminal_output(
+            child.run_dir, process_alive=lambda _pid: False, **hashes
+        )
+    assert drift.value.code == "SAVED_OUTPUT_SETTLEMENT_ARTIFACT_DRIFT"
+
+
+def test_saved_terminal_output_reconciliation_rejects_external_browser_temp(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, _parent, child, meta_path, hashes = make_saved_terminal_output_child(tmp_path, monkeypatch)
+    external = tmp_path / "foreign-browser-temp"
+    profile = external / "profile"
+    profile.mkdir(parents=True)
+    state = runner.STATE.load_state(child.state_path)
+    state["artifacts"]["browser_temp"] = str(external)
+    runner.STATE.write_json_atomic(child.state_path, state)
+    ownership_path = child.run_dir / "ownership-receipt.json"
+    ownership = json.loads(ownership_path.read_text(encoding="utf-8"))
+    ownership["browser_temp"] = str(external)
+    ownership_path.write_text(json.dumps(ownership, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["browser"]["runtime"]["userDataDir"] = str(profile)
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+    changed = {
+        **hashes,
+        "expected_state_sha256": runner.STATE.sha256_file(child.state_path),
+        "expected_oracle_meta_sha256": runner.STATE.sha256_file(meta_path),
+    }
+    with pytest.raises(runner.OracleRunError) as outside:
+        runner.settle_saved_terminal_output(
+            child.run_dir, process_alive=lambda _pid: False, **changed
+        )
+    assert outside.value.code == "SAVED_OUTPUT_ORACLE_META_INVALID"
+
+
+def test_saved_terminal_output_reconciliation_rejects_browser_temp_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, _parent, child, _meta_path, hashes = make_saved_terminal_output_child(tmp_path, monkeypatch)
+    alias = tmp_path / "browser-temp-alias"
+    try:
+        alias.symlink_to(child.browser_temp_path, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"directory symlinks unavailable: {exc}")
+    state = runner.STATE.load_state(child.state_path)
+    state["artifacts"]["browser_temp"] = str(alias)
+    runner.STATE.write_json_atomic(child.state_path, state)
+    ownership_path = child.run_dir / "ownership-receipt.json"
+    ownership = json.loads(ownership_path.read_text(encoding="utf-8"))
+    ownership["browser_temp"] = str(alias)
+    ownership_path.write_text(json.dumps(ownership, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    changed = {**hashes, "expected_state_sha256": runner.STATE.sha256_file(child.state_path)}
+    with pytest.raises(runner.OracleRunError) as linked:
+        runner.settle_saved_terminal_output(
+            child.run_dir, process_alive=lambda _pid: False, **changed
+        )
+    assert linked.value.code == "SAVED_OUTPUT_ORACLE_META_INVALID"
+
+
+def test_saved_terminal_output_reconciliation_rejects_ambiguous_output_and_stderr(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, _parent, child, _meta_path, hashes = make_saved_terminal_output_child(tmp_path, monkeypatch)
+    child.output_path.write_text(
+        "saved answer\nTASK_OUTCOME: EXECUTED\nordinary trailing prose\n",
+        encoding="utf-8",
+    )
+    changed = {**hashes, "expected_output_sha256": runner.STATE.sha256_file(child.output_path)}
+    with pytest.raises(runner.OracleRunError) as ambiguous:
+        runner.settle_saved_terminal_output(
+            child.run_dir, process_alive=lambda _pid: False, **changed
+        )
+    assert ambiguous.value.code == "SAVED_OUTPUT_TASK_OUTCOME_INVALID"
+
+    second = tmp_path / "stderr"
+    second.mkdir()
+    runner, _parent, child, _meta_path, hashes = make_saved_terminal_output_child(second, monkeypatch)
+    child.stderr_path.write_text("late error\n", encoding="utf-8")
+    with pytest.raises(runner.OracleRunError) as stderr:
+        runner.settle_saved_terminal_output(
+            child.run_dir, process_alive=lambda _pid: False, **hashes
+        )
+    assert stderr.value.code == "SAVED_OUTPUT_ARTIFACT_INVALID"
+
+
 def make_archived_parent_unarchive_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
