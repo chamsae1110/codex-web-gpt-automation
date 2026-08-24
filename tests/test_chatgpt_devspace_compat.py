@@ -351,6 +351,66 @@ def test_stop_service_requires_exact_devspace_identity() -> None:
     assert foreign.value.code == "DEVSPACE_SERVICE_IDENTITY_MISMATCH"
 
 
+def test_service_stop_resolves_current_and_lkg_roots(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    compat = load_compat()
+    current = tmp_path / "current"
+    lkg = tmp_path / "lkg"
+    foreign = tmp_path / "foreign"
+    for root, version in ((current, "1.0.7"), (lkg, "1.0.4"), (foreign, "9.9.9")):
+        root.mkdir()
+        (root / "package.json").write_text(json.dumps({"version": version}), encoding="utf-8")
+    monkeypatch.setattr(compat, "_candidate_roots", lambda: [foreign, lkg, current])
+
+    assert compat.resolve_service_stop_roots() == [current.resolve(), lkg.resolve()]
+
+    stopped: list[int] = []
+    result = compat.stop_exact_devspace_service(
+        service_probe=lambda port: {
+            "pid": 46,
+            "command_line": f"node {lkg / 'dist' / 'cli.js'} serve",
+            "started_at_unix_ns": 1,
+        },
+        stopper=stopped.append,
+    )
+    assert result["stopped"] is True
+    assert stopped == [46]
+
+
+def test_stop_service_cli_forwards_validated_package_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    compat = load_compat()
+    lkg = tmp_path / "lkg"
+    lkg.mkdir()
+    (lkg / "package.json").write_text(json.dumps({"version": "1.0.4"}), encoding="utf-8")
+    calls: list[dict] = []
+    monkeypatch.setattr(
+        compat,
+        "stop_exact_devspace_service",
+        lambda **kwargs: calls.append(kwargs) or {"ok": True, "stopped": False},
+    )
+
+    assert compat.main(["--stop-exact-service", "--package-root", str(lkg)]) == 0
+    assert calls == [{"local_port": 7676, "package_roots": [lkg.resolve()]}]
+    assert json.loads(capsys.readouterr().out)["ok"] is True
+
+
+def test_stop_service_cli_rejects_unvalidated_package_version(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    compat = load_compat()
+    package = tmp_path / "foreign"
+    package.mkdir()
+    (package / "package.json").write_text(json.dumps({"version": "9.9.9"}), encoding="utf-8")
+
+    assert compat.main(["--stop-exact-service", "--package-root", str(package)]) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["error"]["code"] == "DEVSPACE_SERVICE_STOP_VERSION_UNSUPPORTED"
+
+
 def test_service_identity_accepts_posix_npm_shim_only_for_exact_package(
     tmp_path: Path,
 ) -> None:
@@ -590,7 +650,8 @@ def test_delete_file_patch_safety_contract_on_temporary_workspace(
     assert 'registerAppTool(server, toolNames.read' in server
     assert 'registerAppTool(server, toolNames.write' in server
     assert 'registerAppTool(server, toolNames.delete' in server
-    assert "isDirectory = (await stat(readPath.absolutePath)).isDirectory();" in server
+    assert "readFileTool({ ...input, path: readPath.absolutePath }" in server
+    assert "workspaces.markReadPathLoaded(workspace, readPath);" in server
     write_annotations = re.search(r"const WRITE_TOOL_ANNOTATIONS = \{([^}]+)\};", server)
     delete_annotations = re.search(r"const DELETE_TOOL_ANNOTATIONS = \{([^}]+)\};", server)
     assert write_annotations is not None and delete_annotations is not None

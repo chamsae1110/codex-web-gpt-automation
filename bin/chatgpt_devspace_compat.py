@@ -90,6 +90,29 @@ def resolve_package_roots(version: str = SUPPORTED_VERSION) -> list[Path]:
     return roots
 
 
+def resolve_service_stop_roots() -> list[Path]:
+    """Resolve only validated current/LKG package roots for an exact upgrade stop.
+
+    The updater never patches the LKG package, but an in-place upgrade must be
+    able to stop the still-running LKG service before starting the tested
+    current package.  Identity remains bound to an exact installed CLI path.
+    """
+    roots: list[Path] = []
+    for version in (SUPPORTED_VERSION, LEGACY_LKG_VERSION):
+        try:
+            roots.extend(resolve_package_roots(version))
+        except DevSpaceCompatError as exc:
+            if exc.code != "DEVSPACE_PACKAGE_NOT_FOUND":
+                raise
+    if not roots:
+        raise DevSpaceCompatError(
+            "DEVSPACE_PACKAGE_NOT_FOUND",
+            "No validated current or last-known-good DevSpace package is installed",
+            {"versions": [SUPPORTED_VERSION, LEGACY_LKG_VERSION]},
+        )
+    return list(dict.fromkeys(roots))
+
+
 def check_native_runtime(
     *,
     package_root: Path | None = None,
@@ -519,7 +542,7 @@ def stop_exact_devspace_service(
     identity = service_probe(local_port)
     if identity is None:
         return {"ok": True, "stopped": False, "reason": "service-absent"}
-    roots = list(package_roots or resolve_package_roots())
+    roots = list(package_roots or resolve_service_stop_roots())
     identity = _assert_devspace_service_identity(identity, roots)
     pid = int(identity["pid"])
     if stopper is not None:
@@ -809,7 +832,25 @@ def main(argv: Sequence[str] | None = None) -> int:
                 local_port=args.local_port,
             )
         elif args.stop_exact_service:
-            result = stop_exact_devspace_service(local_port=args.local_port)
+            roots = None
+            if args.package_root is not None:
+                root = args.package_root.expanduser().resolve(strict=True)
+                version = package_version(root)
+                if version not in {SUPPORTED_VERSION, LEGACY_LKG_VERSION}:
+                    raise DevSpaceCompatError(
+                        "DEVSPACE_SERVICE_STOP_VERSION_UNSUPPORTED",
+                        "service stop accepts only the validated current or last-known-good package",
+                        {
+                            "root": str(root),
+                            "version": version,
+                            "allowed_versions": [SUPPORTED_VERSION, LEGACY_LKG_VERSION],
+                        },
+                    )
+                roots = [root]
+            result = stop_exact_devspace_service(
+                local_port=args.local_port,
+                package_roots=roots,
+            )
         else:
             result = ensure_devspace_compatibility(package_root=args.package_root)
     except DevSpaceCompatError as exc:

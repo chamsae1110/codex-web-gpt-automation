@@ -16,6 +16,10 @@
 - Current DevSpace keeps the existing allowed-root, OAuth replay, write/delete,
   large-read, and workspace-context safety canaries while inheriting upstream
   restart-safe conversation/workspace reuse and actionable workspace errors.
+- The first-install and update wizard can now stop an exact running DevSpace
+  `1.0.4` LKG service while upgrading to `1.0.7`. The stop authority remains
+  limited to the resolved current/LKG `dist/cli.js serve` identity; arbitrary
+  package versions and unrelated listeners still fail closed.
 
 ## 1.19.7 - settle direct DevSpace model-option misses safely
 
