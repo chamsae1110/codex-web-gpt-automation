@@ -270,16 +270,24 @@ def make_saved_terminal_output_child(tmp_path: Path, monkeypatch: pytest.MonkeyP
         "status": "completed",
         "completedAt": "2026-08-24T09:04:40.25Z",
         "error": None,
-        "browser": {"runtime": {
-            "chromePid": 45003,
-            "controllerPid": 45002,
-            "chromePort": 43122,
-            "userDataDir": str(profile),
-            "chromeTargetId": "saved-terminal-target",
-            "tabUrl": conversation_url,
-            "conversationId": conversation_url.rsplit("/", 1)[-1],
-            "promptSubmitted": True,
-        }},
+        "browser": {
+            "runtime": {
+                "chromePid": 45003,
+                "controllerPid": 45002,
+                "chromePort": 43122,
+                "userDataDir": str(profile),
+                "chromeTargetId": "saved-terminal-target",
+                "tabUrl": conversation_url,
+                "conversationId": conversation_url.rsplit("/", 1)[-1],
+                "promptSubmitted": True,
+            },
+            "archive": {
+                "mode": "never",
+                "attempted": False,
+                "archived": False,
+                "conversationUrl": conversation_url,
+            },
+        },
     }), encoding="utf-8")
     hashes = {
         "expected_state_sha256": runner.STATE.sha256_file(child.state_path),
@@ -317,10 +325,203 @@ def test_saved_terminal_output_reconciliation_is_owner_bound_and_idempotent(
         Path(settled["project_root"]),
         source_thread_id=OWNER,
     ) == []
+    settlement_sha256 = result["settlement_sha256"]
+    assert result["browser_identity"]["status"] == "saved_output_browser_identity_sealed"
+    proven = runner.STATE.proven_browser_identity_receipt(child.state_path)
+    assert proven is not None
+    assert proven["payload"]["schema"] == "codex.chatgpt.oracle-browser-identity-receipt/v2"
+    assert proven["payload"]["expected_cdp_port"] != proven["payload"]["observed_cdp_port"]
+    next_mission = Path(settled["project_root"]) / "round-after-reconciliation.md"
+    next_mission.write_text("verify saved output reconciliation", encoding="utf-8")
+    next_round = runner.followup_run(
+        child.run_dir,
+        mission_path=next_mission,
+        round_key="after-saved-output-reconciliation",
+        dry_run=True,
+    )
+    assert next_round["ok"] is True
+    sealed_again = runner.seal_saved_output_browser_identity(
+        child.run_dir,
+        expected_settlement_sha256=settlement_sha256,
+        process_alive=lambda _pid: False,
+    )
+    assert sealed_again["status"] == "saved_output_browser_identity_already_sealed"
+    with pytest.raises(runner.OracleRunError) as wrong_hash:
+        runner.seal_saved_output_browser_identity(
+            child.run_dir,
+            expected_settlement_sha256="f" * 64,
+            process_alive=lambda _pid: False,
+        )
+    assert wrong_hash.value.code == "SAVED_IDENTITY_SETTLEMENT_INVALID"
     repeated = runner.settle_saved_terminal_output(
         child.run_dir, process_alive=lambda _pid: False, **hashes
     )
     assert repeated["status"] == "saved_terminal_output_already_reconciled"
+
+
+def test_saved_output_browser_identity_seals_a_pre_v1196_terminal_settlement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, _parent, child, _meta_path, hashes = make_saved_terminal_output_child(tmp_path, monkeypatch)
+    result = runner.settle_saved_terminal_output(
+        child.run_dir, process_alive=lambda _pid: False, **hashes
+    )
+    receipt_path = child.run_dir / "browser-identity-receipt.json"
+    receipt_path.unlink()
+    state = runner.STATE.load_state(child.state_path)
+    state["browser_identity"] = {
+        **state["browser_identity"],
+        "receipt_path": None,
+        "receipt_sha256": None,
+    }
+    state["browser_identity"].pop("observed_cdp_port", None)
+    state["browser_identity"].pop("authority", None)
+    runner.STATE.write_json_atomic(child.state_path, state)
+
+    preview = runner.seal_saved_output_browser_identity(
+        child.run_dir,
+        expected_settlement_sha256=result["settlement_sha256"],
+        dry_run=True,
+        process_alive=lambda _pid: False,
+    )
+    assert preview["status"] == "dry-run"
+    assert not receipt_path.exists()
+    sealed = runner.seal_saved_output_browser_identity(
+        child.run_dir,
+        expected_settlement_sha256=result["settlement_sha256"],
+        process_alive=lambda _pid: False,
+    )
+    assert sealed["status"] == "saved_output_browser_identity_sealed"
+    assert runner.STATE.proven_browser_identity_receipt(child.state_path) is not None
+
+
+def test_saved_output_browser_identity_seal_rejects_foreign_live_and_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, _parent, child, meta_path, hashes = make_saved_terminal_output_child(tmp_path, monkeypatch)
+    settled = runner.settle_saved_terminal_output(
+        child.run_dir, process_alive=lambda _pid: False, **hashes
+    )
+    settlement_sha256 = settled["settlement_sha256"]
+    (child.run_dir / "browser-identity-receipt.json").unlink()
+    state = runner.STATE.load_state(child.state_path)
+    state["browser_identity"] = {
+        **state["browser_identity"],
+        "receipt_path": None,
+        "receipt_sha256": None,
+    }
+    state["browser_identity"].pop("observed_cdp_port", None)
+    state["browser_identity"].pop("authority", None)
+    runner.STATE.write_json_atomic(child.state_path, state)
+    monkeypatch.setenv("CODEX_THREAD_ID", FOREIGN)
+    with pytest.raises(runner.OracleRunError) as foreign:
+        runner.seal_saved_output_browser_identity(
+            child.run_dir,
+            expected_settlement_sha256=settlement_sha256,
+            process_alive=lambda _pid: False,
+        )
+    assert foreign.value.code == "FOREIGN_TASK_SESSION"
+    monkeypatch.setenv("CODEX_THREAD_ID", OWNER)
+    with pytest.raises(runner.OracleRunError) as live:
+        runner.seal_saved_output_browser_identity(
+            child.run_dir,
+            expected_settlement_sha256=settlement_sha256,
+            process_alive=lambda pid: pid == 45003,
+        )
+    assert live.value.code == "SAVED_IDENTITY_PROCESS_ACTIVE"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["browser"]["runtime"]["chromePort"] = 43123
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+    with pytest.raises(runner.OracleRunError) as drift:
+        runner.seal_saved_output_browser_identity(
+            child.run_dir,
+            expected_settlement_sha256=settlement_sha256,
+            process_alive=lambda _pid: False,
+        )
+    assert drift.value.code == "SAVED_IDENTITY_ARTIFACT_DRIFT"
+
+
+def test_saved_output_browser_identity_v2_fails_closed_after_settlement_or_state_tamper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, _parent, child, _meta_path, hashes = make_saved_terminal_output_child(tmp_path, monkeypatch)
+    settled = runner.settle_saved_terminal_output(
+        child.run_dir, process_alive=lambda _pid: False, **hashes
+    )
+    runner.seal_saved_output_browser_identity(
+        child.run_dir,
+        expected_settlement_sha256=settled["settlement_sha256"],
+        process_alive=lambda _pid: False,
+    )
+    assert runner.STATE.proven_browser_identity_receipt(child.state_path) is not None
+    state = runner.STATE.load_state(child.state_path)
+    state["browser_identity"]["expected_cdp_port"] += 1
+    runner.STATE.write_json_atomic(child.state_path, state)
+    assert runner.STATE.proven_browser_identity_receipt(child.state_path) is None
+
+
+def test_saved_output_browser_identity_v2_rejects_post_seal_meta_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, _parent, child, meta_path, hashes = make_saved_terminal_output_child(tmp_path, monkeypatch)
+    settled = runner.settle_saved_terminal_output(
+        child.run_dir, process_alive=lambda _pid: False, **hashes
+    )
+    assert settled["browser_identity"]["status"] == "saved_output_browser_identity_sealed"
+    original = meta_path.read_bytes()
+    preserved = tmp_path / "preserved-meta.json"
+    preserved.write_bytes(original)
+    meta_path.unlink()
+    try:
+        meta_path.symlink_to(preserved)
+    except OSError as exc:
+        meta_path.write_bytes(original)
+        pytest.skip(f"file symlinks unavailable: {exc}")
+    assert runner.STATE.proven_browser_identity_receipt(child.state_path) is None
+
+
+def test_saved_output_browser_identity_v2_rejects_post_seal_receipt_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, _parent, child, _meta_path, hashes = make_saved_terminal_output_child(tmp_path, monkeypatch)
+    settled = runner.settle_saved_terminal_output(
+        child.run_dir, process_alive=lambda _pid: False, **hashes
+    )
+    assert settled["browser_identity"]["status"] == "saved_output_browser_identity_sealed"
+    receipt_path = child.run_dir / "browser-identity-receipt.json"
+    original = receipt_path.read_bytes()
+    preserved = tmp_path / "preserved-browser-identity-receipt.json"
+    preserved.write_bytes(original)
+    receipt_path.unlink()
+    try:
+        receipt_path.symlink_to(preserved)
+    except OSError as exc:
+        receipt_path.write_bytes(original)
+        pytest.skip(f"file symlinks unavailable: {exc}")
+    assert runner.STATE.proven_browser_identity_receipt(child.state_path) is None
+
+
+def test_saved_output_browser_identity_v2_rejects_duplicate_receipt_keys(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, _parent, child, _meta_path, hashes = make_saved_terminal_output_child(tmp_path, monkeypatch)
+    settled = runner.settle_saved_terminal_output(
+        child.run_dir, process_alive=lambda _pid: False, **hashes
+    )
+    assert settled["browser_identity"]["status"] == "saved_output_browser_identity_sealed"
+    receipt_path = child.run_dir / "browser-identity-receipt.json"
+    payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+    encoded = json.dumps(payload, ensure_ascii=False, indent=2)
+    duplicate = encoded.replace(
+        "{",
+        '{\n  "schema": "codex.chatgpt.oracle-browser-identity-receipt/v2",',
+        1,
+    ) + "\n"
+    receipt_path.write_text(duplicate, encoding="utf-8")
+    state = runner.STATE.load_state(child.state_path)
+    state["browser_identity"]["receipt_sha256"] = runner.STATE.sha256_file(receipt_path)
+    runner.STATE.write_json_atomic(child.state_path, state)
+    assert runner.STATE.proven_browser_identity_receipt(child.state_path) is None
 
 
 def test_saved_terminal_output_reconciliation_rejects_foreign_and_live_process(

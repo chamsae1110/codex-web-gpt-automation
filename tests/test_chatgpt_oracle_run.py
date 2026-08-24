@@ -298,7 +298,9 @@ class Process:
     def __init__(self, code: int, events: list[str]):
         self.code = code
         self.events = events
-        self.pid = 1234
+        # Stay above ordinary Linux/Windows PID ranges so settlement fixtures
+        # cannot accidentally bind to an unrelated live CI runner process.
+        self.pid = 2_000_000_001
         self.wait_timeout = None
 
     def wait(self, timeout=None):

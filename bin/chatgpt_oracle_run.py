@@ -855,6 +855,209 @@ def _expected_transcript_sha256(stdout_path: Path, stderr_path: Path, output_pat
     return hashlib.sha256(b"".join(chunks)).hexdigest()
 
 
+def seal_saved_output_browser_identity(
+    run_dir: Path,
+    *,
+    expected_settlement_sha256: str,
+    dry_run: bool = False,
+    process_alive: Callable[[int], bool] = process_is_alive,
+) -> dict[str, Any]:
+    """Seal the immutable browser tuple proven by a saved-output settlement."""
+    directory = run_dir.expanduser().resolve(strict=True)
+    state_path = STATE.exact_regular_file(directory / "state.json", label="saved_identity_state")
+    state = STATE.load_state(state_path)
+    require_current_task_owns_run(state)
+    expected_digest = expected_settlement_sha256.strip().casefold()
+    if re.fullmatch(r"[0-9a-f]{64}", expected_digest) is None:
+        raise OracleRunError("SAVED_IDENTITY_HASH_INVALID", "expected settlement hash must be exact SHA-256")
+    receipt_path = directory / "settlements" / "saved-terminal-output.json"
+    settlement, settlement_raw = _strict_json_regular_file(
+        receipt_path, label="saved_terminal_output_settlement"
+    )
+    settlement_sha256 = hashlib.sha256(settlement_raw).hexdigest()
+    reference = state.get("saved_terminal_output_settlement")
+    if (
+        expected_digest != settlement_sha256
+        or settlement.get("schema") != "codex.chatgpt.oracle-saved-terminal-output/v1"
+        or not isinstance(reference, dict)
+        or reference.get("schema") != "codex.chatgpt.oracle-settlement-reference/v1"
+        or Path(str(reference.get("path") or "")).resolve() != receipt_path.resolve()
+        or reference.get("sha256") != settlement_sha256
+        or state.get("status") != "complete"
+        or state.get("session_authority") != "terminal"
+        or state.get("transport_status") != "complete"
+        or state.get("terminal_harvested") is not True
+        or state.get("task_outcome") != settlement.get("task_outcome")
+    ):
+        raise OracleRunError(
+            "SAVED_IDENTITY_SETTLEMENT_INVALID",
+            "browser identity sealing requires one exact terminal saved-output settlement",
+        )
+    ownership = STATE.proven_ownership_receipt(state_path)
+    binding = STATE.proven_followup_binding(state_path)
+    if (
+        ownership is None
+        or binding is None
+        or settlement.get("ownership_receipt_sha256") != ownership.get("sha256")
+        or settlement.get("followup_binding_sha256") != binding.get("sha256")
+        or settlement.get("source_thread_id") != STATE.source_thread_id_from_state(state)
+        or settlement.get("run_id") != state.get("run_id")
+        or settlement.get("slug") != (state.get("oracle") or {}).get("slug")
+        or settlement.get("mission_sha256") != (state.get("mission") or {}).get("sha256")
+    ):
+        raise OracleRunError(
+            "SAVED_IDENTITY_BINDING_INVALID",
+            "saved-output settlement ownership or follow-up binding is invalid",
+        )
+    existing = STATE.proven_browser_identity_receipt(state_path)
+    if existing is not None:
+        return {
+            "ok": True,
+            "status": "saved_output_browser_identity_already_sealed",
+            "run_dir": str(directory),
+            "browser_identity_receipt_path": existing["path"],
+            "browser_identity_receipt_sha256": existing["sha256"],
+            "submission_action": "none",
+        }
+    browser_receipt_path = directory / "browser-identity-receipt.json"
+    browser_reference = state.get("browser_identity") if isinstance(state.get("browser_identity"), dict) else {}
+    if (
+        browser_receipt_path.exists()
+        or browser_reference.get("receipt_path") not in {None, ""}
+        or browser_reference.get("receipt_sha256") not in {None, ""}
+    ):
+        raise OracleRunError(
+            "SAVED_IDENTITY_RECEIPT_CONFLICT",
+            "an unproven browser identity receipt already exists",
+        )
+    artifacts = state.get("artifacts") if isinstance(state.get("artifacts"), dict) else {}
+    output_path = STATE.exact_regular_file(artifacts.get("output"), label="saved_identity_output")
+    stdout_path = STATE.exact_regular_file(artifacts.get("stdout"), label="saved_identity_stdout")
+    transcript_path = STATE.exact_regular_file(artifacts.get("transcript"), label="saved_identity_transcript")
+    slug = str((state.get("oracle") or {}).get("slug") or "")
+    session_root = Path(
+        os.environ.get("ORACLE_SESSION_ROOT") or (Path.home() / ".oracle" / "sessions")
+    ).expanduser().resolve()
+    meta_path = STATE.exact_regular_file(
+        session_root / slug / "meta.json", label="saved_identity_oracle_meta"
+    )
+    current_hashes = {
+        "output_sha256": STATE.sha256_file(output_path),
+        "stdout_sha256": STATE.sha256_file(stdout_path),
+        "transcript_sha256": STATE.sha256_file(transcript_path),
+        "oracle_meta_sha256": STATE.sha256_file(meta_path),
+    }
+    if any(settlement.get(key) != value for key, value in current_hashes.items()):
+        raise OracleRunError(
+            "SAVED_IDENTITY_ARTIFACT_DRIFT",
+            "saved-output evidence changed after terminal reconciliation",
+            {"current": current_hashes},
+        )
+    meta, _meta_raw = _strict_json_regular_file(meta_path, label="saved_identity_oracle_meta")
+    browser = meta.get("browser") if isinstance(meta.get("browser"), dict) else {}
+    runtime = browser.get("runtime") if isinstance(browser.get("runtime"), dict) else {}
+    identity = state.get("browser_identity") if isinstance(state.get("browser_identity"), dict) else {}
+    expected_port = identity.get("expected_cdp_port")
+    observed_port = runtime.get("chromePort")
+    expected_url = str((binding.get("payload") or {}).get("conversation_url") or "").strip()
+    conversation_url = str(runtime.get("tabUrl") or "").strip()
+    conversation_id = str(runtime.get("conversationId") or "").strip()
+    profile_path = Path(str(runtime.get("userDataDir") or "")).expanduser()
+    raw_browser_temp = Path(str(artifacts.get("browser_temp") or "")).expanduser()
+    browser_temp = raw_browser_temp.resolve()
+    try:
+        chrome_pid = int(runtime.get("chromePid"))
+        parent_pid = int(runtime.get("controllerPid"))
+    except (TypeError, ValueError) as exc:
+        raise OracleRunError("SAVED_IDENTITY_RUNTIME_INVALID", "Oracle browser PID identity is invalid") from exc
+    if (
+        meta.get("status") != "completed"
+        or meta.get("error") is not None
+        or runtime.get("promptSubmitted") is not True
+        or not isinstance(expected_port, int)
+        or not isinstance(observed_port, int)
+        or expected_port == observed_port
+        or STATE.CHATGPT_CONVERSATION_URL_RE.fullmatch(conversation_url) is None
+        or conversation_url != expected_url
+        or conversation_id != conversation_url.rstrip("/").rsplit("/", 1)[-1]
+        or conversation_url != settlement.get("conversation_url")
+        or conversation_id != settlement.get("conversation_id")
+        or str(runtime.get("chromeTargetId") or "") != settlement.get("chrome_target_id")
+        or str(profile_path.resolve()) != settlement.get("profile_path")
+        or observed_port != settlement.get("observed_cdp_port")
+        or expected_port != settlement.get("expected_cdp_port")
+        or not profile_path.is_dir()
+        or profile_path.is_symlink()
+        or browser_temp != (directory / "browser-temp").resolve()
+        or not browser_temp.is_dir()
+        or raw_browser_temp.is_symlink()
+        or not STATE.is_within(browser_temp, profile_path.resolve())
+    ):
+        raise OracleRunError(
+            "SAVED_IDENTITY_RUNTIME_INVALID",
+            "terminal Oracle browser identity is not exactly bound to the saved-output settlement",
+        )
+    checked_pids = tuple(sorted(set(run_owned_process_ids(directory, state)) | {chrome_pid, parent_pid}))
+    active_pids = [pid for pid in checked_pids if process_alive(pid)]
+    if active_pids:
+        raise OracleRunError(
+            "SAVED_IDENTITY_PROCESS_ACTIVE",
+            "every exact run-owned Oracle, controller, and Chrome process must be stopped",
+            {"active_pids": active_pids},
+        )
+    runtime_identity = {
+        "chrome_pid": chrome_pid,
+        "browser_parent_pid": parent_pid,
+        "profile_path": str(profile_path.resolve()),
+        "cdp_port": observed_port,
+        "target_id": runtime.get("chromeTargetId"),
+        "conversation_url": conversation_url,
+    }
+    payload = {
+        "schema": "codex.chatgpt.oracle-browser-identity-receipt/v2",
+        "authority": "saved-terminal-output-reconciliation",
+        "source_thread_id": STATE.source_thread_id_from_state(state),
+        "project_root_sha256": (state.get("ownership") or {}).get("project_root_sha256"),
+        "run_id": state.get("run_id"),
+        "mission_sha256": (state.get("mission") or {}).get("sha256"),
+        "slug": slug,
+        **runtime_identity,
+        "expected_cdp_port": expected_port,
+        "observed_cdp_port": observed_port,
+        "oracle_meta_sha256": current_hashes["oracle_meta_sha256"],
+        "oracle_runtime_identity_sha256": hashlib.sha256(
+            json.dumps(runtime_identity, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest(),
+        "saved_terminal_output_settlement_path": str(receipt_path),
+        "saved_terminal_output_settlement_sha256": settlement_sha256,
+        "output_sha256": current_hashes["output_sha256"],
+        "stdout_sha256": current_hashes["stdout_sha256"],
+        "transcript_sha256": current_hashes["transcript_sha256"],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    preview = {
+        "ok": True,
+        "status": "dry-run" if dry_run else "saved_output_browser_identity_sealed",
+        "run_dir": str(directory),
+        "browser_identity_receipt_path": str(browser_receipt_path),
+        "browser_identity_payload": payload,
+        "submission_action": "none",
+    }
+    if dry_run:
+        return preview
+    sealed = STATE.persist_saved_output_browser_identity_receipt(state_path, payload=payload)
+    if sealed is None:
+        raise OracleRunError(
+            "SAVED_IDENTITY_PERSIST_FAILED",
+            "saved-output browser identity receipt could not be persisted or revalidated",
+        )
+    return {
+        **preview,
+        "browser_identity_receipt_sha256": sealed["sha256"],
+        "result": STATE.load_state(state_path),
+    }
+
+
 def settle_saved_terminal_output(
     run_dir: Path,
     *,
@@ -926,13 +1129,22 @@ def settle_saved_terminal_output(
                     "settled saved-output artifacts changed after reconciliation",
                     {"current": current_hashes},
                 )
+            identity_result = None
+            if receipt.get("expected_cdp_port") != receipt.get("observed_cdp_port"):
+                identity_result = seal_saved_output_browser_identity(
+                    directory,
+                    expected_settlement_sha256=reference["sha256"],
+                    dry_run=dry_run,
+                    process_alive=process_alive,
+                )
             return {
                 "ok": True,
                 "status": "saved_terminal_output_already_reconciled",
                 "run_dir": str(directory),
                 "settlement_path": str(receipt_path),
                 "settlement_sha256": reference["sha256"],
-                "result": state,
+                "browser_identity": identity_result,
+                "result": STATE.load_state(state_path),
             }
         stale_boundary = (
             receipt.get("schema") == "codex.chatgpt.oracle-saved-terminal-output/v1"
@@ -1196,12 +1408,20 @@ def settle_saved_terminal_output(
         "status": "process-exited-terminal-output-reconciled",
     }
     STATE.write_json_atomic(state_path, updated)
+    identity_result = None
+    if receipt.get("expected_cdp_port") != receipt.get("observed_cdp_port"):
+        identity_result = seal_saved_output_browser_identity(
+            directory,
+            expected_settlement_sha256=hashlib.sha256(encoded).hexdigest(),
+            process_alive=process_alive,
+        )
     return {
         **preview,
         "settlement_sha256": hashlib.sha256(encoded).hexdigest(),
         "output_sha256": actual_hashes["output_sha256"],
         "task_outcome": task_outcome,
-        "result": updated,
+        "browser_identity": identity_result,
+        "result": STATE.load_state(state_path),
     }
 
 
@@ -3164,6 +3384,10 @@ def build_parser() -> argparse.ArgumentParser:
     saved_output_parser.add_argument("--expected-stdout-sha256", required=True)
     saved_output_parser.add_argument("--expected-oracle-meta-sha256", required=True)
     saved_output_parser.add_argument("--dry-run", action="store_true")
+    saved_identity_parser = commands.add_parser("seal-saved-output-browser-identity")
+    saved_identity_parser.add_argument("--run-dir", type=Path, required=True)
+    saved_identity_parser.add_argument("--expected-settlement-sha256", required=True)
+    saved_identity_parser.add_argument("--dry-run", action="store_true")
     settle_parser = commands.add_parser("settle-no-submission")
     settle_parser.add_argument("--run-dir", type=Path, required=True)
     settle_parser.add_argument(
@@ -3244,6 +3468,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 expected_output_sha256=args.expected_output_sha256,
                 expected_stdout_sha256=args.expected_stdout_sha256,
                 expected_oracle_meta_sha256=args.expected_oracle_meta_sha256,
+                dry_run=args.dry_run,
+            )
+        elif args.command == "seal-saved-output-browser-identity":
+            payload = seal_saved_output_browser_identity(
+                args.run_dir,
+                expected_settlement_sha256=args.expected_settlement_sha256,
                 dry_run=args.dry_run,
             )
         elif args.command == "settle-no-submission":

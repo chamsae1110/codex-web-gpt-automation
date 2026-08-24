@@ -155,6 +155,7 @@ Remove `--dry-run` only when live execution is authorized.
 - New explicit Pro is read-only inside the exact root and is limited to design, advice, or review. A regular `GPT-5.6` `extra-high` DevSpace stage performs mission-authorized writes, removals, and commands; persisted legacy `pro-devspace` write runs preserve their original authority only during exact recovery.
 - Continued discussion in the same read-only Pro conversation uses only an internal follow-up round against a task-bound terminal parent. Every round re-proves the unchanged conversation and records mission/state/output/transcript hashes; raw Oracle follow-up injection and new-conversation fallback remain forbidden.
 - Post-submit failure recovers the existing slug and URL and never resubmits the task.
+- If Oracle saved official terminal output and completed metadata but the outer state transition was missed, only the owner task may use hash-bound `settle-saved-output`. A proven reserved-versus-observed CDP port mismatch seals a separate v2 browser identity receipt so the exact conversation remains eligible as a follow-up parent. A run already reconciled by v1.19.5 may be migrated only with owner-only `seal-saved-output-browser-identity`; ordinary recovery authority is not relaxed.
 - Browser or local-process exit alone is not evidence that web work failed.
 - Never commit secrets, Owner passwords, OAuth tokens, or browser profiles.
 - `codexpro-*` remains only as an internal compatibility ID for old receipts,

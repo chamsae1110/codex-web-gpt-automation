@@ -147,6 +147,13 @@ saved-output record, a valid terminal outcome/schema, an empty stderr, and all
 observer/controller/Chrome PIDs stopped. It writes an append-only settlement
 receipt and is unavailable to foreign tasks, active processes, ordinary runs
 with browser identity receipts, or changed/ambiguous evidence.
+A proven reserved-versus-observed CDP port mismatch is sealed as a separate
+browser identity receipt v2, without changing the ownership receipt's expected
+port. For a run already reconciled by v1.19.5, the same owner may preview and
+execute `seal-saved-output-browser-identity` with the exact saved-terminal-output
+settlement SHA. This command never discovers or opens a browser, sends a prompt,
+or changes a conversation; it only promotes the already hash-bound terminal
+runtime tuple so the run can remain a follow-up parent.
 Exact recovery is serialized by an exact-run mutex rather than re-entering the
 project submission mutex. This lets the same slug harvest a provider-terminal
 answer when a disconnected original observer still holds the submission mutex;

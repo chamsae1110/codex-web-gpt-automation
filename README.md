@@ -157,6 +157,10 @@ python "$env:USERPROFILE\.codex\bin\chatgpt_oracle_dispatch.py" `
   URL만 회수하고 자동 재제출하지 않습니다.
 - Oracle이 공식 `output.md`와 완료 메타를 이미 저장했지만 외부 state 전이만
   끊긴 경우에는 소유 task의 해시 결속 `settle-saved-output`만 사용합니다.
+  이 정산이 예약 CDP 포트와 Oracle 완료 메타의 실제 포트 불일치를
+  검증하면 별도 v2 브라우저 신원 영수증을 자동 봉인해 동일 대화를
+  후속 질문의 부모로 유지합니다. 이미 v1.19.5에서 정산된 실행은 소유
+  task의 `seal-saved-output-browser-identity`로만 이 영수증을 추가합니다.
   일반 recovery의 브라우저 신원 게이트를 완화하거나 state를 직접 고치지 않습니다.
 - 브라우저나 로컬 프로세스 종료만으로 웹 작업 실패를 판정하지 않습니다.
 - 비밀, Owner 암호, OAuth 토큰, 브라우저 프로필은 저장소에 넣지 않습니다.

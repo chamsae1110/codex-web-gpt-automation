@@ -1,5 +1,26 @@
 # 기술 변경 기록
 
+## 1.19.6 - preserve follow-up authority after saved-output reconciliation
+
+- A saved-output reconciliation can now seal a separate v2 browser identity
+  receipt when the runner's reserved CDP port differs from Oracle's completed
+  runtime port. The original expected port remains bound to the ownership and
+  follow-up receipts; the observed port is recorded separately and never
+  rewrites historical authority.
+- The owner-only `seal-saved-output-browser-identity` command migrates an
+  already reconciled v1.19.5 run without opening Chrome, attaching CDP, sending
+  a prompt, or changing the conversation. New mismatched-port reconciliations
+  seal the same receipt automatically, and interrupted sealing remains safely
+  repeatable.
+- Follow-up admission revalidates the saved-output settlement, output, stdout,
+  transcript, completed Oracle metadata, conversation, target, run-local
+  profile, immutable ownership/follow-up receipts, and stopped run-owned PIDs.
+  Foreign tasks, symlinks, drift, active processes, matching-port widening, and
+  conflicting receipts continue to fail closed.
+- Portable test processes now use a PID outside normal Windows/Linux ranges so
+  Ubuntu CI cannot mistake an unrelated live runner process for a fixture's
+  Oracle child.
+
 ## 1.19.5 - reconcile Oracle-saved terminal output
 
 - Added an owner-only `settle-saved-output` lifecycle command for the narrow

@@ -1164,12 +1164,31 @@ def proven_browser_identity_receipt(state_path: Path) -> dict[str, Any] | None:
     state = load_state(state_path)
     path = browser_identity_receipt_path(state_path.parent.resolve())
     try:
-        raw = path.read_bytes()
-        receipt = json.loads(raw.decode("utf-8", errors="strict"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        if path.is_symlink():
+            return None
+        exact_path = exact_regular_file(path, label="browser_identity_receipt")
+        raw = exact_path.read_bytes()
+
+        def reject_receipt_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+            result: dict[str, Any] = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError(f"duplicate browser identity receipt key: {key}")
+                result[key] = value
+            return result
+
+        receipt = json.loads(
+            raw.decode("utf-8", errors="strict"),
+            object_pairs_hook=reject_receipt_duplicates,
+        )
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError, OracleStateError):
         return None
-    if not isinstance(receipt, dict) or receipt.get("schema") != "codex.chatgpt.oracle-browser-identity-receipt/v1":
+    if not isinstance(receipt, dict) or receipt.get("schema") not in {
+        "codex.chatgpt.oracle-browser-identity-receipt/v1",
+        "codex.chatgpt.oracle-browser-identity-receipt/v2",
+    }:
         return None
+    schema = str(receipt.get("schema") or "")
     actual = hashlib.sha256(raw).hexdigest()
     identity = state.get("browser_identity") if isinstance(state.get("browser_identity"), dict) else {}
     ownership = state.get("ownership") if isinstance(state.get("ownership"), dict) else {}
@@ -1180,15 +1199,107 @@ def proven_browser_identity_receipt(state_path: Path) -> dict[str, Any] | None:
         or receipt.get("mission_sha256") != (state.get("mission") or {}).get("sha256")
         or receipt.get("project_root_sha256") != ownership.get("project_root_sha256")
         or receipt.get("source_thread_id") != source_thread_id_from_state(state)
-        or receipt.get("cdp_port") != identity.get("expected_cdp_port")
     ):
         return None
+    if schema.endswith("/v1"):
+        if receipt.get("cdp_port") != identity.get("expected_cdp_port"):
+            return None
+    else:
+        reference = state.get("saved_terminal_output_settlement")
+        artifacts = state.get("artifacts") if isinstance(state.get("artifacts"), dict) else {}
+        if (
+            receipt.get("authority") != "saved-terminal-output-reconciliation"
+            or receipt.get("expected_cdp_port") != identity.get("expected_cdp_port")
+            or not isinstance(reference, dict)
+            or reference.get("schema") != "codex.chatgpt.oracle-settlement-reference/v1"
+            or state.get("status") != "complete"
+            or state.get("session_authority") != "terminal"
+            or state.get("transport_status") != "complete"
+            or state.get("terminal_harvested") is not True
+        ):
+            return None
+        settlement_path = state_path.parent.resolve() / "settlements" / "saved-terminal-output.json"
+        try:
+            exact_settlement = exact_regular_file(reference.get("path"), label="saved_terminal_output_settlement")
+            if exact_settlement.resolve() != settlement_path.resolve() or exact_settlement.is_symlink():
+                return None
+            settlement_raw = exact_settlement.read_bytes()
+
+            def reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+                result: dict[str, Any] = {}
+                for key, value in pairs:
+                    if key in result:
+                        raise ValueError(f"duplicate JSON key: {key}")
+                    result[key] = value
+                return result
+
+            settlement = json.loads(
+                settlement_raw.decode("utf-8", errors="strict"),
+                object_pairs_hook=reject_duplicates,
+            )
+            output_path = exact_regular_file(artifacts.get("output"), label="saved_terminal_output")
+            stdout_path = exact_regular_file(artifacts.get("stdout"), label="saved_terminal_output_stdout")
+            transcript_path = exact_regular_file(
+                artifacts.get("transcript"), label="saved_terminal_output_transcript"
+            )
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError, OracleStateError):
+            return None
+        settlement_sha256 = hashlib.sha256(settlement_raw).hexdigest()
+        current_artifact_hashes = {
+            "output_sha256": sha256_file(output_path),
+            "stdout_sha256": sha256_file(stdout_path),
+            "transcript_sha256": sha256_file(transcript_path),
+        }
+        if (
+            not isinstance(settlement, dict)
+            or settlement.get("schema") != "codex.chatgpt.oracle-saved-terminal-output/v1"
+            or reference.get("sha256") != settlement_sha256
+            or receipt.get("saved_terminal_output_settlement_sha256") != settlement_sha256
+            or receipt.get("saved_terminal_output_settlement_path") != str(settlement_path)
+            or settlement.get("source_thread_id") != source_thread_id_from_state(state)
+            or settlement.get("run_id") != state.get("run_id")
+            or settlement.get("slug") != (state.get("oracle") or {}).get("slug")
+            or settlement.get("mission_sha256") != (state.get("mission") or {}).get("sha256")
+            or any(settlement.get(key) != value for key, value in current_artifact_hashes.items())
+            or any(receipt.get(key) != value for key, value in current_artifact_hashes.items())
+        ):
+            return None
+        current_ownership = proven_ownership_receipt(state_path)
+        current_binding = proven_followup_binding(state_path)
+        if (
+            current_ownership is None
+            or current_binding is None
+            or settlement.get("ownership_receipt_sha256") != current_ownership.get("sha256")
+            or settlement.get("followup_binding_sha256") != current_binding.get("sha256")
+        ):
+            return None
     slug = str((state.get("oracle") or {}).get("slug") or "")
     session_root = Path(os.environ.get("ORACLE_SESSION_ROOT") or (Path.home() / ".oracle" / "sessions")).resolve()
     try:
-        meta_bytes = (session_root / slug / "meta.json").read_bytes()
-        meta = json.loads(meta_bytes.decode("utf-8", errors="strict"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        raw_session_dir = session_root / slug
+        raw_meta_path = raw_session_dir / "meta.json"
+        if schema.endswith("/v2") and (raw_session_dir.is_symlink() or raw_meta_path.is_symlink()):
+            return None
+        meta_path = exact_regular_file(raw_meta_path, label="oracle_browser_identity_meta")
+        if schema.endswith("/v2") and meta_path.resolve().parent != raw_session_dir.resolve():
+            return None
+        meta_bytes = meta_path.read_bytes()
+        if schema.endswith("/v2"):
+            def reject_meta_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+                result: dict[str, Any] = {}
+                for key, value in pairs:
+                    if key in result:
+                        raise ValueError(f"duplicate Oracle meta key: {key}")
+                    result[key] = value
+                return result
+
+            meta = json.loads(
+                meta_bytes.decode("utf-8", errors="strict"),
+                object_pairs_hook=reject_meta_duplicates,
+            )
+        else:
+            meta = json.loads(meta_bytes.decode("utf-8", errors="strict"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError, OracleStateError):
         return None
     browser = meta.get("browser") if isinstance(meta.get("browser"), dict) else {}
     runtime = browser.get("runtime") if isinstance(browser.get("runtime"), dict) else {}
@@ -1216,7 +1327,56 @@ def proven_browser_identity_receipt(state_path: Path) -> dict[str, Any] | None:
         or (recorded_identity_sha256 and recorded_identity_sha256 != observed_identity_sha256)
     ):
         return None
+    if schema.endswith("/v2"):
+        if (
+            receipt.get("observed_cdp_port") != observed["cdp_port"]
+            or receipt.get("cdp_port") != observed["cdp_port"]
+            or receipt.get("expected_cdp_port") == receipt.get("observed_cdp_port")
+            or receipt.get("oracle_meta_sha256") != hashlib.sha256(meta_bytes).hexdigest()
+            or settlement.get("oracle_meta_sha256") != receipt.get("oracle_meta_sha256")
+        ):
+            return None
     return {"path": str(path), "sha256": actual, "payload": receipt}
+
+
+def persist_saved_output_browser_identity_receipt(
+    state_path: Path,
+    *,
+    payload: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Persist one v2 identity derived from an exact saved-output settlement."""
+    state = load_state(state_path)
+    directory = state_path.parent.resolve()
+    existing = proven_browser_identity_receipt(state_path)
+    if existing is not None:
+        return existing
+    receipt_path = browser_identity_receipt_path(directory)
+    if receipt_path.exists() or payload.get("schema") != "codex.chatgpt.oracle-browser-identity-receipt/v2":
+        return None
+    identity = state.get("browser_identity") if isinstance(state.get("browser_identity"), dict) else {}
+    ownership = state.get("ownership") if isinstance(state.get("ownership"), dict) else {}
+    expected = {
+        "source_thread_id": source_thread_id_from_state(state),
+        "project_root_sha256": ownership.get("project_root_sha256"),
+        "run_id": state.get("run_id"),
+        "mission_sha256": (state.get("mission") or {}).get("sha256"),
+        "slug": (state.get("oracle") or {}).get("slug"),
+        "expected_cdp_port": identity.get("expected_cdp_port"),
+    }
+    if any(payload.get(key) != value for key, value in expected.items()):
+        return None
+    digest = _write_append_only_json(receipt_path, payload)
+    state["browser_identity"] = {
+        **identity,
+        "receipt_path": str(receipt_path),
+        "receipt_sha256": digest,
+        "observed_cdp_port": payload.get("observed_cdp_port"),
+        "authority": "saved-terminal-output-reconciliation",
+    }
+    oracle = state.get("oracle") if isinstance(state.get("oracle"), dict) else {}
+    state["oracle"] = {**oracle, "conversation_url": payload.get("conversation_url")}
+    write_json_atomic(state_path, state)
+    return proven_browser_identity_receipt(state_path)
 
 
 def capture_browser_identity_receipt(state_path: Path) -> dict[str, Any] | None:
