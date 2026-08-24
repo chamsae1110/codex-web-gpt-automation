@@ -82,7 +82,21 @@ PATCHES = {
     "dist/src/browser/actions/assistantResponse.js": {
         "patch": "assistantResponse.terminal-marker-fallback.patch",
         "pristine": "0bbc106f79c6abf253690c83794a2dab1b432378f57e16542d15cfcd5365e16d",
-        "patched": "60e6429a44b32dd71e1ce7d3362f4b4911533e9c66a188f3ecb5fc4ac4147fd5",
+        "patched": "5bdb4dbc9fd6d6ee3478d2c127a45114a0d698c92009bad77074b1839a8dfa9b",
+        "legacy_patched": [
+            "60e6429a44b32dd71e1ce7d3362f4b4911533e9c66a188f3ecb5fc4ac4147fd5",
+        ],
+        "legacy_patch": "assistantResponse.terminal-marker-fallback.v1.19.2.patch",
+    },
+    "dist/bin/oracle-cli.js": {
+        "patch": "oracle-cli.followup-port-binding.patch",
+        "pristine": "c2b39880451c467967c5fcd0e7c632c8b9bef96b7f30bf82b023ce8253fc96c2",
+        "patched": "b70e8f0a6b83da8c1728d52a9f88dc0301070d8e390c8d09a804c43fff4bbf52",
+    },
+    "dist/src/cli/browserConfig.js": {
+        "patch": "browserConfig.followup-port-binding.patch",
+        "pristine": "989f14399c8aa51913752306135e11d97e4f1c55b2baf984907f1b54959cc340",
+        "patched": "9ea923aaa41dff884797c828e66b569ef9a819d7fbf04bd21c53cac257561ea2",
     },
     "dist/src/browser/actions/thinkingStatus.js": {
         "patch": "thinkingStatus.undetected-warning.patch",

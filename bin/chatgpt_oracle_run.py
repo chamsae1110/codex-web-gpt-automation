@@ -1035,6 +1035,21 @@ def execute_run(
     layout.stderr_path.touch()
     oracle_env = STATE.browser_temp_environment(layout.browser_temp_path, platform_name=platform_name)
     configure_task_outcome_terminal_contract(oracle_env, config.task_outcome_contract)
+    terminal_watchdog_enabled = oracle_env.get("ORACLE_TASK_OUTCOME_TERMINAL_CONTRACT") == "v1"
+    STATE.update_state(
+        layout.state_path,
+        status="prepared",
+        terminal_watchdog={
+            "schema": "codex.chatgpt.oracle-terminal-watchdog/v1",
+            "contract": config.task_outcome_contract,
+            "environment_enabled": terminal_watchdog_enabled,
+        },
+    )
+    if config.task_outcome_contract == "v1" and not terminal_watchdog_enabled:
+        raise OracleRunError(
+            "ORACLE_TERMINAL_WATCHDOG_DISABLED",
+            "the exact v1 TASK_OUTCOME contract was not enabled in the Oracle child environment",
+        )
     exit_code: int | None = None
     oracle_process_pid: int | None = None
     prior_audit_observations: dict[str, dict[str, Any]] = {}

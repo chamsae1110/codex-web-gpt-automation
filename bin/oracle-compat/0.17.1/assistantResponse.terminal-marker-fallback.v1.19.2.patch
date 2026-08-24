@@ -23,8 +23,8 @@ diff --git a/dist/src/browser/actions/assistantResponse.js b/dist/src/browser/ac
          ? state.barStableCycles + 1
          : 0;
 +    // proofB is independent of transient thinking/streaming labels and completion-action
-+    // controls. It is intentionally narrower: the exact marker must be the last semantic line
-+    // (optionally followed only by bounded rendered reference backlinks), remain byte-stable across
++    // controls.  It is intentionally narrower: the exact contracted marker must be the last
++    // non-empty line of the newly scoped assistant turn, the text must remain byte-stable across
 +    // multiple polls, and neither a stop control nor strong activity may be visible.
 +    const markerStableCycles = config.taskOutcomeContract === "v1" && sample.terminalMarker && !sample.stopVisible && !sample.strongThinkingActive && !changed
 +        ? state.markerStableCycles + 1
@@ -37,7 +37,7 @@ diff --git a/dist/src/browser/actions/assistantResponse.js b/dist/src/browser/ac
          seen: true,
      };
      let terminal = false;
-@@ -48,14 +60,37 @@ export function classifyTurnTerminal(state, sample, config) {
+@@ -48,14 +60,31 @@ export function classifyTurnTerminal(state, sample, config) {
          // requirement guards the documented race where finished-action controls surface while only
          // the first tokens have rendered. Weak sidecar evidence cannot hang a finished turn, but
          // strong live activity vetoes this proof and restarts its debounce.
@@ -58,7 +58,6 @@ diff --git a/dist/src/browser/actions/assistantResponse.js b/dist/src/browser/ac
      return { state: next, terminal };
  }
 +const TASK_OUTCOME_TERMINAL_LINE = /^TASK_OUTCOME: (?:EXECUTED|NOT_EXECUTED|BLOCKED)$/;
-+const RENDERED_REFERENCE_FOOTER_LINE = /^(?:(?:[\p{L}\p{N}_.-]+\/)*[\p{L}\p{N}_.-]+\.[\p{L}\p{N}_.-]+)(?:;\s*(?:(?:[\p{L}\p{N}_.-]+\/)*[\p{L}\p{N}_.-]+\.[\p{L}\p{N}_.-]+))*\.\s↩$/u;
 +export function hasContractTerminalMarker(value) {
 +    const text = String(value ?? "");
 +    const occurrences = text.match(/TASK_OUTCOME:\s*(?:EXECUTED|NOT_EXECUTED|BLOCKED)/gi) ?? [];
@@ -66,17 +65,12 @@ diff --git a/dist/src/browser/actions/assistantResponse.js b/dist/src/browser/ac
 +        .split(/\r?\n/)
 +        .map((line) => line.trim())
 +        .filter(Boolean);
-+    const markerIndex = lines.findIndex((line) => TASK_OUTCOME_TERMINAL_LINE.test(line));
-+    const renderedReferenceFooter = lines.slice(markerIndex + 1);
-+    return occurrences.length === 1 &&
-+        markerIndex >= 0 &&
-+        renderedReferenceFooter.length <= 32 &&
-+        renderedReferenceFooter.every((line) => line.length <= 512 && RENDERED_REFERENCE_FOOTER_LINE.test(line));
++    return occurrences.length === 1 && TASK_OUTCOME_TERMINAL_LINE.test(lines.at(-1));
 +}
  const THINKING_STATUS_LABELS = [
      "thinking",
      "pro thinking",
-@@ -441,6 +476,7 @@ async function pollAssistantCompletion(Runtime, timeoutMs, minTurnIndex, expecte
+@@ -441,6 +470,7 @@ async function pollAssistantCompletion(Runtime, timeoutMs, minTurnIndex, expecte
                  stopVisible,
                  barVisible,
                  strongThinkingActive: thinkingActivity.strong,

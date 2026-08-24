@@ -1227,11 +1227,6 @@ def capture_browser_identity_receipt(state_path: Path) -> dict[str, Any] | None:
     """
     state = load_state(state_path)
     directory = state_path.parent.resolve()
-    existing = proven_browser_identity_receipt(state_path)
-    if existing is not None:
-        return existing
-    if browser_identity_receipt_path(directory).exists():
-        return None
     oracle = state.get("oracle") if isinstance(state.get("oracle"), dict) else {}
     slug = str(oracle.get("slug") or "")
     session_root = Path(os.environ.get("ORACLE_SESSION_ROOT") or (Path.home() / ".oracle" / "sessions")).resolve()
@@ -1253,8 +1248,25 @@ def capture_browser_identity_receipt(state_path: Path) -> dict[str, Any] | None:
     browser_temp = Path(str((state.get("artifacts") or {}).get("browser_temp") or "")).expanduser()
     target_id = str(runtime.get("chromeTargetId") or "").strip()
     url = str(runtime.get("tabUrl") or "").strip()
+    expected_cdp_port = identity.get("expected_cdp_port")
+    if cdp_port != expected_cdp_port:
+        mismatch = {
+            "schema": "codex.chatgpt.oracle-browser-port-mismatch/v1",
+            "expected_cdp_port": expected_cdp_port,
+            "observed_cdp_port": cdp_port,
+            "oracle_meta_path": str(session_root / slug / "meta.json"),
+        }
+        if identity.get("port_mismatch") != mismatch:
+            state["browser_identity"] = {**identity, "port_mismatch": mismatch}
+            write_json_atomic(state_path, state)
+        return None
+    existing = proven_browser_identity_receipt(state_path)
+    if existing is not None:
+        return existing
+    if browser_identity_receipt_path(directory).exists():
+        return None
     if (
-        chrome_pid <= 0 or parent_pid <= 0 or cdp_port != identity.get("expected_cdp_port")
+        chrome_pid <= 0 or parent_pid <= 0
         or not target_id or CHATGPT_CONVERSATION_URL_RE.fullmatch(url) is None
         or not str(browser_temp) or not is_within(browser_temp.resolve(), profile.resolve())
     ):
@@ -1440,6 +1452,7 @@ def update_state(
     transport_status: str | None = None,
     task_outcome: str | None = None,
     task_outcome_reason: str | None = None,
+    terminal_watchdog: dict[str, Any] | None = None,
     host_watchdog: dict[str, Any] | None = None,
     browser_observer: dict[str, Any] | None = None,
     status_audit: dict[str, Any] | None = None,
@@ -1489,6 +1502,8 @@ def update_state(
         payload["task_outcome"] = task_outcome
     if task_outcome_reason is not None:
         payload["task_outcome_reason"] = task_outcome_reason
+    if terminal_watchdog is not None:
+        payload["terminal_watchdog"] = terminal_watchdog
     if host_watchdog is not None:
         payload["host_watchdog"] = host_watchdog
     if browser_observer is not None:
@@ -4937,12 +4952,25 @@ MARKDOWN_HTTP_REFERENCE_DEFINITION_RE = re.compile(
     re.IGNORECASE,
 )
 
+RENDERED_REFERENCE_FOOTER_RE = re.compile(
+    r"^(?:(?:[\w.-]+/)*[\w.-]+\.[\w.-]+)"
+    r"(?:;\s*(?:(?:[\w.-]+/)*[\w.-]+\.[\w.-]+))*\.\s↩$"
+)
+
 
 def _only_bounded_reference_definitions(lines: list[str]) -> bool:
     return all(
         not line.strip()
         or MARKDOWN_HTTP_REFERENCE_DEFINITION_RE.fullmatch(line.strip()) is not None
         for line in lines
+    )
+
+
+def _only_bounded_rendered_reference_footers(lines: list[str]) -> bool:
+    nonempty = [line.strip() for line in lines if line.strip()]
+    return len(nonempty) <= 32 and all(
+        len(line) <= 512 and RENDERED_REFERENCE_FOOTER_RE.fullmatch(line) is not None
+        for line in nonempty
     )
 
 
@@ -4967,7 +4995,8 @@ def classify_task_outcome(path: Path, *, contract: str, transport: str) -> str:
     ]
     if len(marker_lines) == 1:
         index, marker = marker_lines[0]
-        if _only_bounded_reference_definitions(lines[index + 1 :]):
+        footer = lines[index + 1 :]
+        if _only_bounded_reference_definitions(footer) or _only_bounded_rendered_reference_footers(footer):
             return marker.group(1).casefold()
     return "unknown" if contract == "v1" else "legacy_unclassified"
 

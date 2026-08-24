@@ -205,7 +205,7 @@ def test_task_outcome_terminal_watchdog_is_exactly_v1_and_scrubs_inherited_state
     v1_root = tmp_path / "v1"
     v1_root.mkdir()
     v1_capture: dict = {}
-    execute_run(
+    v1_result = execute_run(
         runner,
         manifest(v1_root, task_outcome_contract="v1"),
         run_factory=version_runner,
@@ -214,11 +214,17 @@ def test_task_outcome_terminal_watchdog_is_exactly_v1_and_scrubs_inherited_state
     assert v1_capture["kwargs"]["env"]["ORACLE_TASK_OUTCOME_TERMINAL_CONTRACT"] == "v1"
     assert "ORACLE_TERMINAL_MARKER_CONFIRM_CYCLES" not in v1_capture["kwargs"]["env"]
     assert "ORACLE_TERMINAL_MARKER_MIN_STABLE_MS" not in v1_capture["kwargs"]["env"]
+    v1_state = runner.STATE.load_state(Path(v1_result["run_dir"]) / "state.json")
+    assert v1_state["terminal_watchdog"] == {
+        "schema": "codex.chatgpt.oracle-terminal-watchdog/v1",
+        "contract": "v1",
+        "environment_enabled": True,
+    }
 
     legacy_root = tmp_path / "legacy"
     legacy_root.mkdir()
     legacy_capture: dict = {}
-    execute_run(
+    legacy_result = execute_run(
         runner,
         manifest(legacy_root),
         run_factory=version_runner,
@@ -227,6 +233,8 @@ def test_task_outcome_terminal_watchdog_is_exactly_v1_and_scrubs_inherited_state
     assert "ORACLE_TASK_OUTCOME_TERMINAL_CONTRACT" not in legacy_capture["kwargs"]["env"]
     assert "ORACLE_TERMINAL_MARKER_CONFIRM_CYCLES" not in legacy_capture["kwargs"]["env"]
     assert "ORACLE_TERMINAL_MARKER_MIN_STABLE_MS" not in legacy_capture["kwargs"]["env"]
+    legacy_state = runner.STATE.load_state(Path(legacy_result["run_dir"]) / "state.json")
+    assert legacy_state["terminal_watchdog"]["environment_enabled"] is False
 
 
 def test_foreign_task_recovery_is_fail_closed_before_browser_or_oracle_access(

@@ -4,6 +4,7 @@ import importlib.util
 import hashlib
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -80,6 +81,119 @@ def make_parent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         transport_status="complete", task_outcome="executed", artifact_sha256=hashlib.sha256(layout.output_path.read_bytes()).hexdigest(),
     )
     return runner, layout, followup
+
+
+def test_browser_identity_port_mismatch_is_persisted_and_never_becomes_authority(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, parent, _ = make_parent(tmp_path, monkeypatch)
+    state = runner.STATE.load_state(parent.state_path)
+    receipt_path = Path(state["browser_identity"]["receipt_path"])
+    assert receipt_path.is_file()
+    meta_path = Path(os.environ["ORACLE_SESSION_ROOT"]) / parent.slug / "meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["browser"]["runtime"]["chromePort"] = 43102
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+
+    assert runner.STATE.capture_browser_identity_receipt(parent.state_path) is None
+    observed = runner.STATE.load_state(parent.state_path)["browser_identity"]
+    assert observed["receipt_path"] == str(receipt_path)
+    assert runner.STATE.proven_browser_identity_receipt(parent.state_path) is None
+    assert observed["port_mismatch"] == {
+        "schema": "codex.chatgpt.oracle-browser-port-mismatch/v1",
+        "expected_cdp_port": 43101,
+        "observed_cdp_port": 43102,
+        "oracle_meta_path": str(meta_path),
+    }
+
+
+def test_followup_child_executes_with_durable_v1_watchdog_contract(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, parent, mission = make_parent(tmp_path, monkeypatch)
+    original_execute = runner.execute_run
+    captured: dict = {}
+
+    class ChildProcess:
+        pid = 22334
+
+        @staticmethod
+        def wait(timeout=None):
+            return 0
+
+    def child_popen(command, **kwargs):
+        captured["command"] = list(command)
+        captured["env"] = dict(kwargs["env"])
+        output_path = Path(command[command.index("--write-output") + 1])
+        child_state = runner.STATE.load_state(output_path.parent / "state.json")
+        slug = command[command.index("--slug") + 1]
+        port = int(command[command.index("--browser-port") + 1])
+        profile = Path(child_state["artifacts"]["browser_temp"]) / "child-profile"
+        profile.mkdir(parents=True)
+        meta_path = Path(os.environ["ORACLE_SESSION_ROOT"]) / slug / "meta.json"
+        meta_path.parent.mkdir(parents=True, exist_ok=True)
+        meta_path.write_text(json.dumps({
+            "browser": {
+                "runtime": {
+                    "chromePid": 22335,
+                    "controllerPid": 22334,
+                    "chromePort": port,
+                    "userDataDir": str(profile),
+                    "chromeTargetId": "followup-child-target",
+                    "tabUrl": "https://chatgpt.com/c/exact-parent-conversation",
+                    "promptSubmitted": True,
+                },
+                "archive": {
+                    "mode": "always",
+                    "attempted": True,
+                    "archived": True,
+                    "conversationUrl": "https://chatgpt.com/c/exact-parent-conversation",
+                },
+            }
+        }), encoding="utf-8")
+        output_path.write_text("child answer\nTASK_OUTCOME: EXECUTED\n", encoding="utf-8")
+        kwargs["stdout"].write(b"child stdout\n")
+        kwargs["stdout"].flush()
+        return ChildProcess()
+
+    def execute_child(manifest_path, **kwargs):
+        return original_execute(
+            manifest_path,
+            **kwargs,
+            run_factory=lambda command, **_kwargs: subprocess.CompletedProcess(
+                command, 0, stdout="oracle 0.17.1\n", stderr=""
+            ),
+            popen_factory=child_popen,
+            compat_factory=lambda version: {"ok": True, "version": version},
+            devspace_compat_factory=lambda: {
+                "ok": True, "changed": [], "service_restart_required": False,
+            },
+            devspace_qualification_factory=lambda root: {
+                "qualified": True, "project_root": str(root),
+            },
+        )
+
+    monkeypatch.setenv("ORACLE_TASK_OUTCOME_TERMINAL_CONTRACT", "stale-parent-value")
+    monkeypatch.setenv("ORACLE_TERMINAL_MARKER_CONFIRM_CYCLES", "1")
+    monkeypatch.setenv("ORACLE_TERMINAL_MARKER_MIN_STABLE_MS", "1")
+    monkeypatch.setattr(runner, "execute_run", execute_child)
+
+    result = runner.followup_run(
+        parent.run_dir,
+        mission_path=mission,
+        round_key="watchdog-contract",
+        run_id="followup-watchdog-contract-0001",
+    )
+
+    child_state = runner.STATE.load_state(Path(result["run_dir"]) / "state.json")
+    assert captured["env"]["ORACLE_TASK_OUTCOME_TERMINAL_CONTRACT"] == "v1"
+    assert "ORACLE_TERMINAL_MARKER_CONFIRM_CYCLES" not in captured["env"]
+    assert "ORACLE_TERMINAL_MARKER_MIN_STABLE_MS" not in captured["env"]
+    assert child_state["terminal_watchdog"] == {
+        "schema": "codex.chatgpt.oracle-terminal-watchdog/v1",
+        "contract": "v1",
+        "environment_enabled": True,
+    }
 
 
 def make_archived_parent_unarchive_failure(

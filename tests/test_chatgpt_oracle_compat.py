@@ -6,6 +6,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -437,6 +438,8 @@ def test_published_0171_terminal_marker_fallback_is_stable_exact_and_thinking_in
     )
 
     assistant = package / "dist/src/browser/actions/assistantResponse.js"
+    oracle_cli = package / "dist/bin/oracle-cli.js"
+    browser_config = package / "dist/src/cli/browserConfig.js"
     thinking = package / "dist/src/browser/actions/thinkingStatus.js"
     assert compat.sha256_file(assistant) == compat.PATCHES[
         "dist/src/browser/actions/assistantResponse.js"
@@ -444,17 +447,29 @@ def test_published_0171_terminal_marker_fallback_is_stable_exact_and_thinking_in
     assert compat.sha256_file(thinking) == compat.PATCHES[
         "dist/src/browser/actions/thinkingStatus.js"
     ]["patched"]
+    assert compat.sha256_file(oracle_cli) == compat.PATCHES["dist/bin/oracle-cli.js"]["patched"]
+    assert compat.sha256_file(browser_config) == compat.PATCHES["dist/src/cli/browserConfig.js"]["patched"]
     assistant_text = assistant.read_text(encoding="utf-8")
+    oracle_cli_text = oracle_cli.read_text(encoding="utf-8")
     assert "readAssistantSnapshot(Runtime, minTurnIndex, expectedConversationId)" in assistant_text
     assert "terminalMarker: hasContractTerminalMarker(normalized.text)" in assistant_text
     assert "ORACLE_TERMINAL_MARKER_CONFIRM_CYCLES" not in assistant_text
     assert "ORACLE_TERMINAL_MARKER_MIN_STABLE_MS" not in assistant_text
+    assert "bindFollowupBrowserPort(browserFollowup.browserConfig" in oracle_cli_text
+    browser_config_text = browser_config.read_text(encoding="utf-8")
+    helper_match = re.search(
+        r"export function bindFollowupBrowserPort\([\s\S]+?\n\}",
+        browser_config_text,
+    )
+    assert helper_match is not None
+    helper_source = helper_match.group(0).removeprefix("export ")
 
     node = shutil.which("node")
     assert node is not None
     script = f"""
 import {{ createTerminalGateState, classifyTurnTerminal, hasContractTerminalMarker }} from {json.dumps(assistant.as_uri())};
 import {{ shouldWarnThinkingStatusUndetected, formatThinkingUndetectedWarningLog }} from {json.dumps(thinking.as_uri())};
+{helper_source}
 const config = {{
   barConfirmCycles: 3,
   minStableMs: 1200,
@@ -486,6 +501,11 @@ contractAbsentState = classifyTurnTerminal(contractAbsentState, sample(3000, ans
 let contractAbsent = classifyTurnTerminal(contractAbsentState, sample(6000, answer), {{ ...config, taskOutcomeContract: null }});
 console.log(JSON.stringify({{
   exactMarker: hasContractTerminalMarker('answer\\nTASK_OUTCOME: BLOCKED\\n\\n'),
+  renderedReferences: hasContractTerminalMarker('answer\\nTASK_OUTCOME: EXECUTED\\nevidence/a.json. ↩\\nAGENTS.md. ↩'),
+  renderedReferenceList: hasContractTerminalMarker('answer\\nTASK_OUTCOME: EXECUTED\\nevidence/a.json; skills/check/SKILL.md. ↩'),
+  tooManyRenderedReferences: hasContractTerminalMarker('TASK_OUTCOME: EXECUTED\\n' + Array(33).fill('evidence/a.json. ↩').join('\\n')),
+  malformedRenderedReference: hasContractTerminalMarker('TASK_OUTCOME: EXECUTED\\nevidence/a.json.'),
+  arbitraryBacklinkProse: hasContractTerminalMarker('TASK_OUTCOME: EXECUTED\\ncontinue observing ↩'),
   lowerMarker: hasContractTerminalMarker('answer\\nTASK_OUTCOME: executed'),
   trailingProse: hasContractTerminalMarker('TASK_OUTCOME: EXECUTED\\nafter'),
   duplicateMarker: hasContractTerminalMarker('TASK_OUTCOME: BLOCKED\\nTASK_OUTCOME: EXECUTED'),
@@ -502,6 +522,8 @@ console.log(JSON.stringify({{
   warnAfterDetected: shouldWarnThinkingStatusUndetected(true, false, 600000),
   warnAfterLogged: shouldWarnThinkingStatusUndetected(false, true, 600000),
   warningText: formatThinkingUndetectedWarningLog(0, 300000),
+  inheritedFollowupPort: bindFollowupBrowserPort({{ debugPort: 56527, profile: 'parent' }}, null),
+  isolatedFollowupPort: bindFollowupBrowserPort({{ debugPort: 56527, profile: 'parent' }}, 56442),
 }}));
 """
     result = subprocess.run(
@@ -510,6 +532,11 @@ console.log(JSON.stringify({{
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     assert payload["exactMarker"] is True
+    assert payload["renderedReferences"] is True
+    assert payload["renderedReferenceList"] is True
+    assert payload["tooManyRenderedReferences"] is False
+    assert payload["malformedRenderedReference"] is False
+    assert payload["arbitraryBacklinkProse"] is False
     assert payload["lowerMarker"] is False
     assert payload["trailingProse"] is False
     assert payload["duplicateMarker"] is False
@@ -526,6 +553,8 @@ console.log(JSON.stringify({{
     assert payload["warnAfterDetected"] is False
     assert payload["warnAfterLogged"] is False
     assert "independent terminal watchdog remains active" in payload["warningText"]
+    assert payload["inheritedFollowupPort"] == {"debugPort": 56527, "profile": "parent"}
+    assert payload["isolatedFollowupPort"] == {"debugPort": 56442, "profile": "parent"}
 
 
 def test_archived_parent_direct_restore_requires_exact_control_and_composer_transition(

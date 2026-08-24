@@ -128,11 +128,29 @@ def test_v1_task_outcome_accepts_exact_provider_reference_footer(tmp_path: Path)
     ) == "executed"
 
 
+def test_v1_task_outcome_accepts_bounded_rendered_reference_backlinks(tmp_path: Path) -> None:
+    state = load_state()
+    output = tmp_path / "output.md"
+    output.write_text(
+        "answer\nTASK_OUTCOME: EXECUTED\n"
+        "evidence/a.json; skills/check/SKILL.md. ↩\n"
+        "검증/결과.json. ↩\n",
+        encoding="utf-8",
+    )
+
+    assert state.classify_task_outcome(
+        output,
+        contract="v1",
+        transport="pro-devspace-readonly",
+    ) == "executed"
+
+
 @pytest.mark.parametrize(
     "suffix",
     [
         "Actually no files were changed.\n",
         "[note]: this is ordinary prose, not a URL\n",
+        "continue observing ↩\n",
         "TASK_OUTCOME: BLOCKED\n",
     ],
 )

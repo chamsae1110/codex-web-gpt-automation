@@ -1,5 +1,23 @@
 # 기술 변경 기록
 
+## 1.19.4 - bound follow-up browser and terminal detection
+
+- Oracle follow-up runs now keep the child's newly reserved CDP port instead
+  of silently inheriting the parent conversation's old port. The exact child
+  state, ownership receipt, Chrome runtime, and durable browser identity remain
+  bound to one port; a mismatch is recorded as a non-authoritative diagnostic
+  and never accepted as recovery authority.
+- The v1 terminal watchdog now accepts exactly one `TASK_OUTCOME` marker when
+  ChatGPT renders only a bounded set of reference backlinks after it. Ordinary
+  trailing prose, malformed footers, more than 32 backlinks, duplicate or
+  conflicting markers, visible Stop controls, and active thinking still fail
+  closed. The durable result classifier uses the same bounded grammar, so a
+  watchdog-terminal answer cannot later regress to an unknown task outcome.
+- Each run persists whether the runner actually enabled the child-only v1
+  terminal-watchdog environment. An exact v1 run fails before Oracle launch if
+  that environment contract cannot be enabled; no user- or machine-global
+  environment variable is required.
+
 ## 1.19.3 - task-targeted operational reports
 
 - Oracle incident packets now record the exact run owner, the task from which
