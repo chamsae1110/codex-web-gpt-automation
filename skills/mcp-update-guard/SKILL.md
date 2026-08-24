@@ -76,6 +76,15 @@ instead of the layer that failed.
   `python "$env:USERPROFILE\.codex\bin\chatgpt_oracle_incident.py" report --run-dir <exact-run-dir>`.
   The packet carries the exact run directory, the classified bucket, the
   lifecycle verdict with its authority source, and existing evidence paths.
+  Its v2 routing block must name `evaluated_from_thread`, the exact
+  `target_source_thread_id`, run ID, slug, and whether the instruction is
+  executable by the evaluating task. Send each target task its own report;
+  never broadcast one owner's operational instruction to sibling tasks.
+- Re-read exact state immediately before an operational handoff. A terminal,
+  harvested run receives `action=none`, including when its local status is
+  `attention_required`. A foreign evaluator receives only
+  `action=route-to-owner-task` and must not recover, harvest, settle, stop, or
+  retry that run.
 - Classify before repairing. Run
   `python "$env:USERPROFILE\.codex\bin\chatgpt_oracle_diagnose.py" --summary-only`
   and fix the largest bucket rather than the newest report. A `pre-submit-*`
@@ -104,3 +113,7 @@ verification, installed/source synchronization, commit/push/CI state, rollback
 evidence, and any remaining risk. For release-bearing work, separately report
 the version, exact commit, remote annotated tag, GitHub Release URL,
 `releases/latest` result, release-workflow run, install receipt, and parity.
+For any run-specific next action, include `evaluated_from_thread`,
+`target_source_thread_id`, exact run ID/slug, and current lifecycle. Omit the
+action entirely from reports to non-target tasks; do not reuse identical
+operational paragraphs across different task IDs.

@@ -1,5 +1,19 @@
 # 기술 변경 기록
 
+## 1.19.3 - task-targeted operational reports
+
+- Oracle incident packets now record the exact run owner, the task from which
+  the evidence was evaluated, and a run/slug-bound operational instruction.
+  Unresolved-owner checks use the run owner's task scope instead of an
+  unqualified project-wide view.
+- A foreign evaluator receives only `route-to-owner-task`; it never receives
+  executable recover, harvest, settle, stop, or retry authority. Reports must
+  be rendered separately for each target task instead of broadcasting an
+  owner's next action to sibling tasks sharing the same project root.
+- Exact runs already proven terminal and harvested emit `action=none`, even
+  when the local status remains `attention_required`. Incident v1 packets stay
+  validation-compatible, while new packets use the closed v2 routing fields.
+
 ## 1.19.2 - action-bar-independent Oracle completion
 
 - Oracle 0.17.1 can now finish an exact v1 task-outcome run when ChatGPT omits

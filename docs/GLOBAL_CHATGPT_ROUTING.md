@@ -57,6 +57,13 @@ Use this routing in the Codex global `AGENTS.md` after installing the package.
   submission. Foreign or legacy-unbound runs are never inferred from the
   newest project run and cannot be recovered, harvested, followed up, stopped,
   or canceled by the current task.
+- Incident and completion reports preserve that same boundary. The machine
+  packet records the evaluating task, exact owner task, run ID, slug, and one
+  bounded operational instruction. A foreign task receives only a route back
+  to the owner, while an already terminal and harvested run receives no
+  recovery instruction even if its local display status says attention is
+  required. Reports are rendered separately per target task rather than
+  broadcasting one owner's next action to every task sharing the project.
 - Comprehensive stages author the next semantic mission and a bound hash
   receipt. Local Codex owns transport, immutable identity, host safety, and one
   final deterministic gate rather than rewriting web output.
