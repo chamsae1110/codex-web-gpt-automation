@@ -82,10 +82,15 @@ PATCHES = {
     "dist/src/browser/actions/assistantResponse.js": {
         "patch": "assistantResponse.terminal-marker-fallback.patch",
         "pristine": "0bbc106f79c6abf253690c83794a2dab1b432378f57e16542d15cfcd5365e16d",
-        "patched": "5bdb4dbc9fd6d6ee3478d2c127a45114a0d698c92009bad77074b1839a8dfa9b",
+        "patched": "e126daca4dc82d6253a3bdd840411ac5da0d1b00d9d514a66ae543b0ea5eda61",
         "legacy_patched": [
             "60e6429a44b32dd71e1ce7d3362f4b4911533e9c66a188f3ecb5fc4ac4147fd5",
+            "5bdb4dbc9fd6d6ee3478d2c127a45114a0d698c92009bad77074b1839a8dfa9b",
         ],
+        "legacy_patches": {
+            "5bdb4dbc9fd6d6ee3478d2c127a45114a0d698c92009bad77074b1839a8dfa9b":
+                "assistantResponse.terminal-marker-fallback.v1.19.6.patch",
+        },
         "legacy_patch": "assistantResponse.terminal-marker-fallback.v1.19.2.patch",
     },
     "dist/bin/oracle-cli.js": {

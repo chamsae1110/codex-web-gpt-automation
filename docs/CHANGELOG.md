@@ -1,5 +1,26 @@
 # 기술 변경 기록
 
+## 1.19.7 - settle direct DevSpace model-option misses safely
+
+- Ordinary `devspace` runs that fail before submission because Oracle 0.17.1
+  cannot find the requested model option can now enter the existing explicit
+  user-confirmed no-submission settlement path instead of retaining a permanent
+  task-scoped project lock.
+- Admission binds the exact 13-line Oracle launcher/error transcript, requested
+  model and browser profile, mission hashes, prompt-free no-tab/no-URL recovery,
+  and strict duplicate-free Oracle metadata proving `execute-browser`,
+  `promptSubmitted=false`, and the ChatGPT root URL. A conversation, output,
+  changed model/profile/research settings, metadata drift, symlink, duplicate
+  key, or foreign transport remains fail-closed.
+- The change integrates the narrow intent of PR #20 onto the current Oracle
+  ownership, follow-up, terminal-watchdog, and saved-output identity code rather
+  than replacing those newer lifecycle guarantees with its older base.
+- Live and durable terminal classifiers now accept up to 32 bounded provider
+  reference-backlink rows that begin with an exact file-like citation and may
+  include rendered section labels, quoted annotations, or semicolon-separated
+  paths before the final `↩`. Ordinary prose, duplicate markers, oversized
+  footers, and rows without a file-like citation remain fail-closed.
+
 ## 1.19.6 - preserve follow-up authority after saved-output reconciliation
 
 - A saved-output reconciliation can now seal a separate v2 browser identity

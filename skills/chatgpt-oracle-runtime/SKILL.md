@@ -83,8 +83,11 @@ Oracle controller identity or its state/output/transcript/observer, and must
 not launch a nested Oracle run. It performs the requested mission directly.
 Prompts require citations and Markdown reference definitions before the marker.
 For provider-rendered compatibility, only one exact marker followed solely by
-single-line HTTP(S) Markdown reference definitions is also classifiable; any
-ordinary trailing prose or conflicting marker remains `unknown`.
+single-line HTTP(S) Markdown reference definitions or at most 32 bounded `↩`
+rows beginning with a file-like citation is also classifiable. Rendered rows
+may contain semicolon-separated file paths or a section annotation, but each is
+limited to 512 characters. Ordinary prose, a row without a file-like citation,
+an oversized footer, or a conflicting marker remains `unknown`.
 A nonzero Oracle exit after launch, including a browser response timeout, is
 `attention_required` rather than proof that the web session failed. It retains
 same-task exact-run ownership and permits only exact-slug `live` or `harvest`
@@ -185,6 +188,17 @@ Only prompt-free `harvest` is allowed; `live`, a foreign task, and any URL,
 probe, port, profile, target, or output contradiction remain blocked. Run the
 same exact-slug harvest once to create the normal no-tab/no-URL recovery
 evidence; it does not release ownership.
+An ordinary `devspace` run may instead fail because Oracle 0.17.1 cannot find
+the requested model option before submission. That case remains
+`submitted_unknown` until the same exact no-live/no-URL harvest and explicit
+user confirmation are present. Settlement additionally binds the complete
+Oracle launcher/error envelope, requested model and copied profile, exact
+mission hashes, duplicate-free session metadata, `execute-browser`,
+`promptSubmitted=false`, task ownership, dynamic CDP port, run-local browser
+profile and target, and the ChatGPT root URL. The official harvest is admitted
+only through that bounded prompt-free identity; `live` recovery stays blocked.
+It does not apply to Pro, another transport, changed metadata, a conversation
+URL, or durable output.
 A task-bound mission may have been edited after the failed run. In that case
 the immutable run copy and ownership receipt must still bind the same original
 mission SHA-256; legacy-unbound runs continue to require current source bytes.

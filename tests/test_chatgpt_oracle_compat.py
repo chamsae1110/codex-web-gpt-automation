@@ -503,9 +503,11 @@ console.log(JSON.stringify({{
   exactMarker: hasContractTerminalMarker('answer\\nTASK_OUTCOME: BLOCKED\\n\\n'),
   renderedReferences: hasContractTerminalMarker('answer\\nTASK_OUTCOME: EXECUTED\\nevidence/a.json. ↩\\nAGENTS.md. ↩'),
   renderedReferenceList: hasContractTerminalMarker('answer\\nTASK_OUTCOME: EXECUTED\\nevidence/a.json; skills/check/SKILL.md. ↩'),
+  renderedReferenceAnnotations: hasContractTerminalMarker('answer\\nTASK_OUTCOME: EXECUTED\\nevidence/a.json; evidence/raw/b.json. ↩\\nAGENTS.md, section "Computation delegation, user instruction 2026-08-24". ↩\\n.codex-tmp/lane-markout/run_markout.py; checksum-verified Binance bookTicker and aggTrades inputs under .codex-tmp/lane-markout/raw/. ↩'),
   tooManyRenderedReferences: hasContractTerminalMarker('TASK_OUTCOME: EXECUTED\\n' + Array(33).fill('evidence/a.json. ↩').join('\\n')),
   malformedRenderedReference: hasContractTerminalMarker('TASK_OUTCOME: EXECUTED\\nevidence/a.json.'),
   arbitraryBacklinkProse: hasContractTerminalMarker('TASK_OUTCOME: EXECUTED\\ncontinue observing ↩'),
+  pathPrefixedArbitraryProse: hasContractTerminalMarker('TASK_OUTCOME: EXECUTED\\nAGENTS.md arbitrary imperative prose should not be accepted. ↩'),
   lowerMarker: hasContractTerminalMarker('answer\\nTASK_OUTCOME: executed'),
   trailingProse: hasContractTerminalMarker('TASK_OUTCOME: EXECUTED\\nafter'),
   duplicateMarker: hasContractTerminalMarker('TASK_OUTCOME: BLOCKED\\nTASK_OUTCOME: EXECUTED'),
@@ -534,9 +536,11 @@ console.log(JSON.stringify({{
     assert payload["exactMarker"] is True
     assert payload["renderedReferences"] is True
     assert payload["renderedReferenceList"] is True
+    assert payload["renderedReferenceAnnotations"] is True
     assert payload["tooManyRenderedReferences"] is False
     assert payload["malformedRenderedReference"] is False
     assert payload["arbitraryBacklinkProse"] is False
+    assert payload["pathPrefixedArbitraryProse"] is False
     assert payload["lowerMarker"] is False
     assert payload["trailingProse"] is False
     assert payload["duplicateMarker"] is False

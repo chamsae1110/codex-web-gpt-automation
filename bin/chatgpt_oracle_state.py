@@ -201,6 +201,10 @@ ORACLE_MODEL_SWITCHER_PRE_SUBMIT_RE = re.compile(
     r".*?No cookies were applied;",
     re.IGNORECASE | re.DOTALL,
 )
+ORACLE_MODEL_OPTION_MISSING_PRE_SUBMIT_RE = re.compile(
+    r'^Unable to find model option matching "(?P<desired>[^"\r\n]{1,160})" '
+    r'in the model switcher\. Available: (?P<available>[^\r\n]{1,1000})\.$'
+)
 ORACLE_THINKING_TIME_PRE_SUBMIT_RE = re.compile(
     r"Thinking time: (?:selection unverified \(requested |unknown outcome selecting )"
     r"(?P<requested>[^);]+)\)?; refusing to submit without confirmed (?P<required>[^.]+)\.",
@@ -2806,6 +2810,22 @@ def bounded_task_owned_prompt_timeout_harvest_evidence(
         and followup.get("failure_kind") != "archived-parent-unarchive-menu-absent"
     ):
         return followup
+    direct_model_option = _direct_devspace_no_submission_evidence(
+        state_path,
+        require_persisted_recovery=False,
+        require_recovery_evidence=False,
+    )
+    if (
+        direct_model_option is not None
+        and direct_model_option.get("pre_submit_marker")
+        == "oracle-model-option-missing/v1"
+        and direct_model_option.get("recovery_evidence") == []
+    ):
+        return {
+            **direct_model_option,
+            "schema": "codex.chatgpt.oracle-bounded-model-option-harvest/v1",
+            "_bounded_harvest_kind": "direct-devspace-model-option-missing",
+        }
     evidence = _standalone_pro_no_submission_evidence(
         state_path,
         require_recovery_evidence=False,
@@ -3448,6 +3468,7 @@ def _direct_devspace_no_submission_evidence(
     state_path: Path,
     *,
     require_persisted_recovery: bool,
+    require_recovery_evidence: bool = True,
 ) -> dict[str, Any] | None:
     """Validate one ordinary DevSpace prompt-observation failure.
 
@@ -3514,15 +3535,61 @@ def _direct_devspace_no_submission_evidence(
         f"ERROR: {ORACLE_PROMPT_NOT_OBSERVED_MARKER}",
         f"User error (browser-automation): {ORACLE_PROMPT_NOT_OBSERVED_MARKER}",
     }
+    prompt_marker_valid = (
+        bool(marker_lines)
+        and marker_lines.issubset(allowed_marker_lines)
+        and stdout_text.count(ORACLE_PROMPT_NOT_OBSERVED_MARKER) == len(marker_lines)
+    )
+    lines = stdout_text.splitlines()
+    model_option_error = ""
+    model_option_match: re.Match[str] | None = None
+    if len(lines) >= 2 and lines[-1].startswith("User error (browser-automation): "):
+        model_option_error = lines[-1].removeprefix("User error (browser-automation): ")
+        if lines[-2] == f"ERROR: {model_option_error}":
+            model_option_match = ORACLE_MODEL_OPTION_MISSING_PRE_SUBMIT_RE.fullmatch(
+                model_option_error
+            )
+    model_option_valid = model_option_match is not None
     if (
         not locator
-        or not marker_lines
-        or not marker_lines.issubset(allowed_marker_lines)
-        or stdout_text.count(ORACLE_PROMPT_NOT_OBSERVED_MARKER) != len(marker_lines)
+        or prompt_marker_valid == model_option_valid
         or f"Session: {locator}" not in stdout_text
         or CHATGPT_CONVERSATION_URL_RE.search(stdout_text)
     ):
         return None
+    desired_model = ""
+    if model_option_match is not None:
+        desired_model = model_option_match.group("desired")
+        expected_head = [
+            f"Session: {locator}",
+            "Mode: browser foreground",
+            "Models: 1",
+            "Detach: no",
+            f"Reattach: oracle session {locator}",
+        ]
+        expected_guidance = [
+            "This run can take up to an hour (usually ~10 minutes).",
+            "[browser] Browser control: launch Chrome in hidden-window mode; may focus/control the browser UI.",
+            "[browser] Browser guidance: On macOS, Oracle launches Chrome off-screen while keeping the page rendered.",
+            "[browser] Browser guidance: For the calmest shared-desktop flow, prefer --browser-attach-running or --remote-chrome.",
+        ]
+        if (
+            len(lines) != 13
+            or re.fullmatch(r".{1,4} oracle 0\.17\.1 .{2,120}", lines[0]) is None
+            or lines[1:6] != expected_head
+            or re.fullmatch(
+                rf"Launching browser mode \(target={re.escape(desired_model)}; "
+                rf"requested={re.escape(str(profile['model']))}\) with ~[1-9][0-9]* tokens\.",
+                lines[6],
+            )
+            is None
+            or lines[7:11] != expected_guidance
+            or lines[-2:] != [
+                f"ERROR: {model_option_error}",
+                f"User error (browser-automation): {model_option_error}",
+            ]
+        ):
+            return None
     mission = state.get("mission") if isinstance(state.get("mission"), dict) else {}
     source_path = Path(str(mission.get("path") or ""))
     transport_path = Path(str(mission.get("transport_path") or ""))
@@ -3561,26 +3628,168 @@ def _direct_devspace_no_submission_evidence(
         run_dir / expected_recovery["stdout_name"],
         run_dir / expected_recovery["stderr_name"],
     ]
-    try:
-        if any(path.is_symlink() for path in recovery_paths):
+    recovery_records: list[dict[str, str]] = []
+    recovery_exists = [path.exists() or path.is_symlink() for path in recovery_paths]
+    if any(recovery_exists):
+        if not all(recovery_exists):
             return None
-        recovery_stdout, recovery_stderr = (path.read_bytes() for path in recovery_paths)
-        recovery_text = b"\n".join((recovery_stdout, recovery_stderr)).decode("utf-8", errors="strict")
-    except (OSError, UnicodeDecodeError):
+        try:
+            if any(path.is_symlink() for path in recovery_paths):
+                return None
+            recovery_stdout, recovery_stderr = (path.read_bytes() for path in recovery_paths)
+            recovery_text = b"\n".join((recovery_stdout, recovery_stderr)).decode(
+                "utf-8", errors="strict"
+            )
+        except (OSError, UnicodeDecodeError):
+            return None
+        if (
+            CHATGPT_CONVERSATION_URL_RE.search(recovery_text)
+            or ORACLE_RECOVERY_STATE_RE.search(recovery_text)
+            or ORACLE_NO_LIVE_TAB_MARKER not in recovery_text
+            or f'"{locator}"' not in recovery_text
+            or ORACLE_NO_RECOVERABLE_URL_MARKER not in recovery_text
+        ):
+            return None
+        recovery_records = [{
+            **expected_recovery,
+            "stdout_sha256": hashlib.sha256(recovery_stdout).hexdigest(),
+            "stderr_sha256": hashlib.sha256(recovery_stderr).hexdigest(),
+        }]
+    elif require_recovery_evidence:
         return None
-    if (
-        CHATGPT_CONVERSATION_URL_RE.search(recovery_text)
-        or ORACLE_RECOVERY_STATE_RE.search(recovery_text)
-        or ORACLE_NO_LIVE_TAB_MARKER not in recovery_text
-        or f'"{locator}"' not in recovery_text
-        or ORACLE_NO_RECOVERABLE_URL_MARKER not in recovery_text
-    ):
-        return None
-    recovery_records = [{
-        **expected_recovery,
-        "stdout_sha256": hashlib.sha256(recovery_stdout).hexdigest(),
-        "stderr_sha256": hashlib.sha256(recovery_stderr).hexdigest(),
-    }]
+    selector_meta_evidence: dict[str, Any] = {}
+    if model_option_match is not None:
+        session_root = Path(
+            os.environ.get("ORACLE_SESSION_ROOT") or (Path.home() / ".oracle" / "sessions")
+        ).resolve()
+        if re.fullmatch(r"oracle-[A-Za-z0-9._-]{1,200}", locator) is None:
+            return None
+        meta_path = session_root / locator / "meta.json"
+        if meta_path.parent.is_symlink() or meta_path.is_symlink():
+            return None
+
+        def reject_meta_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+            parsed: dict[str, Any] = {}
+            for key, value in pairs:
+                if key in parsed:
+                    raise ValueError(f"duplicate Oracle meta key: {key}")
+                parsed[key] = value
+            return parsed
+
+        try:
+            meta_bytes = meta_path.read_bytes()
+            if meta_path.resolve(strict=True).parent.parent != session_root:
+                return None
+            meta_text = meta_bytes.decode("utf-8", errors="strict")
+            meta = json.loads(meta_text, object_pairs_hook=reject_meta_duplicates)
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
+            return None
+        browser = meta.get("browser") if isinstance(meta.get("browser"), dict) else {}
+        config = browser.get("config") if isinstance(browser.get("config"), dict) else {}
+        runtime = browser.get("runtime") if isinstance(browser.get("runtime"), dict) else {}
+        archive = browser.get("archive")
+        error = meta.get("error") if isinstance(meta.get("error"), dict) else {}
+        details = error.get("details") if isinstance(error.get("details"), dict) else {}
+        details_runtime = (
+            details.get("runtime") if isinstance(details.get("runtime"), dict) else {}
+        )
+        options = meta.get("options") if isinstance(meta.get("options"), dict) else {}
+        option_browser = (
+            options.get("browserConfig")
+            if isinstance(options.get("browserConfig"), dict)
+            else {}
+        )
+        identity = (
+            state.get("browser_identity")
+            if isinstance(state.get("browser_identity"), dict)
+            else {}
+        )
+        ownership = proven_ownership_receipt(state_path)
+        source_thread_id = source_thread_id_from_state(state)
+        receipt_path = browser_identity_receipt_path(run_dir)
+        try:
+            copy_profile = Path(str(profile.get("copy_profile") or "")).resolve()
+            config_profile = Path(str(config.get("copyProfileSource") or "")).resolve()
+            option_profile = Path(str(option_browser.get("copyProfileSource") or "")).resolve()
+            meta_cwd = Path(str(meta.get("cwd") or "")).resolve()
+            meta_output = Path(str(options.get("writeOutputPath") or "")).resolve()
+            chrome_pid = int(runtime.get("chromePid"))
+            controller_pid = int(runtime.get("controllerPid"))
+            cdp_port = int(runtime.get("chromePort"))
+            state_browser_temp = Path(str(artifacts.get("browser_temp") or "")).resolve()
+            runtime_profile = Path(str(runtime.get("userDataDir") or "")).resolve()
+        except (OSError, TypeError, ValueError):
+            return None
+        model_id = str(profile.get("model") or "")
+        if (
+            ownership is None
+            or not source_thread_id
+            or identity.get("receipt_path") not in {None, ""}
+            or identity.get("receipt_sha256") not in {None, ""}
+            or receipt_path.exists()
+            or receipt_path.is_symlink()
+            or not str(profile.get("copy_profile") or "").strip()
+            or not copy_profile.is_absolute()
+            or meta.get("id") != locator
+            or meta.get("status") != "error"
+            or meta.get("model") != model_id
+            or meta.get("mode") != "browser"
+            or not str(meta.get("completedAt") or "").strip()
+            or meta_cwd != project_root
+            or meta_output != output.resolve()
+            or chrome_pid <= 0
+            or controller_pid <= 0
+            or cdp_port != identity.get("expected_cdp_port")
+            or config.get("debugPort") != cdp_port
+            or option_browser.get("debugPort") != cdp_port
+            or not str(runtime.get("chromeTargetId") or "").strip()
+            or runtime.get("conversationId") not in {None, ""}
+            or archive not in {None, ""}
+            or state_browser_temp != (run_dir / "browser-temp").resolve()
+            or not state_browser_temp.is_dir()
+            or state_browser_temp.is_symlink()
+            or not runtime_profile.is_dir()
+            or runtime_profile.is_symlink()
+            or not is_within(state_browser_temp, runtime_profile)
+            or config_profile != copy_profile
+            or option_profile != copy_profile
+            or config.get("desiredModel") != desired_model
+            or option_browser.get("desiredModel") != desired_model
+            or config.get("modelStrategy") != profile.get("model_strategy")
+            or option_browser.get("modelStrategy") != profile.get("model_strategy")
+            or config.get("thinkingTime") != profile.get("thinking_time")
+            or option_browser.get("thinkingTime") != profile.get("thinking_time")
+            or config.get("researchMode") != profile.get("research")
+            or option_browser.get("researchMode") != profile.get("research")
+            or options.get("model") != model_id
+            or options.get("models") != [model_id]
+            or options.get("effectiveModelId") != model_id
+            or options.get("slug") != locator
+            or options.get("mode") != "browser"
+            or runtime.get("promptSubmitted") is not False
+            or runtime.get("tabUrl") != "https://chatgpt.com/"
+            or details_runtime.get("promptSubmitted") not in {None, False}
+            or error.get("category") != "browser-automation"
+            or error.get("message") != model_option_error
+            or details.get("stage") != "execute-browser"
+            or str(meta.get("errorMessage") or "") != model_option_error
+            or CHATGPT_CONVERSATION_URL_RE.search(meta_text)
+        ):
+            return None
+        selector_meta_evidence = {
+            "pre_submit_marker": "oracle-model-option-missing/v1",
+            "source_thread_id": source_thread_id,
+            "ownership_receipt_sha256": ownership.get("sha256"),
+            "desired_model": desired_model,
+            "oracle_meta_path": str(meta_path),
+            "oracle_meta_sha256": hashlib.sha256(meta_bytes).hexdigest(),
+            "oracle_meta_stage": "execute-browser",
+            "prompt_submitted": False,
+            "tab_url": "https://chatgpt.com/",
+            "expected_cdp_port": cdp_port,
+            "browser_profile": str(runtime_profile),
+            "browser_target_id": str(runtime.get("chromeTargetId")),
+        }
     evidence = {
         "settlement_eligibility": "oracle-direct-devspace/v1",
         "project_root": str(project_root),
@@ -3599,11 +3808,14 @@ def _direct_devspace_no_submission_evidence(
         "recovery_evidence": recovery_records,
         "output_absent": True,
         "conversation_url_absent": True,
+        **selector_meta_evidence,
         "_source_mission_path": str(source_path),
         "_transport_mission_path": str(transport_path),
     }
     if not require_persisted_recovery:
         return evidence
+    if not recovery_records:
+        return None
     reference = state.get("prompt_not_observed_recovery")
     expected_path = run_dir / "prompt-not-observed-recovery.json"
     if (
@@ -3778,6 +3990,13 @@ def proven_user_confirmed_no_submission(state_path: Path) -> dict[str, Any] | No
             "source_mission_sha256", "transport_mission_path", "transport_mission_sha256",
             "oracle_version",
         )
+        if current.get("pre_submit_marker") == "oracle-model-option-missing/v1":
+            required += (
+                "pre_submit_marker", "desired_model", "oracle_meta_path",
+                "oracle_meta_sha256", "oracle_meta_stage", "prompt_submitted", "tab_url",
+                "source_thread_id", "ownership_receipt_sha256", "expected_cdp_port",
+                "browser_profile", "browser_target_id",
+            )
     elif current.get("settlement_eligibility") in {
         "oracle-followup-pre-submit-ui/v1",
         "oracle-followup-pre-submit-ui/v2",
@@ -3924,8 +4143,10 @@ def settle_user_confirmed_no_submission(
             )
             if evidence.get("settlement_eligibility") == "oracle-pre-submit-host/v1"
             else "user-confirmed-no-submission-after-model-selector-failure"
-            if evidence.get("pre_submit_marker")
-            == "oracle-model-selector-button-missing/v1"
+            if evidence.get("pre_submit_marker") in {
+                "oracle-model-selector-button-missing/v1",
+                "oracle-model-option-missing/v1",
+            }
             else "user-confirmed-no-submission-after-prompt-timeout"
         ),
         "user_confirmed_no_submission": {
@@ -5112,9 +5333,15 @@ MARKDOWN_HTTP_REFERENCE_DEFINITION_RE = re.compile(
     re.IGNORECASE,
 )
 
+_RENDERED_FILE_REFERENCE = r"(?:(?:[\w.-]+/)*[\w.-]+\.[\w.-]+)"
+_RENDERED_DIRECTORY_REFERENCE = r"(?:(?:[\w.-]+/)+)"
 RENDERED_REFERENCE_FOOTER_RE = re.compile(
-    r"^(?:(?:[\w.-]+/)*[\w.-]+\.[\w.-]+)"
-    r"(?:;\s*(?:(?:[\w.-]+/)*[\w.-]+\.[\w.-]+))*\.\s↩$"
+    rf"^(?:"
+    rf"{_RENDERED_FILE_REFERENCE}(?:;\s*{_RENDERED_FILE_REFERENCE})*"
+    rf"|{_RENDERED_FILE_REFERENCE}, section \"[^\"\r\n]{{1,200}}\""
+    rf"|{_RENDERED_FILE_REFERENCE}; checksum-verified [\w .-]{{1,200}} "
+    rf"inputs under {_RENDERED_DIRECTORY_REFERENCE}"
+    rf")\.[ \t]↩$"
 )
 
 

@@ -632,6 +632,8 @@ def require_bound_browser_identity(
         else None
     )
     if bounded is not None:
+        if bounded.get("_bounded_harvest_kind") == "direct-devspace-model-option-missing":
+            return "bounded-model-option-harvest"
         return "bounded-prompt-timeout-harvest"
     raise OracleRunError(
         "BROWSER_IDENTITY_RECEIPT_REQUIRED",

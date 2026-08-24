@@ -674,6 +674,155 @@ def model_selector_button_pre_submit_popen(
     return popen
 
 
+def model_option_missing_pre_submit_popen(
+    session_root: Path,
+    *,
+    variation: str | None = None,
+):
+    def popen(command, **kwargs):
+        slug = command[command.index("--slug") + 1]
+        output_path = Path(command[command.index("--write-output") + 1]).resolve()
+        browser_port = int(command[command.index("--browser-port") + 1])
+        run_dir = output_path.parent
+        browser_temp = run_dir / "browser-temp"
+        runtime_profile = browser_temp / "oracle-browser-fixture"
+        if variation == "profile-outside-run":
+            runtime_profile = run_dir.parent / "foreign-browser-profile"
+        runtime_profile.mkdir(parents=True, exist_ok=True)
+        expected_profile = (Path.home() / ".oracle" / "browser-profile").resolve()
+        model_id = "gpt-5.5-instant"
+        desired_model = "GPT-5.5 Instant"
+        error_message = (
+            'Unable to find model option matching "GPT-5.5 Instant" in the model switcher. '
+            "Available: Advanced, ModelGPT-5.6 Sol, EffortPro."
+        )
+        emitted_error = (
+            'Unable to find model option matching "GPT-5.6 Sol" in the model switcher. '
+            "Available: Advanced, ModelGPT-5.6 Sol, EffortPro."
+            if variation == "different-error"
+            else error_message
+        )
+        lines = [
+            "? oracle 0.17.1 deterministic fixture",
+            f"Session: {slug}",
+            "Mode: browser foreground",
+            "Models: 1",
+            "Detach: no",
+            f"Reattach: oracle session {slug}",
+            f"Launching browser mode (target={desired_model}; requested={model_id}) with ~246 tokens.",
+            "This run can take up to an hour (usually ~10 minutes).",
+            "[browser] Browser control: launch Chrome in hidden-window mode; may focus/control the browser UI.",
+            "[browser] Browser guidance: On macOS, Oracle launches Chrome off-screen while keeping the page rendered.",
+            "[browser] Browser guidance: For the calmest shared-desktop flow, prefer --browser-attach-running or --remote-chrome.",
+            f"ERROR: {emitted_error}",
+            f"User error (browser-automation): {emitted_error}",
+        ]
+        kwargs["stdout"].write(("\n".join(lines) + "\n").encode("utf-8"))
+        kwargs["stdout"].flush()
+        tab_url = (
+            "https://chatgpt.com/c/existing-conversation"
+            if variation == "conversation-url"
+            else "https://chatgpt.com/"
+        )
+        prompt_submitted = variation == "prompt-submitted"
+        meta_model = "gpt-5.6" if variation == "model-mismatch" else model_id
+        meta = {
+            "id": slug,
+            "createdAt": "2026-08-24T02:33:07.000Z",
+            "startedAt": "2026-08-24T02:33:08.000Z",
+            "completedAt": (
+                "" if variation == "missing-completed-at" else "2026-08-24T02:34:16.027Z"
+            ),
+            "status": "error",
+            "model": meta_model,
+            "cwd": str(Path(kwargs["cwd"]).resolve()),
+            "mode": "browser",
+            "browser": {
+                "config": {
+                    "copyProfileSource": str(expected_profile),
+                    "debugPort": browser_port,
+                    "desiredModel": desired_model,
+                    "modelStrategy": "select",
+                    "thinkingTime": "light",
+                    "researchMode": "deep" if variation == "research-mismatch" else "off",
+                },
+                "runtime": {
+                    "chromePid": 16424,
+                    "chromePort": browser_port + 1 if variation == "port-mismatch" else browser_port,
+                    "chromeHost": "127.0.0.1",
+                    "tabUrl": tab_url,
+                    "promptSubmitted": prompt_submitted,
+                    "controllerPid": 27784,
+                    "chromeTargetId": (
+                        "" if variation == "target-missing" else "fixture-target-model-option"
+                    ),
+                    "conversationId": (
+                        "existing-conversation" if variation == "conversation-id" else None
+                    ),
+                    "userDataDir": str(runtime_profile),
+                },
+            },
+            "options": {
+                "model": model_id,
+                "models": [model_id],
+                "effectiveModelId": model_id,
+                "slug": slug,
+                "mode": "browser",
+                "writeOutputPath": str(output_path),
+                "browserConfig": {
+                    "copyProfileSource": str(expected_profile),
+                    "debugPort": browser_port,
+                    "desiredModel": desired_model,
+                    "modelStrategy": "select",
+                    "thinkingTime": "light",
+                    "researchMode": "off",
+                },
+            },
+            "errorMessage": error_message,
+            "error": {
+                "category": "browser-automation",
+                "message": error_message,
+                "details": {
+                    "stage": "different-stage" if variation == "different-stage" else "execute-browser",
+                },
+            },
+        }
+        if variation != "missing-meta":
+            meta_path = session_root / slug / "meta.json"
+            meta_text = json.dumps(meta)
+            if variation == "duplicate-meta-key":
+                meta_text = meta_text.replace(
+                    '"status": "error"',
+                    '"status": "error", "status": "complete"',
+                    1,
+                )
+            if variation == "meta-parent-symlink":
+                real_dir = session_root.parent / f"{slug}-real"
+                real_dir.mkdir(parents=True, exist_ok=True)
+                (real_dir / "meta.json").write_text(meta_text, encoding="utf-8")
+                session_root.mkdir(parents=True, exist_ok=True)
+                try:
+                    meta_path.parent.symlink_to(real_dir, target_is_directory=True)
+                except OSError as exc:
+                    pytest.skip(f"directory symlink unavailable: {exc}")
+            else:
+                meta_path.parent.mkdir(parents=True, exist_ok=True)
+                if variation == "meta-file-symlink":
+                    real_meta = session_root.parent / f"{slug}-real-meta.json"
+                    real_meta.write_text(meta_text, encoding="utf-8")
+                    try:
+                        meta_path.symlink_to(real_meta)
+                    except OSError as exc:
+                        pytest.skip(f"file symlink unavailable: {exc}")
+                else:
+                    meta_path.write_text(meta_text, encoding="utf-8")
+        if variation == "output-present":
+            output_path.write_text("contradictory output", encoding="utf-8")
+        return Process(1, [])
+
+    return popen
+
+
 def isolated_default_oracle_profile(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3379,6 +3528,157 @@ def test_user_confirmation_cannot_replace_missing_recovery_evidence(tmp_path: Pa
             reason="user said no submission",
         )
     assert exc.value.code == "NO_SUBMISSION_EVIDENCE_INCOMPLETE"
+
+
+def test_direct_devspace_model_option_missing_is_hash_bound_before_user_settlement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = load_runner()
+    monkeypatch.setenv("CODEX_THREAD_ID", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+    isolated_default_oracle_profile(tmp_path, monkeypatch)
+    session_root = tmp_path / "oracle-sessions"
+    monkeypatch.setenv("ORACLE_SESSION_ROOT", str(session_root))
+    failed = execute_run(
+        runner,
+        manifest(
+            tmp_path,
+            model="gpt-5.5-instant",
+            model_strategy="select",
+            thinking_time="light",
+            research="off",
+        ),
+        run_factory=version_0171_runner,
+        popen_factory=model_option_missing_pre_submit_popen(session_root),
+    )
+    run_dir = Path(failed["run_dir"])
+    state_path = run_dir / "state.json"
+    slug = runner.STATE.load_state(state_path)["oracle"]["slug"]
+    evidence = runner.STATE.bounded_task_owned_prompt_timeout_harvest_evidence(state_path)
+    assert evidence is not None
+    assert evidence["schema"] == "codex.chatgpt.oracle-bounded-model-option-harvest/v1"
+    assert evidence["source_thread_id"]
+    with pytest.raises(runner.OracleRunError) as live_exc:
+        runner.recover_run(run_dir, action="live", dry_run=True, oracle_command=["oracle"])
+    assert live_exc.value.code == "BROWSER_IDENTITY_RECEIPT_REQUIRED"
+    dry_run = runner.recover_run(
+        run_dir,
+        action="harvest",
+        dry_run=True,
+        oracle_command=["oracle"],
+    )
+    assert dry_run["browser_identity_mode"] == "bounded-model-option-harvest"
+    assert "--harvest" in dry_run["argv"]
+    assert "--prompt" not in dry_run["argv"]
+    recovered = runner.recover_run(
+        run_dir,
+        action="harvest",
+        oracle_command=["oracle"],
+        popen_factory=recovery_binding_unavailable_popen,
+    )
+    assert recovered["status"] == "recovery_binding_unavailable"
+    assert runner.STATE.bounded_task_owned_prompt_timeout_harvest_evidence(state_path) is None
+
+    settled = runner.settle_user_confirmed_no_submission(
+        run_dir,
+        confirmation=runner.STATE.USER_CONFIRMED_NO_SUBMISSION,
+        reason="user confirmed the unsupported model test never submitted a prompt",
+    )
+    proof = runner.STATE.proven_user_confirmed_no_submission(state_path)
+    receipt = json.loads(
+        (run_dir / "user-confirmed-no-submission.json").read_text(encoding="utf-8")
+    )
+
+    assert settled["ok"] is True
+    assert settled["safe_for_fresh_run"] is True
+    assert settled["result"]["session_authority"] == "pre_submit"
+    assert settled["result"]["task_outcome_reason"] == (
+        "user-confirmed-no-submission-after-model-selector-failure"
+    )
+    assert proof is not None
+    assert proof["pre_submit_marker"] == "oracle-model-option-missing/v1"
+    assert proof["desired_model"] == "GPT-5.5 Instant"
+    assert proof["prompt_submitted"] is False
+    assert proof["tab_url"] == "https://chatgpt.com/"
+    assert receipt["oracle_meta_sha256"] == hashlib.sha256(
+        (session_root / slug / "meta.json").read_bytes()
+    ).hexdigest()
+    assert runner.STATE.unresolved_project_sessions(run_dir.parent, tmp_path) == []
+
+    meta_path = session_root / slug / "meta.json"
+    tampered = json.loads(meta_path.read_text(encoding="utf-8"))
+    tampered["browser"]["runtime"]["promptSubmitted"] = True
+    meta_path.write_text(json.dumps(tampered), encoding="utf-8")
+    assert runner.STATE.proven_user_confirmed_no_submission(state_path) is None
+
+
+@pytest.mark.parametrize(
+    "variation",
+    (
+        "prompt-submitted",
+        "conversation-url",
+        "different-stage",
+        "different-error",
+        "model-mismatch",
+        "research-mismatch",
+        "missing-completed-at",
+        "output-present",
+        "missing-meta",
+        "duplicate-meta-key",
+        "meta-file-symlink",
+        "meta-parent-symlink",
+        "port-mismatch",
+        "target-missing",
+        "conversation-id",
+        "profile-outside-run",
+    ),
+)
+def test_direct_devspace_model_option_missing_keeps_lock_on_incomplete_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    variation: str,
+) -> None:
+    runner = load_runner()
+    monkeypatch.setenv("CODEX_THREAD_ID", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+    isolated_default_oracle_profile(tmp_path, monkeypatch)
+    session_root = tmp_path / "oracle-sessions"
+    monkeypatch.setenv("ORACLE_SESSION_ROOT", str(session_root))
+    failed = execute_run(
+        runner,
+        manifest(
+            tmp_path,
+            model="gpt-5.5-instant",
+            model_strategy="select",
+            thinking_time="light",
+            research="off",
+        ),
+        run_factory=version_0171_runner,
+        popen_factory=model_option_missing_pre_submit_popen(
+            session_root,
+            variation=variation,
+        ),
+    )
+    run_dir = Path(failed["run_dir"])
+    state_path = run_dir / "state.json"
+    slug = runner.STATE.load_state(state_path)["oracle"]["slug"]
+    (run_dir / "recovery-harvest-stdout.log").write_text(
+        f'No live ChatGPT tab matched session "{slug}". Attempting recovery.\n',
+        encoding="utf-8",
+    )
+    (run_dir / "recovery-harvest-stderr.log").write_text(
+        "Cannot recover conversation: session metadata has no recoverable ChatGPT conversation URL.\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(runner.STATE.OracleStateError) as exc:
+        runner.settle_user_confirmed_no_submission(
+            run_dir,
+            confirmation=runner.STATE.USER_CONFIRMED_NO_SUBMISSION,
+            reason="user confirmation cannot override contradictory model selector evidence",
+        )
+
+    assert exc.value.code == "NO_SUBMISSION_EVIDENCE_INCOMPLETE"
+    assert runner.STATE.load_state(state_path)["session_authority"] == "submitted_unknown"
 
 
 def test_direct_devspace_prompt_not_observed_recovery_is_hash_bound_before_user_settlement(tmp_path: Path) -> None:

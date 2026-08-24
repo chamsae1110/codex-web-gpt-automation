@@ -134,6 +134,9 @@ def test_v1_task_outcome_accepts_bounded_rendered_reference_backlinks(tmp_path: 
     output.write_text(
         "answer\nTASK_OUTCOME: EXECUTED\n"
         "evidence/a.json; skills/check/SKILL.md. ↩\n"
+        "AGENTS.md, section \"Computation delegation, user instruction 2026-08-24\". ↩\n"
+        ".codex-tmp/lane-markout/run_markout.py; checksum-verified Binance bookTicker "
+        "and aggTrades inputs under .codex-tmp/lane-markout/raw/. ↩\n"
         "검증/결과.json. ↩\n",
         encoding="utf-8",
     )
@@ -151,6 +154,7 @@ def test_v1_task_outcome_accepts_bounded_rendered_reference_backlinks(tmp_path: 
         "Actually no files were changed.\n",
         "[note]: this is ordinary prose, not a URL\n",
         "continue observing ↩\n",
+        "AGENTS.md arbitrary imperative prose should not be accepted. ↩\n",
         "TASK_OUTCOME: BLOCKED\n",
     ],
 )

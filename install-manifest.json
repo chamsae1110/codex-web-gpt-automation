@@ -1,6 +1,6 @@
 {
   "schema": "codexpro.install-manifest/v1",
-  "version": "1.19.6",
+  "version": "1.19.7",
   "include": [
     "bin/chatgpt_agbrowse_bridge.py",
     "bin/chatgpt_agbrowse_composer.py",
@@ -21,6 +21,7 @@
     "bin/devspace-compat/1.0.4/workspaces.patch",
     "bin/chatgpt_oracle_compat.py",
     "bin/oracle-compat/0.17.1/assistantResponse.terminal-marker-fallback.patch",
+    "bin/oracle-compat/0.17.1/assistantResponse.terminal-marker-fallback.v1.19.6.patch",
     "bin/oracle-compat/0.17.1/assistantResponse.terminal-marker-fallback.v1.19.2.patch",
     "bin/oracle-compat/0.17.1/oracle-cli.followup-port-binding.patch",
     "bin/oracle-compat/0.17.1/browserConfig.followup-port-binding.patch",
