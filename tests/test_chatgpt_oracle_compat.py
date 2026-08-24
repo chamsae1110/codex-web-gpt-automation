@@ -413,6 +413,121 @@ def test_published_0171_patch_requires_extra_high_and_pro_selection_proof(tmp_pa
     assert compat.sha256_file(recovery_target) == compat.PATCHES["dist/src/browser/recoverConversation.js"]["patched"]
 
 
+def test_published_0171_terminal_marker_fallback_is_stable_exact_and_thinking_independent(
+    tmp_path: Path,
+) -> None:
+    compat = load_compat()
+    source = (
+        Path.home()
+        / "AppData"
+        / "Local"
+        / "npm-cache"
+        / "_npx"
+        / "0a10f56e3ba43148"
+        / "node_modules"
+        / "@steipete"
+        / "oracle"
+    )
+    if not source.is_dir():
+        pytest.skip("published Oracle 0.17.1 cache is unavailable")
+    package = tmp_path / "oracle-terminal-marker"
+    shutil.copytree(source, package)
+    compat.ensure_oracle_compatibility(
+        "oracle 0.17.1", package_root=package, backup_root=tmp_path / "backup-terminal-marker"
+    )
+
+    assistant = package / "dist/src/browser/actions/assistantResponse.js"
+    thinking = package / "dist/src/browser/actions/thinkingStatus.js"
+    assert compat.sha256_file(assistant) == compat.PATCHES[
+        "dist/src/browser/actions/assistantResponse.js"
+    ]["patched"]
+    assert compat.sha256_file(thinking) == compat.PATCHES[
+        "dist/src/browser/actions/thinkingStatus.js"
+    ]["patched"]
+    assistant_text = assistant.read_text(encoding="utf-8")
+    assert "readAssistantSnapshot(Runtime, minTurnIndex, expectedConversationId)" in assistant_text
+    assert "terminalMarker: hasContractTerminalMarker(normalized.text)" in assistant_text
+    assert "ORACLE_TERMINAL_MARKER_CONFIRM_CYCLES" not in assistant_text
+    assert "ORACLE_TERMINAL_MARKER_MIN_STABLE_MS" not in assistant_text
+
+    node = shutil.which("node")
+    assert node is not None
+    script = f"""
+import {{ createTerminalGateState, classifyTurnTerminal, hasContractTerminalMarker }} from {json.dumps(assistant.as_uri())};
+import {{ shouldWarnThinkingStatusUndetected, formatThinkingUndetectedWarningLog }} from {json.dumps(thinking.as_uri())};
+const config = {{
+  barConfirmCycles: 3,
+  minStableMs: 1200,
+  markerConfirmCycles: 2,
+  markerMinStableMs: 5000,
+  taskOutcomeContract: 'v1',
+}};
+const sample = (now, text, extra = {{}}) => ({{
+  now,
+  len: text.length,
+  contentKey: `new-turn::${{text}}`,
+  stopVisible: false,
+  barVisible: false,
+  strongThinkingActive: false,
+  terminalMarker: hasContractTerminalMarker(text),
+  ...extra,
+}});
+const answer = `${{'x'.repeat(15800)}}\\nTASK_OUTCOME: EXECUTED\\n`;
+let state = createTerminalGateState(0);
+let first = classifyTurnTerminal(state, sample(0, answer), config); state = first.state;
+let second = classifyTurnTerminal(state, sample(2500, answer), config); state = second.state;
+let third = classifyTurnTerminal(state, sample(5000, answer), config);
+let changed = classifyTurnTerminal(third.state, sample(5100, answer.replace('x', 'y')), config);
+let active = classifyTurnTerminal(second.state, sample(6000, answer, {{ strongThinkingActive: true }}), config);
+let stopped = classifyTurnTerminal(second.state, sample(6000, answer, {{ stopVisible: true }}), config);
+let contractAbsentState = createTerminalGateState(0);
+contractAbsentState = classifyTurnTerminal(contractAbsentState, sample(0, answer), {{ ...config, taskOutcomeContract: null }}).state;
+contractAbsentState = classifyTurnTerminal(contractAbsentState, sample(3000, answer), {{ ...config, taskOutcomeContract: null }}).state;
+let contractAbsent = classifyTurnTerminal(contractAbsentState, sample(6000, answer), {{ ...config, taskOutcomeContract: null }});
+console.log(JSON.stringify({{
+  exactMarker: hasContractTerminalMarker('answer\\nTASK_OUTCOME: BLOCKED\\n\\n'),
+  lowerMarker: hasContractTerminalMarker('answer\\nTASK_OUTCOME: executed'),
+  trailingProse: hasContractTerminalMarker('TASK_OUTCOME: EXECUTED\\nafter'),
+  duplicateMarker: hasContractTerminalMarker('TASK_OUTCOME: BLOCKED\\nTASK_OUTCOME: EXECUTED'),
+  embeddedEarlierMarker: hasContractTerminalMarker('analysis says TASK_OUTCOME: BLOCKED earlier\\nTASK_OUTCOME: EXECUTED'),
+  first: first.terminal,
+  second: second.terminal,
+  third: third.terminal,
+  changed: changed.terminal,
+  active: active.terminal,
+  stopped: stopped.terminal,
+  contractAbsent: contractAbsent.terminal,
+  warnEarly: shouldWarnThinkingStatusUndetected(false, false, 299999),
+  warnAtThreshold: shouldWarnThinkingStatusUndetected(false, false, 300000),
+  warnAfterDetected: shouldWarnThinkingStatusUndetected(true, false, 600000),
+  warnAfterLogged: shouldWarnThinkingStatusUndetected(false, true, 600000),
+  warningText: formatThinkingUndetectedWarningLog(0, 300000),
+}}));
+"""
+    result = subprocess.run(
+        [node, "--input-type=module", "-e", script], capture_output=True, text=True, check=False
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["exactMarker"] is True
+    assert payload["lowerMarker"] is False
+    assert payload["trailingProse"] is False
+    assert payload["duplicateMarker"] is False
+    assert payload["embeddedEarlierMarker"] is False
+    assert payload["first"] is False
+    assert payload["second"] is False
+    assert payload["third"] is True
+    assert payload["changed"] is False
+    assert payload["active"] is False
+    assert payload["stopped"] is False
+    assert payload["contractAbsent"] is False
+    assert payload["warnEarly"] is False
+    assert payload["warnAtThreshold"] is True
+    assert payload["warnAfterDetected"] is False
+    assert payload["warnAfterLogged"] is False
+    assert "independent terminal watchdog remains active" in payload["warningText"]
+
+
 def test_archived_parent_direct_restore_requires_exact_control_and_composer_transition(
     tmp_path: Path,
 ) -> None:

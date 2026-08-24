@@ -38,6 +38,12 @@ Use this routing in the Codex global `AGENTS.md` after installing the package.
   release its task-scoped project lock for one fresh retry with identical mission bytes;
   repeated tool absence is `attention_required`, not an automatic app-settings
   repair or attachment fallback.
+- For a v1 task-outcome run, Oracle may use a bounded completion fallback when
+  ChatGPT omits both the thinking label and completion action bar. It still
+  requires the exact conversation and new assistant turn, no Stop control or
+  active strong-thinking signal, stable full response bytes across two checks
+  for at least five seconds, and one unambiguous final `TASK_OUTCOME` line.
+  Generic and legacy runs keep upstream completion behavior.
 - Explicit `pro-attachment` remains a separate read-only route for immutable or
   external evidence and is never an automatic fallback from a qualified Pro
   DevSpace run. Persisted legacy `pro-devspace` write runs retain their exact
@@ -91,7 +97,8 @@ historical or explicitly archived exact task-bound parent uses bounded restore
 and re-archive. A before-composer restore failure goes directly to explicit
 user-confirmed no-submission settlement and must not be harvested. Any URL
 drift or unverified transition fails closed without fallback.
-the exact terminal parent run directory, a project-contained UTF-8 mission,
+The follow-up command requires the exact terminal parent run directory, a
+project-contained UTF-8 mission,
 and a unique round key. Raw Oracle follow-up options remain blocked. Each round
 gets a new Oracle run/slug but must prove the unchanged ChatGPT conversation
 and append hash-bound reservation/result receipts. It never starts

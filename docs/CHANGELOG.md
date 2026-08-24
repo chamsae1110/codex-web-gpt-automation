@@ -1,5 +1,22 @@
 # 기술 변경 기록
 
+## 1.19.2 - action-bar-independent Oracle completion
+
+- Oracle 0.17.1 can now finish an exact v1 task-outcome run when ChatGPT omits
+  the transient thinking/streaming label and completion action bar. The bounded
+  fallback requires the same conversation and new assistant turn already
+  enforced by Oracle, no Stop control, no active strong-thinking signal, an
+  unchanged full response across two observations for at least five seconds,
+  and exactly one final `TASK_OUTCOME` marker.
+- The fallback is enabled only for the runner's explicit v1 answer contract.
+  Legacy and generic Oracle runs scrub any inherited opt-in variable and retain
+  upstream behavior. Live/harvest recovery inherits the persisted contract
+  without creating a new prompt or conversation.
+- A distinct warning is emitted after five minutes when no thinking status has
+  ever been detected, while the independent terminal watchdog continues. This
+  distinguishes a missing UI label from ordinary visible streaming without
+  treating elapsed time as terminal.
+
 ## 1.19.1 - structured follow-up pre-composer settlement
 
 - Follow-up failures are no longer eligible for no-submission settlement only

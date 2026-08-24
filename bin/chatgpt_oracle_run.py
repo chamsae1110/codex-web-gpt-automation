@@ -920,6 +920,15 @@ def web_multi_devspace_qualification_target(config: STATE.OracleConfig) -> Path:
         ) from exc
 
 
+def configure_task_outcome_terminal_contract(env: dict[str, str], contract: str) -> None:
+    """Expose the bounded terminal watchdog only to exact v1 answer contracts."""
+    env.pop("ORACLE_TASK_OUTCOME_TERMINAL_CONTRACT", None)
+    env.pop("ORACLE_TERMINAL_MARKER_CONFIRM_CYCLES", None)
+    env.pop("ORACLE_TERMINAL_MARKER_MIN_STABLE_MS", None)
+    if contract == "v1":
+        env["ORACLE_TASK_OUTCOME_TERMINAL_CONTRACT"] = "v1"
+
+
 def execute_run(
     manifest_path: Path,
     *,
@@ -1025,6 +1034,7 @@ def execute_run(
     layout.stdout_path.touch()
     layout.stderr_path.touch()
     oracle_env = STATE.browser_temp_environment(layout.browser_temp_path, platform_name=platform_name)
+    configure_task_outcome_terminal_contract(oracle_env, config.task_outcome_contract)
     exit_code: int | None = None
     oracle_process_pid: int | None = None
     prior_audit_observations: dict[str, dict[str, Any]] = {}
@@ -1495,6 +1505,10 @@ def _recover_run_locked(
     stderr_path = directory / f"recovery-{action}-stderr.log"
     recovery_browser_temp = directory / f"recovery-{action}-browser-temp"
     recovery_env = STATE.browser_temp_environment(recovery_browser_temp, platform_name=platform_name)
+    configure_task_outcome_terminal_contract(
+        recovery_env,
+        str(state.get("task_outcome_contract") or "legacy"),
+    )
     if action == "live" and live_settle_timeout_seconds > 0:
         # The compatibility-patched Oracle live tail owns one recovered browser
         # connection until this deadline.  Do not turn a live recovery into a

@@ -1,6 +1,6 @@
 {
   "schema": "codexpro.install-manifest/v1",
-  "version": "1.19.1",
+  "version": "1.19.2",
   "include": [
     "bin/chatgpt_agbrowse_bridge.py",
     "bin/chatgpt_agbrowse_composer.py",
@@ -20,6 +20,8 @@
     "bin/devspace-compat/1.0.4/file-safety-to-read-chunk.patch",
     "bin/devspace-compat/1.0.4/workspaces.patch",
     "bin/chatgpt_oracle_compat.py",
+    "bin/oracle-compat/0.17.1/assistantResponse.terminal-marker-fallback.patch",
+    "bin/oracle-compat/0.17.1/thinkingStatus.undetected-warning.patch",
     "bin/oracle-compat/0.17.1/profileCopy.windows-native.patch",
     "bin/oracle-compat/0.17.1/browserTabs.live-terminal-timeout.patch",
     "bin/oracle-compat/0.17.1/browserConfig.copy-profile-windows.patch",

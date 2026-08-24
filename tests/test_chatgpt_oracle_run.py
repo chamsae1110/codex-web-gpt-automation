@@ -195,6 +195,40 @@ def test_fresh_execution_binds_runtime_task_but_plain_manifest_loading_stays_unb
     assert int(captured["command"][captured["command"].index("--browser-port") + 1]) != 9222
 
 
+def test_task_outcome_terminal_watchdog_is_exactly_v1_and_scrubs_inherited_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = load_runner()
+    monkeypatch.setenv("ORACLE_TASK_OUTCOME_TERMINAL_CONTRACT", "unexpected-parent-value")
+    monkeypatch.setenv("ORACLE_TERMINAL_MARKER_CONFIRM_CYCLES", "1")
+    monkeypatch.setenv("ORACLE_TERMINAL_MARKER_MIN_STABLE_MS", "1")
+    v1_root = tmp_path / "v1"
+    v1_root.mkdir()
+    v1_capture: dict = {}
+    execute_run(
+        runner,
+        manifest(v1_root, task_outcome_contract="v1"),
+        run_factory=version_runner,
+        popen_factory=popen_for(4, None, v1_capture, []),
+    )
+    assert v1_capture["kwargs"]["env"]["ORACLE_TASK_OUTCOME_TERMINAL_CONTRACT"] == "v1"
+    assert "ORACLE_TERMINAL_MARKER_CONFIRM_CYCLES" not in v1_capture["kwargs"]["env"]
+    assert "ORACLE_TERMINAL_MARKER_MIN_STABLE_MS" not in v1_capture["kwargs"]["env"]
+
+    legacy_root = tmp_path / "legacy"
+    legacy_root.mkdir()
+    legacy_capture: dict = {}
+    execute_run(
+        runner,
+        manifest(legacy_root),
+        run_factory=version_runner,
+        popen_factory=popen_for(4, None, legacy_capture, []),
+    )
+    assert "ORACLE_TASK_OUTCOME_TERMINAL_CONTRACT" not in legacy_capture["kwargs"]["env"]
+    assert "ORACLE_TERMINAL_MARKER_CONFIRM_CYCLES" not in legacy_capture["kwargs"]["env"]
+    assert "ORACLE_TERMINAL_MARKER_MIN_STABLE_MS" not in legacy_capture["kwargs"]["env"]
+
+
 def test_foreign_task_recovery_is_fail_closed_before_browser_or_oracle_access(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3601,7 +3635,7 @@ def test_recovery_captures_output_and_updates_state(tmp_path: Path) -> None:
     runner = load_runner()
     result = execute_run(
         runner,
-        manifest(tmp_path),
+        manifest(tmp_path, task_outcome_contract="v1"),
         run_factory=version_runner,
         popen_factory=popen_for(4, None, {}, []),
     )
@@ -3610,7 +3644,7 @@ def test_recovery_captures_output_and_updates_state(tmp_path: Path) -> None:
     def recovery_popen(command, **kwargs):
         captured_env.update(kwargs["env"])
         output = Path(command[command.index("--write-output") + 1])
-        output.write_text("recovered answer", encoding="utf-8")
+        output.write_text("recovered answer\nTASK_OUTCOME: EXECUTED\n", encoding="utf-8")
         kwargs["stdout"].write(b"State: complete\n")
         kwargs["stdout"].flush()
         return Process(0, [])
@@ -3624,9 +3658,12 @@ def test_recovery_captures_output_and_updates_state(tmp_path: Path) -> None:
     )
     assert recovered["ok"] is True
     assert recovered["status"] == "complete"
-    assert Path(recovered["output_path"]).read_text(encoding="utf-8") == "recovered answer"
+    assert Path(recovered["output_path"]).read_text(encoding="utf-8") == (
+        "recovered answer\nTASK_OUTCOME: EXECUTED\n"
+    )
     assert recovered["result"]["status"] == "complete"
     assert Path(captured_env["TEMP"]).name == "recovery-harvest-browser-temp"
+    assert captured_env["ORACLE_TASK_OUTCOME_TERMINAL_CONTRACT"] == "v1"
     assert not Path(captured_env["TEMP"]).exists()
     transcript = Path(recovered["result"]["artifacts"]["transcript"]).read_text(encoding="utf-8")
     assert "recovered answer" in transcript

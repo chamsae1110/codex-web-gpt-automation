@@ -79,6 +79,16 @@ PATCHES_0161 = {
 }
 
 PATCHES = {
+    "dist/src/browser/actions/assistantResponse.js": {
+        "patch": "assistantResponse.terminal-marker-fallback.patch",
+        "pristine": "0bbc106f79c6abf253690c83794a2dab1b432378f57e16542d15cfcd5365e16d",
+        "patched": "60e6429a44b32dd71e1ce7d3362f4b4911533e9c66a188f3ecb5fc4ac4147fd5",
+    },
+    "dist/src/browser/actions/thinkingStatus.js": {
+        "patch": "thinkingStatus.undetected-warning.patch",
+        "pristine": "0297df6855ce653ada2ec8509bba71651dd3ac9b78041ecb4343c765fd47e56c",
+        "patched": "707bc1b582ce36c5cb816c26490d8e204238b3948f794ec4715f69a27175b094",
+    },
     "dist/src/browser/actions/navigation.js": {
         "patch": "navigation.resumed-hydration-recheck.patch",
         "pristine": "e1383e1566134173c0799a2af82ba2feeb971d1f2a3df81dc61c6827aa6e3adb",
