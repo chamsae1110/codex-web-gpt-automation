@@ -1,5 +1,23 @@
 # 기술 변경 기록
 
+## 1.19.1 - structured follow-up pre-composer settlement
+
+- Follow-up failures are no longer eligible for no-submission settlement only
+  because an error sentence appears in a growing text whitelist. An exact
+  task/run/mission/round binding can now use Oracle's structured
+  `resume-conversation` error, absent browser runtime and identity receipt,
+  matching stdout/transcript, empty stderr, absent output, and exited observer
+  as bounded pre-composer evidence. Explicit owner confirmation and inactive
+  exact processes remain mandatory before releasing the task-scoped lock;
+  stale `process-exited` state is rejected while the recorded PID is alive or
+  its termination cannot be proven.
+- Resumed-conversation hydration receives one bounded second observation window
+  on the same exact conversation. The retry verifies the conversation identity
+  before waiting again and never falls back to a fresh chat or submits a prompt
+  while prior turns remain unsettled.
+- Portable Windows doctor checks now accept the active `python.exe` runtime
+  when the POSIX-style `python3` command name is unavailable.
+
 ## 1.19.0 - unify Ultra GPT and closed workflow auditing
 
 - `strict-ultra` is no longer presented as a separate mode. New workflows use

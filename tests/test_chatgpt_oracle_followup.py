@@ -252,6 +252,45 @@ def make_followup_textarea_absent_with_harvest(tmp_path: Path, monkeypatch: pyte
     return runner, parent, child
 
 
+def make_structured_resume_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    runner, parent, child, meta_path = make_archived_parent_unarchive_failure(
+        tmp_path, monkeypatch, structured=True
+    )
+    monkeypatch.setattr(runner.STATE, "_process_may_be_alive", lambda _pid: False)
+    marker = (
+        "A future Oracle wording that is not in a text whitelist but is bound "
+        "to structured pre-composer evidence."
+    )
+    stdout = f"ERROR: {marker}\nUser error (browser-automation): {marker}\n"
+    child.stdout_path.write_text(stdout, encoding="utf-8")
+    child.transcript_path.write_text(stdout, encoding="utf-8")
+    state = runner.STATE.load_state(child.state_path)
+    state["exit_code"] = None
+    state["task_outcome_reason"] = "followup-conversation-identity-unverified"
+    state["browser_observer"] = {
+        "status": "process-exited",
+        "oracle_process_pid": 43644,
+        "timeout_is_terminal": False,
+    }
+    runner.STATE.write_json_atomic(child.state_path, state)
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["browser"].pop("runtime", None)
+    meta["error"] = {
+        "category": "browser-automation",
+        "message": marker,
+        "details": {
+            "stage": "resume-conversation",
+            "priorTurns": 8,
+            "settled": False,
+        },
+    }
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+    return runner, parent, child, meta_path
+
+
 def rewrite_settlement_as_official_followup_v1(child, runner, *, mutate=None) -> dict:
     """Simulate an immutable old official v1 receipt, not ad-hoc user tampering."""
     runner.STATE.settle_user_confirmed_no_submission(
@@ -722,6 +761,88 @@ def test_followup_unarchive_structured_evidence_rejects_runtime_contradiction(
         "promptSubmitted": True,
         "tabUrl": "https://chatgpt.com/c/exact-parent-conversation",
     }
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+
+    assert runner.STATE._followup_no_submission_evidence(
+        child.state_path, require_recovery_evidence=True
+    ) is None
+
+
+def test_followup_structured_pre_composer_failure_is_message_independent_and_settleable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, _parent, child, _meta_path = make_structured_resume_failure(
+        tmp_path, monkeypatch
+    )
+
+    evidence = runner.STATE._followup_no_submission_evidence(
+        child.state_path, require_recovery_evidence=True
+    )
+
+    assert evidence is not None
+    assert evidence["failure_kind"] == "structured-pre-composer"
+    assert evidence["evidence_profile"] == "structured-pre-composer-runtime-unbound/v1"
+    assert evidence["pre_composer_stage"] == "resume-conversation"
+    assert evidence["prior_turns_observed"] == 8
+    assert evidence["recovery_evidence"] == []
+    settled = runner.STATE.settle_user_confirmed_no_submission(
+        child.state_path,
+        confirmation="user-confirmed-no-submission",
+        reason="exact structured pre-composer runtime-unbound failure",
+    )
+    assert settled["transport_status"] == "not_submitted_user_confirmed"
+    assert runner.STATE.proven_user_confirmed_no_submission(child.state_path) is not None
+    assert runner.STATE.unresolved_project_sessions(
+        child.run_dir.parent,
+        Path(settled["project_root"]),
+        source_thread_id=OWNER,
+    ) == []
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "runtime-present",
+        "post-composer-stage",
+        "settled",
+        "zero-prior-turns",
+        "extra-detail",
+        "observer-live",
+        "missing-pid",
+        "pid-still-alive",
+        "reason-mismatch",
+        "stdout-meta-mismatch",
+    ),
+)
+def test_followup_structured_pre_composer_evidence_rejects_ambiguity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str
+) -> None:
+    runner, _parent, child, meta_path = make_structured_resume_failure(
+        tmp_path, monkeypatch
+    )
+    state = runner.STATE.load_state(child.state_path)
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    if mutation == "runtime-present":
+        meta["browser"]["runtime"] = {"promptSubmitted": False}
+    elif mutation == "post-composer-stage":
+        meta["error"]["details"]["stage"] = "submit-prompt"
+    elif mutation == "settled":
+        meta["error"]["details"]["settled"] = True
+    elif mutation == "zero-prior-turns":
+        meta["error"]["details"]["priorTurns"] = 0
+    elif mutation == "extra-detail":
+        meta["error"]["details"]["promptSubmitted"] = False
+    elif mutation == "observer-live":
+        state["browser_observer"]["status"] = "running"
+    elif mutation == "missing-pid":
+        state["browser_observer"]["oracle_process_pid"] = None
+    elif mutation == "pid-still-alive":
+        monkeypatch.setattr(runner.STATE, "_process_may_be_alive", lambda _pid: True)
+    elif mutation == "reason-mismatch":
+        state["task_outcome_reason"] = "some-other-reason"
+    elif mutation == "stdout-meta-mismatch":
+        meta["error"]["message"] = "different structured error"
+    runner.STATE.write_json_atomic(child.state_path, state)
     meta_path.write_text(json.dumps(meta), encoding="utf-8")
 
     assert runner.STATE._followup_no_submission_evidence(

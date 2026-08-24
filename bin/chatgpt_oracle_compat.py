@@ -79,6 +79,11 @@ PATCHES_0161 = {
 }
 
 PATCHES = {
+    "dist/src/browser/actions/navigation.js": {
+        "patch": "navigation.resumed-hydration-recheck.patch",
+        "pristine": "e1383e1566134173c0799a2af82ba2feeb971d1f2a3df81dc61c6827aa6e3adb",
+        "patched": "ca039139c996acf1a22629bbcb398dff7952ce12c267de9334e1c01236c0aa8c",
+    },
     "dist/src/cli/followup.js": {
         "patch": "oracle-followup.archived-parent.patch",
         "pristine": "d6082bf55cd997f07c9718dfe7ca2ba54520c2e414fbd17f21b9225b4a9b57b3",

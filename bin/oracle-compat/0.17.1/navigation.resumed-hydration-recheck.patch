@@ -1,0 +1,86 @@
+diff --git a/dist/src/browser/actions/navigation.js b/dist/src/browser/actions/navigation.js
+index 3c509ef..337520f 100644
+--- a/dist/src/browser/actions/navigation.js
++++ b/dist/src/browser/actions/navigation.js
+@@ -508,34 +508,58 @@ function conversationIdFromUrl(value) {
+  */
+ export async function waitForResumedConversationHydration(Runtime, timeoutMs, logger, deps = {}) {
+     const ensureReady = deps.ensurePromptReady ?? ensurePromptReady;
+-    const hydrationDeadline = Date.now() + Math.min(timeoutMs || 30_000, 30_000);
++    const hydrationWindowMs = Math.min(timeoutMs || 30_000, 30_000);
+     let priorTurns = 0;
+-    let stableChecks = 0;
+     let settled = false;
+-    while (Date.now() < hydrationDeadline) {
+-        let turns = 0;
+-        try {
+-            const { result } = await Runtime.evaluate({
+-                expression: `document.querySelectorAll(${JSON.stringify(CONVERSATION_TURN_SELECTOR)}).length`,
+-                returnByValue: true,
+-            });
+-            turns = typeof result?.value === "number" ? result.value : 0;
+-        }
+-        catch {
+-            // keep polling until the conversation hydrates
+-        }
+-        if (turns > 0 && turns === priorTurns) {
+-            stableChecks += 1;
+-            if (stableChecks >= 3) {
+-                settled = true;
+-                break;
++    for (let hydrationAttempt = 1; hydrationAttempt <= 2 && !settled; hydrationAttempt += 1) {
++        const hydrationDeadline = Date.now() + hydrationWindowMs;
++        let stableChecks = 0;
++        while (Date.now() < hydrationDeadline) {
++            let turns = 0;
++            try {
++                const { result } = await Runtime.evaluate({
++                    expression: `document.querySelectorAll(${JSON.stringify(CONVERSATION_TURN_SELECTOR)}).length`,
++                    returnByValue: true,
++                });
++                turns = typeof result?.value === "number" ? result.value : 0;
++            }
++            catch {
++                // keep polling until the conversation hydrates
++            }
++            if (turns > 0 && turns === priorTurns) {
++                stableChecks += 1;
++                if (stableChecks >= 3) {
++                    settled = true;
++                    break;
++                }
++            }
++            else {
++                stableChecks = 0;
+             }
++            priorTurns = turns;
++            await delay(250);
+         }
+-        else {
+-            stableChecks = 0;
++        if (!settled && hydrationAttempt === 1) {
++            if (deps.expectedConversationUrl) {
++                const { result } = await Runtime.evaluate({
++                    expression: "location.href",
++                    returnByValue: true,
++                });
++                const actualUrl = typeof result?.value === "string" ? result.value : undefined;
++                const expectedConversationId = conversationIdFromUrl(deps.expectedConversationUrl);
++                const actualConversationId = conversationIdFromUrl(actualUrl);
++                if (!expectedConversationId || actualConversationId !== expectedConversationId) {
++                    throw new BrowserAutomationError("Saved ChatGPT conversation redirected to a different thread; refusing to submit follow-up.", {
++                        stage: "resume-conversation",
++                        expectedConversationId,
++                        actualConversationId,
++                        actualUrl,
++                    });
++                }
++            }
++            logger(`[browser] Resumed conversation hydration remained unsettled (${priorTurns} prior turns); retrying the same exact conversation once.`);
++            await delay(1_000);
+         }
+-        priorTurns = turns;
+-        await delay(250);
+     }
+     const requirePromptReady = deps.requirePromptReady ?? true;
+     if (requirePromptReady) {

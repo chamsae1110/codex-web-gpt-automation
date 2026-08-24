@@ -374,7 +374,13 @@ def test_published_0171_patch_requires_extra_high_and_pro_selection_proof(tmp_pa
     assert 'stage: "followup-unarchive-before-composer"' in browser_index_text
     assert "composerSubmitAttempted: false" in browser_index_text
     assert "turnCountAfter" in browser_index_text
-    for target in (followup, archive_action, browser_index):
+    navigation = package / "dist/src/browser/actions/navigation.js"
+    navigation_text = navigation.read_text(encoding="utf-8")
+    assert "hydrationAttempt <= 2" in navigation_text
+    assert "retrying the same exact conversation once" in navigation_text
+    assert "actualConversationId !== expectedConversationId" in navigation_text
+    assert compat.sha256_file(navigation) == compat.PATCHES["dist/src/browser/actions/navigation.js"]["patched"]
+    for target in (followup, archive_action, browser_index, navigation):
         syntax = subprocess.run([node, "--check", str(target)], capture_output=True, text=True, check=False)
         assert syntax.returncode == 0, syntax.stderr
     browser_tabs = package / "dist/src/cli/browserTabs.js"

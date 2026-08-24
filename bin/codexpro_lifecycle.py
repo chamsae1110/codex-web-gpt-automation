@@ -391,6 +391,15 @@ def rollback(codex_home: Path, receipt_path: Path | None = None) -> dict[str, An
     return {"ok": not conflicts, "status": status, "receipt": str(receipt_path), "conflicts": conflicts}
 
 
+def _resolve_python_tool(*, platform_name: str = os.name, active_executable: str = sys.executable) -> str | None:
+    python_tool = shutil.which("python3")
+    if python_tool is None and platform_name == "nt":
+        python_tool = shutil.which("python") or shutil.which("py")
+        if python_tool is None and active_executable and Path(active_executable).is_file():
+            python_tool = str(Path(active_executable).resolve())
+    return python_tool
+
+
 def doctor(codex_home: Path) -> dict[str, Any]:
     codex_home = codex_home.expanduser().resolve()
     issues: list[dict[str, Any]] = []
@@ -422,7 +431,7 @@ def doctor(codex_home: Path) -> dict[str, Any]:
             local_multi_gpt["doctor"] = None
         if completed is None or completed.returncode != 0 or not local_multi_gpt["doctor"] or not local_multi_gpt["doctor"].get("ok"):
             issues.append({"code": "LOCAL_MULTI_GPT_MCP_INVALID", "detail": completed.stderr.strip() if completed else "helper missing"})
-    required = {"python3": shutil.which("python3"), "node": shutil.which("node"), "npx": shutil.which("npx")}
+    required = {"python3": _resolve_python_tool(), "node": shutil.which("node"), "npx": shutil.which("npx")}
     for name, path in required.items():
         if path is None:
             issues.append({"code": "TOOL_MISSING", "tool": name})

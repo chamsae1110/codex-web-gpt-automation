@@ -106,6 +106,38 @@ ORACLE_PROMPT_TEXTAREA_ABSENT_MARKER = "Prompt textarea did not appear before ti
 ORACLE_FOLLOWUP_UNARCHIVE_MENU_ABSENT_MARKER = (
     "FOLLOWUP_ARCHIVED_PARENT_UNARCHIVE_FAILED: unarchive-menu-not-found"
 )
+ORACLE_FOLLOWUP_PRE_COMPOSER_STAGES = frozenset({"resume-conversation"})
+
+
+def _process_may_be_alive(pid: int) -> bool:
+    """Fail closed unless the exact PID is proven to have exited."""
+    if pid <= 0:
+        return True
+    if os.name == "nt":
+        process_query_limited_information = 0x1000
+        still_active = 259
+        error_invalid_parameter = 87
+        try:
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+            if not handle:
+                return ctypes.get_last_error() != error_invalid_parameter
+            try:
+                exit_code = ctypes.c_ulong()
+                if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                    return True
+                return int(exit_code.value) == still_active
+            finally:
+                kernel32.CloseHandle(handle)
+        except Exception:
+            return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except (PermissionError, OSError):
+        return True
+    return True
 LEGACY_V1184_FOLLOWUP_MANAGED_HASHES = {
     "bin/chatgpt_oracle_compat.py": "f41d3fb50b911f882a8e23e71cb02a5e9e81ee5ebe16f548ee48e7f815da0ee1",
     "bin/chatgpt_oracle_run.py": "957cd75a52cbe9258a994e66b557987cda4617de561307acaff5632a66fdfdf7",
@@ -2961,6 +2993,31 @@ def _followup_no_submission_evidence(
         lines = set(ordered_lines)
     except UnicodeDecodeError:
         return None
+    locator = str((state.get("oracle") or {}).get("slug") or "")
+    session_root = Path(os.environ.get("ORACLE_SESSION_ROOT") or (Path.home() / ".oracle" / "sessions")).resolve()
+    meta_path = session_root / locator / "meta.json"
+    loaded_meta = _strict_json_object(meta_path)
+    if loaded_meta is None:
+        return None
+    meta, meta_raw = loaded_meta
+    browser = meta.get("browser") if isinstance(meta.get("browser"), dict) else {}
+    runtime = browser.get("runtime")
+    error = meta.get("error") if isinstance(meta.get("error"), dict) else {}
+    details = error.get("details") if isinstance(error.get("details"), dict) else {}
+    config = browser.get("config") if isinstance(browser.get("config"), dict) else {}
+    options = meta.get("options") if isinstance(meta.get("options"), dict) else {}
+    option_browser = options.get("browserConfig") if isinstance(options.get("browserConfig"), dict) else {}
+    meta_urls = CHATGPT_CONVERSATION_URL_RE.findall(meta_raw.decode("utf-8", errors="strict"))
+    structured_pre_composer = (
+        details.get("stage") in ORACLE_FOLLOWUP_PRE_COMPOSER_STAGES
+        and set(details) == {"stage", "priorTurns", "settled"}
+        and isinstance(details.get("priorTurns"), int)
+        and not isinstance(details.get("priorTurns"), bool)
+        and details.get("priorTurns") > 0
+        and details.get("settled") is False
+        and runtime in (None, {})
+        and bool(str(error.get("message") or "").strip())
+    )
     failure_signatures = {
         "textarea-absent": {
             f"ERROR: {ORACLE_PROMPT_TEXTAREA_ABSENT_MARKER}",
@@ -2971,6 +3028,12 @@ def _followup_no_submission_evidence(
             f"User error (browser-automation): {ORACLE_FOLLOWUP_UNARCHIVE_MENU_ABSENT_MARKER}",
         },
     }
+    if structured_pre_composer:
+        structured_message = str(error["message"])
+        failure_signatures["structured-pre-composer"] = {
+            f"ERROR: {structured_message}",
+            f"User error (browser-automation): {structured_message}",
+        }
     matched_failures = [
         (kind, expected)
         for kind, expected in failure_signatures.items()
@@ -3040,7 +3103,6 @@ def _followup_no_submission_evidence(
         except (OSError, UnicodeDecodeError):
             return None
         text = "\n".join((stdout_text, stderr_text))
-        locator = str((state.get("oracle") or {}).get("slug") or "")
         if (
             CHATGPT_CONVERSATION_URL_RE.search(text)
             or ORACLE_RECOVERY_STATE_RE.search(text)
@@ -3070,21 +3132,6 @@ def _followup_no_submission_evidence(
     reservation_record = binding.get("reservation") if isinstance(binding.get("reservation"), dict) else binding
     reservation = reservation_record["payload"]
     parent_url = str((reservation.get("parent") or {}).get("conversation_url") or "")
-    locator = str((state.get("oracle") or {}).get("slug") or "")
-    session_root = Path(os.environ.get("ORACLE_SESSION_ROOT") or (Path.home() / ".oracle" / "sessions")).resolve()
-    meta_path = session_root / locator / "meta.json"
-    loaded_meta = _strict_json_object(meta_path)
-    if loaded_meta is None:
-        return None
-    meta, meta_raw = loaded_meta
-    browser = meta.get("browser") if isinstance(meta.get("browser"), dict) else {}
-    runtime = browser.get("runtime")
-    error = meta.get("error") if isinstance(meta.get("error"), dict) else {}
-    details = error.get("details") if isinstance(error.get("details"), dict) else {}
-    config = browser.get("config") if isinstance(browser.get("config"), dict) else {}
-    options = meta.get("options") if isinstance(meta.get("options"), dict) else {}
-    option_browser = options.get("browserConfig") if isinstance(options.get("browserConfig"), dict) else {}
-    meta_urls = CHATGPT_CONVERSATION_URL_RE.findall(meta_raw.decode("utf-8", errors="strict"))
     common_invalid = (
         meta.get("id") != locator
         or meta.get("status") != "error"
@@ -3107,6 +3154,24 @@ def _followup_no_submission_evidence(
         ):
             return None
         evidence_profile = "textarea-absent-with-exact-harvest/v1"
+    elif failure_kind == "structured-pre-composer":
+        observer = state.get("browser_observer") if isinstance(state.get("browser_observer"), dict) else {}
+        observer_pid = observer.get("oracle_process_pid")
+        if (
+            not structured_pre_composer
+            or state.get("task_outcome_reason") not in {
+                "followup-conversation-identity-unverified",
+                "user-confirmed-no-submission-after-prompt-timeout",
+            }
+            or observer.get("status") != "process-exited"
+            or not isinstance(observer_pid, int)
+            or isinstance(observer_pid, bool)
+            or observer_pid <= 0
+            or _process_may_be_alive(observer_pid)
+            or error.get("category") != "browser-automation"
+        ):
+            return None
+        evidence_profile = "structured-pre-composer-runtime-unbound/v1"
     else:
         parent_archive = (reservation.get("parent") or {}).get("archive_contract")
         structured_before_composer = (
@@ -3195,6 +3260,9 @@ def _followup_no_submission_evidence(
         "round_key": reservation.get("round_key"),
         "oracle_meta_sha256": hashlib.sha256(meta_raw).hexdigest(),
     }
+    if failure_kind == "structured-pre-composer":
+        evidence["pre_composer_stage"] = details["stage"]
+        evidence["prior_turns_observed"] = details["priorTurns"]
     if failure_kind == "archived-parent-unarchive-menu-absent" and legacy_v1184_no_click:
         evidence["legacy_install_receipt_path"] = legacy_provenance["path"]
         evidence["legacy_install_receipt_sha256"] = legacy_provenance["sha256"]
@@ -3567,6 +3635,8 @@ def proven_user_confirmed_no_submission(state_path: Path) -> dict[str, Any] | No
             required += ("failure_kind", "evidence_profile")
             if recorded.get("evidence_profile") == "archived-parent-unarchive-v1.18.4-legacy-no-click/v1":
                 required += ("legacy_install_receipt_path", "legacy_install_receipt_sha256")
+            elif recorded.get("evidence_profile") == "structured-pre-composer-runtime-unbound/v1":
+                required += ("pre_composer_stage", "prior_turns_observed")
         # v1 settlements predate failure/evidence profile labels.  Their exact
         # artifact hashes and immutable follow-up binding remain authoritative;
         # a predicate-only v1 -> v2 label upgrade must not resurrect ownership.

@@ -89,3 +89,19 @@ def test_optional_component_prompt_uses_system_ui_locale(monkeypatch) -> None:
 
     monkeypatch.setenv("CODEX_ONBOARDING_LANG", "en")
     assert module.localized_optional_prompt(optional) == optional["prompt_en"]
+
+
+def test_windows_doctor_accepts_the_active_python_executable(monkeypatch) -> None:
+    module = load("portable_lifecycle_windows_python_test", ROOT / "bin" / "codexpro_lifecycle.py")
+    real_which = module.shutil.which
+
+    def without_python_commands(name: str):
+        if name in {"python3", "python", "py"}:
+            return None
+        return real_which(name)
+
+    monkeypatch.setattr(module.shutil, "which", without_python_commands)
+
+    result = module._resolve_python_tool(platform_name="nt", active_executable=sys.executable)
+
+    assert result == str(Path(sys.executable).resolve())
