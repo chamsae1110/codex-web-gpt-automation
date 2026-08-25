@@ -435,26 +435,30 @@ def test_stop_service_requires_exact_devspace_identity() -> None:
     compat = load_compat()
     stopped: list[int] = []
     package = Path("C:/tested/node_modules/@waishnav/devspace")
+    first_identity = {
+        "pid": 44,
+        "command_line": f"node {package / 'dist' / 'cli.js'} serve",
+        "started_at_unix_ns": 1,
+    }
+    first_probes = iter([first_identity, None])
     result = compat.stop_exact_devspace_service(
-        service_probe=lambda port: {
-            "pid": 44,
-            "command_line": f"node {package / 'dist' / 'cli.js'} serve",
-            "started_at_unix_ns": 1,
-        },
+        service_probe=lambda port: next(first_probes),
         stopper=stopped.append,
         package_roots=[package],
     )
     assert result["stopped"] is True
     assert stopped == [44]
 
+    npx_identity = {
+        "pid": 45,
+        "command_line": (
+            r'"node" "C:\tested\node_modules\.bin\\..\@waishnav\devspace\dist\cli.js" serve'
+        ),
+        "started_at_unix_ns": 1,
+    }
+    npx_probes = iter([npx_identity, None])
     npx_result = compat.stop_exact_devspace_service(
-        service_probe=lambda port: {
-            "pid": 45,
-            "command_line": (
-                r'"node" "C:\tested\node_modules\.bin\\..\@waishnav\devspace\dist\cli.js" serve'
-            ),
-            "started_at_unix_ns": 1,
-        },
+        service_probe=lambda port: next(npx_probes),
         stopper=stopped.append,
         package_roots=[package],
     )
@@ -474,6 +478,50 @@ def test_stop_service_requires_exact_devspace_identity() -> None:
     assert foreign.value.code == "DEVSPACE_SERVICE_IDENTITY_MISMATCH"
 
 
+def test_windows_stop_is_bounded_race_safe_and_verifies_listener_release() -> None:
+    compat = load_compat()
+    package = Path("C:/tested/node_modules/@waishnav/devspace")
+    identity = {
+        "pid": 60008,
+        "command_line": f"node {package / 'dist' / 'cli.js'} serve",
+        "started_at_unix_ns": 123_000_000,
+    }
+    probes = iter([identity, None])
+    calls: list[list[str]] = []
+
+    def runner(argv, **kwargs):
+        calls.append(list(argv))
+        return SimpleNamespace(
+            returncode=0,
+            stdout=json.dumps({
+                "ok": True,
+                "pid": 60008,
+                "stale_pid": False,
+                "forced": False,
+                "process_exited": True,
+                "listener_released": True,
+                "listener_pid": None,
+            }),
+            stderr="",
+        )
+
+    result = compat.stop_exact_devspace_service(
+        service_probe=lambda port: next(probes),
+        package_roots=[package],
+        platform_name="nt",
+        windows_runner=runner,
+        sleeper=lambda _: None,
+    )
+
+    script = calls[0][-1]
+    assert "Stop-Process -Id $targetPid -ErrorAction SilentlyContinue" in script
+    assert "Stop-Process -Id $targetPid -Force -ErrorAction SilentlyContinue" in script
+    assert "listener_released=$released" in script
+    assert "if($ok){exit 0}else{exit 4}" in script
+    assert result["stop"]["process_exited"] is True
+    assert result["stop"]["listener_released"] is True
+
+
 def test_service_stop_resolves_current_and_lkg_roots(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     compat = load_compat()
     current = tmp_path / "current"
@@ -487,12 +535,14 @@ def test_service_stop_resolves_current_and_lkg_roots(tmp_path: Path, monkeypatch
     assert compat.resolve_service_stop_roots() == [current.resolve(), lkg.resolve()]
 
     stopped: list[int] = []
+    identity = {
+        "pid": 46,
+        "command_line": f"node {lkg / 'dist' / 'cli.js'} serve",
+        "started_at_unix_ns": 1,
+    }
+    probes = iter([identity, None])
     result = compat.stop_exact_devspace_service(
-        service_probe=lambda port: {
-            "pid": 46,
-            "command_line": f"node {lkg / 'dist' / 'cli.js'} serve",
-            "started_at_unix_ns": 1,
-        },
+        service_probe=lambda port: next(probes),
         stopper=stopped.append,
     )
     assert result["stopped"] is True

@@ -817,12 +817,50 @@ def _assert_devspace_service_identity(
     return value
 
 
+def _windows_stop_script(identity: dict[str, Any], local_port: int) -> str:
+    pid = int(identity["pid"])
+    started_at = int(identity.get("started_at_unix_ns") or 0)
+    if pid <= 0 or started_at <= 0:
+        raise DevSpaceCompatError(
+            "DEVSPACE_SERVICE_STOP_FAILED",
+            "exact Windows service identity is missing PID/start evidence",
+            {"pid": identity.get("pid"), "started_at_unix_ns": identity.get("started_at_unix_ns")},
+        )
+    return (
+        f"$targetPid={pid};$expectedStart=[int64]{started_at};$port={int(local_port)};"
+        "function Get-Target {"
+        "$p=Get-CimInstance Win32_Process -Filter \"ProcessId=$targetPid\" -ErrorAction SilentlyContinue;"
+        "if($null -eq $p){return $null};"
+        "$s=[DateTimeOffset]::new($p.CreationDate.ToUniversalTime()).ToUnixTimeMilliseconds()*1000000;"
+        "if([int64]$s -ne $expectedStart){return $null};return $p};"
+        "$initial=Get-Target;$stale=($null -eq $initial);$forced=$false;"
+        "if(!$stale){"
+        "Stop-Process -Id $targetPid -ErrorAction SilentlyContinue;"
+        "for($i=0;$i -lt 50 -and $null -ne (Get-Target);$i++){Start-Sleep -Milliseconds 100};"
+        "if($null -ne (Get-Target)){"
+        "$forced=$true;Stop-Process -Id $targetPid -Force -ErrorAction SilentlyContinue;"
+        "for($i=0;$i -lt 50 -and $null -ne (Get-Target);$i++){Start-Sleep -Milliseconds 100}}};"
+        "$alive=($null -ne (Get-Target));"
+        "$listener=Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue | "
+        "Select-Object -First 1;"
+        "$released=($null -eq $listener);$ok=(!$alive -and $released);"
+        "[pscustomobject]@{ok=$ok;pid=$targetPid;stale_pid=$stale;forced=$forced;"
+        "process_exited=(!$alive);listener_released=$released;"
+        "listener_pid=$(if($listener){[int]$listener.OwningProcess}else{$null})}|ConvertTo-Json -Compress;"
+        "if($ok){exit 0}else{exit 4}"
+    )
+
+
 def stop_exact_devspace_service(
     *,
     local_port: int = 7676,
     service_probe=current_devspace_service_identity,
     stopper: Any | None = None,
     package_roots: Sequence[Path] | None = None,
+    windows_runner: Any = subprocess.run,
+    platform_name: str | None = None,
+    sleeper: Any = time.sleep,
+    stop_timeout_seconds: float = 10.0,
 ) -> dict[str, Any]:
     identity = service_probe(local_port)
     if identity is None:
@@ -830,9 +868,10 @@ def stop_exact_devspace_service(
     roots = list(package_roots or resolve_service_stop_roots())
     identity = _assert_devspace_service_identity(identity, roots)
     pid = int(identity["pid"])
+    stop_evidence: dict[str, Any] = {"mode": "injected"}
     if stopper is not None:
         stopper(pid)
-    elif os.name != "nt":
+    elif (platform_name or os.name) != "nt":
         path = Path(__file__).resolve().with_name("codexpro_posix_process.py")
         spec = importlib.util.spec_from_file_location("codexpro_posix_process_stop_runtime", path)
         if spec is None or spec.loader is None:
@@ -843,25 +882,70 @@ def stop_exact_devspace_service(
             module.terminate_exact_process(identity)
         except module.ProcessIdentityError as exc:
             raise DevSpaceCompatError("DEVSPACE_SERVICE_STOP_FAILED", str(exc), {"pid": pid}) from exc
+        stop_evidence = {"mode": "posix-exact-terminate"}
     else:
-        script = (
-            f"Stop-Process -Id {pid} -Force -ErrorAction Stop; "
-            f"Wait-Process -Id {pid} -ErrorAction SilentlyContinue"
-        )
-        completed = subprocess.run(
+        script = _windows_stop_script(identity, local_port)
+        completed = windows_runner(
             ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
+            timeout=max(15.0, stop_timeout_seconds + 5.0),
             **_git_kwargs(),
         )
+        try:
+            stop_evidence = json.loads(completed.stdout)
+        except json.JSONDecodeError as exc:
+            raise DevSpaceCompatError(
+                "DEVSPACE_SERVICE_STOP_FAILED",
+                "exact Windows stop did not return structured evidence",
+                {
+                    "pid": pid,
+                    "exit_code": completed.returncode,
+                    "stdout": (completed.stdout or "").strip()[-1200:],
+                    "stderr": (completed.stderr or "").strip()[-1200:],
+                },
+            ) from exc
         if completed.returncode != 0:
             raise DevSpaceCompatError(
                 "DEVSPACE_SERVICE_STOP_FAILED",
                 "the exact DevSpace service could not be stopped",
-                {"pid": pid, "stderr": (completed.stderr or "").strip()[-1200:]},
+                {
+                    "pid": pid,
+                    "exit_code": completed.returncode,
+                    "stop": stop_evidence,
+                    "stderr": (completed.stderr or "").strip()[-1200:],
+                },
             )
-    return {"ok": True, "stopped": True, "pid": pid}
+        if not isinstance(stop_evidence, dict) or not stop_evidence.get("ok"):
+            raise DevSpaceCompatError(
+                "DEVSPACE_SERVICE_STOP_FAILED",
+                "exact Windows stop evidence did not prove process exit and listener release",
+                {"pid": pid, "stop": stop_evidence},
+            )
+
+    deadline = time.monotonic() + max(0.0, stop_timeout_seconds)
+    while True:
+        remaining = service_probe(local_port)
+        if remaining is None:
+            break
+        remaining_pid = int(remaining.get("pid") or 0)
+        if remaining_pid != pid:
+            raise DevSpaceCompatError(
+                "DEVSPACE_SERVICE_PORT_REBOUND",
+                "the DevSpace port was rebound before exact stop verification completed",
+                {"expected_pid": pid, "listener_pid": remaining_pid},
+            )
+        if time.monotonic() >= deadline:
+            raise DevSpaceCompatError(
+                "DEVSPACE_SERVICE_STOP_FAILED",
+                "the exact DevSpace process did not release its listener before timeout",
+                {"pid": pid, "timeout_seconds": stop_timeout_seconds},
+            )
+        sleeper(min(0.1, max(0.0, deadline - time.monotonic())))
+    return {"ok": True, "stopped": True, "pid": pid, "stop": stop_evidence}
 
 
 def _git_kwargs() -> dict[str, Any]:
