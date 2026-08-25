@@ -218,10 +218,11 @@ def build_packet(run_dir: Path, *, reporter_role: str = REPORTER_ROLE) -> dict[s
         and not owners
     )
     terminal_nonexecution_fresh_safe = (
-        str(verdict["signature"]) == "terminal-devspace-checkout-502-no-execution"
+        str(verdict["signature"])
+        in STATE.TERMINAL_DEVSPACE_NONEXECUTION_SIGNATURES
         and terminal_nonexecution_authority is not None
         and terminal_nonexecution_authority.get("signature")
-        == "terminal-devspace-checkout-502-no-execution"
+        == str(verdict["signature"])
         and terminal_nonexecution_authority.get("authorized_source_thread_id")
         == evaluated_from_thread
         and not owners
@@ -569,7 +570,7 @@ def validate_packet(packet: dict[str, Any]) -> dict[str, Any]:
             signature = str(packet.get("signature") or "")
             if signature == "post-submit-recursive-self-observation":
                 proof = STATE.proven_recursive_self_observation_fresh_run_authority(state_path)
-            elif signature == "terminal-devspace-checkout-502-no-execution":
+            elif signature in STATE.TERMINAL_DEVSPACE_NONEXECUTION_SIGNATURES:
                 proof = STATE.proven_terminal_devspace_nonexecution_fresh_run_authority(state_path)
                 if proof is not None and proof.get("authorized_source_thread_id") != evaluator:
                     proof = None

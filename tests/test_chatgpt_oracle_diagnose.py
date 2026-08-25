@@ -917,6 +917,40 @@ def test_terminal_devspace_checkout_502_nonexecution_has_a_bounded_signature(
     assert verdict["signature"] == "terminal-devspace-checkout-502-no-execution"
 
 
+def test_terminal_devspace_app_tools_unavailable_has_its_own_bounded_signature(
+    tmp_path: Path,
+) -> None:
+    module = load()
+    state_root = tmp_path / "oracle-state"
+    project_root = state_root / "project"
+    run_dir = write_run(
+        state_root,
+        "y" * 12,
+        status="attention_required",
+        output=(
+            "이 세션에는 dev 앱이 제공하는 workspace 도구가 노출되어 있지 않아 "
+            f"지정한 {project_root}를 dev checkout 모드로 열 수 없습니다. "
+            "사용자가 금지한 다른 workspace 커넥터·셸·웹·Oracle 우회는 시도하지 않았으며, "
+            "따라서 미션 파일이나 AGENTS.md도 읽거나 수정하지 않았습니다.\n"
+            "TASK_OUTCOME: BLOCKED\n"
+        ),
+        session_authority="terminal",
+        terminal_harvested=True,
+        task_outcome="blocked",
+    )
+    state_path = run_dir / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state.update({"transport": "devspace", "app_name": "dev"})
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    verdict = module.diagnose(state_root)["unresolved_runs"][0]
+
+    assert verdict["bucket"] == "terminal-task-not-executed"
+    assert verdict["signature"] == (
+        "terminal-devspace-app-tools-unavailable-no-execution"
+    )
+
+
 def test_recursive_self_observation_outranks_foreign_connector_search_evidence(
     tmp_path: Path,
 ) -> None:

@@ -515,18 +515,40 @@ def test_recursive_self_observation_needs_append_only_user_authority(tmp_path: P
     assert after["fresh_run_authority"]["sha256"] == module.STATE.sha256_file(receipt_path)
 
 
+@pytest.mark.parametrize(
+    ("failure_kind", "expected_signature"),
+    [
+        ("checkout-502", "terminal-devspace-checkout-502-no-execution"),
+        (
+            "app-tools-unavailable",
+            "terminal-devspace-app-tools-unavailable-no-execution",
+        ),
+    ],
+)
 def test_terminal_devspace_nonexecution_authority_releases_only_the_authorized_task(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_kind: str,
+    expected_signature: str,
 ) -> None:
     module = load()
     task_id = DEFAULT_EVALUATOR
     project_root = tmp_path / "project"
-    output = (
-        f"I opened the exact project root {project_root} in checkout mode.\n"
-        "The checkout failed with 502 Upstream or external service errors and no workspace ID.\n"
-        "I did not read the mission, did not run commands, and did not change files.\n"
-        "TASK_OUTCOME: BLOCKED\n"
-    )
+    if failure_kind == "checkout-502":
+        output = (
+            f"I opened the exact project root {project_root} in checkout mode.\n"
+            "The checkout failed with 502 Upstream or external service errors and no workspace ID.\n"
+            "I did not read the mission, did not run commands, and did not change files.\n"
+            "TASK_OUTCOME: BLOCKED\n"
+        )
+    else:
+        output = (
+            "이 세션에는 dev 앱이 제공하는 workspace 도구가 노출되어 있지 않아 "
+            f"지정한 {project_root}를 dev checkout 모드로 열 수 없습니다. "
+            "사용자가 금지한 다른 workspace 커넥터·셸·웹·Oracle 우회는 시도하지 않았으며, "
+            "따라서 미션 파일이나 AGENTS.md도 읽거나 수정하지 않았습니다.\n"
+            "TASK_OUTCOME: BLOCKED\n"
+        )
     run_dir = write_run(
         tmp_path,
         "devspace502run",
@@ -544,10 +566,12 @@ def test_terminal_devspace_nonexecution_authority_releases_only_the_authorized_t
         "task_outcome_contract": "v1",
         "mission": {"sha256": module.STATE.sha256_file(mission)},
     })
+    if failure_kind == "app-tools-unavailable":
+        state["app_name"] = "dev"
     state_path.write_text(json.dumps(state), encoding="utf-8")
 
     before = module.validate_packet(module.build_packet(run_dir))
-    assert before["signature"] == "terminal-devspace-checkout-502-no-execution"
+    assert before["signature"] == expected_signature
     assert before["ownership_scope"] == "legacy-unbound"
     assert before["safe_for_fresh_run"] is False
 
@@ -564,7 +588,7 @@ def test_terminal_devspace_nonexecution_authority_releases_only_the_authorized_t
         "slug": state["oracle"]["slug"],
         "transport": state["transport"],
         "task_outcome": state["task_outcome"],
-        "signature": "terminal-devspace-checkout-502-no-execution",
+        "signature": expected_signature,
         "state_sha256": module.STATE.sha256_file(state_path),
         "output_sha256": module.STATE.sha256_file(run_dir / "output.md"),
         "transcript_sha256": module.STATE.sha256_file(run_dir / "transcript.md"),
