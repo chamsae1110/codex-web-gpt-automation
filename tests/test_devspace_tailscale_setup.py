@@ -67,6 +67,10 @@ def test_setup_plan_has_no_secrets_and_is_explicit_only(tmp_path: Path, monkeypa
         "-lc",
         "exec npx --yes @waishnav/devspace@1.0.7 init",
     ]
+    assert plan["devspace_package_prepare"][1:3] == [
+        "-lc",
+        "exec npx --yes @waishnav/devspace@1.0.7 --version",
+    ]
 
 
 def test_setup_subset_preview_preserves_every_persisted_allowed_root(tmp_path: Path) -> None:
@@ -460,6 +464,9 @@ def test_recover_starts_missing_service_then_restores_exact_funnel(
     assert report["ok"] is True
     assert report["service_started"] is True
     assert len(launches) == 1
+    prepare_index = calls.index(module.devspace_package_prepare_argv())
+    native_index = calls.index(module.devspace_native_argv())
+    assert prepare_index < native_index
     assert any("--stop-exact-service" in call for call in calls)
     assert any("--confirm-service-restarted" in call for call in calls)
 
@@ -520,10 +527,11 @@ def test_post_register_always_recycles_service_and_preserves_oauth_state(
     assert report["funnel_recycle_scope"] == "https:443"
     assert report["next_action"] == "VERIFY_REGISTERED_CHATGPT_APP_WITH_ORACLE"
     assert "different connector" in report["verification_boundary"]
-    assert calls[0] == module.devspace_native_argv()
-    assert calls[1] == module.devspace_compat_argv()
-    assert calls[2] == module.devspace_compat_argv(stop_exact_service=True)
-    assert calls[3] == module.devspace_compat_argv(confirm_restarted=True)
+    assert calls[0] == module.devspace_package_prepare_argv()
+    assert calls[1] == module.devspace_native_argv()
+    assert calls[2] == module.devspace_compat_argv()
+    assert calls[3] == module.devspace_compat_argv(stop_exact_service=True)
+    assert calls[4] == module.devspace_compat_argv(confirm_restarted=True)
     assert ["tailscale", "funnel", "--bg", "--https=443", "off"] in calls
     assert [
         "tailscale", "funnel", "--bg", "--https=443", f"http://127.0.0.1:{current.local_port}"
@@ -647,10 +655,11 @@ def test_setup_applies_hash_validated_devspace_compat_before_service_start(
     ]
     assert "creationflags" not in call_kwargs[1]
     assert "startupinfo" not in call_kwargs[1]
-    assert calls[2] == module.devspace_native_argv()
-    assert calls[3] == module.devspace_compat_argv()
-    assert calls[4] == module.devspace_compat_argv(stop_exact_service=True)
-    assert calls[5] == module.devspace_compat_argv(confirm_restarted=True)
+    assert calls[2] == module.devspace_package_prepare_argv(platform_name="nt")
+    assert calls[3] == module.devspace_native_argv()
+    assert calls[4] == module.devspace_compat_argv()
+    assert calls[5] == module.devspace_compat_argv(stop_exact_service=True)
+    assert calls[6] == module.devspace_compat_argv(confirm_restarted=True)
     assert launched and launched[0][0] == module.managed_service_runner_argv()
     assert launched[0][1]["DEVSPACE_TOOL_MODE"] == "full"
     assert launched[0][1]["DEVSPACE_OAUTH_SCOPES"] == "devspace,offline_access"

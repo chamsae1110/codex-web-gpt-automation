@@ -70,6 +70,11 @@ and shell-command logging stays disabled; bearer, token, cookie, password, and
 OAuth-looking values are redacted before persistence. Do not replace this with
 raw `DEVNULL` output or an unbounded unredacted service log.
 
+Before native compatibility checks, materialize the exact pinned DevSpace
+package with the helper's non-service `--version` command. This cold-cache step
+must not use a moving package version or start, stop, or replace the live
+service; native checks and managed launch remain fail-closed after it.
+
 Every new or managed DevSpace service launch must set
 `DEVSPACE_TOOL_MODE=full`. This retains the approved-root boundary while
 making read-only workspace discovery tools such as `grep`, `glob`, and `ls`

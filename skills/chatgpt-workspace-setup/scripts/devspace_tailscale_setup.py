@@ -180,6 +180,14 @@ def devspace_native_argv(*, allow_package_absent: bool = False) -> list[str]:
     return argv
 
 
+def devspace_package_prepare_argv(*, platform_name: str | None = None) -> list[str]:
+    """Materialize the exact pinned DevSpace package before compatibility checks."""
+    return command_argv(
+        ["npx", "--yes", DEVSPACE_PACKAGE, "--version"],
+        platform_name=platform_name,
+    )
+
+
 def setup_plan(
     config: SetupConfig,
     *,
@@ -197,6 +205,7 @@ def setup_plan(
         "preserved_existing_roots": [str(root) for root in preserved],
         "root_merge_applied": bool(preserved),
         "root_safety": "existing allowedRoots are preserved; setup must use the complete displayed list",
+        "devspace_package_prepare": devspace_package_prepare_argv(platform_name=platform_name),
         "devspace_init": command_argv(["npx", "--yes", DEVSPACE_PACKAGE, "init"], platform_name=platform_name),
         "devspace_serve": command_argv(["npx", "--yes", DEVSPACE_PACKAGE, "serve"], platform_name=platform_name),
         "managed_service_environment": {
@@ -611,6 +620,7 @@ def apply_setup(
         ]
         if missing:
             raise SetupError("DEVSPACE_SETUP_DID_NOT_PERSIST_COMPLETE_ALLOWED_ROOTS")
+    run_checked(devspace_package_prepare_argv(platform_name=platform_name), runner=runner)
     run_checked(devspace_native_argv(), runner=runner)
     run_checked(devspace_compat_argv(), runner=runner)
     run_checked(
@@ -642,6 +652,7 @@ def recover_service(
     service_started = not (local.get("ok") and local_health.get("ok"))
     launch: dict[str, Any] | None = None
     if service_started:
+        run_checked(devspace_package_prepare_argv(), runner=runner)
         run_checked(devspace_native_argv(), runner=runner)
         run_checked(devspace_compat_argv(), runner=runner)
         run_checked(
@@ -679,6 +690,7 @@ def refresh_after_app_registration(
     the existing config, Owner credential, OAuth database, roots, and Funnel
     hostname.
     """
+    run_checked(devspace_package_prepare_argv(), runner=runner)
     run_checked(devspace_native_argv(), runner=runner)
     run_checked(devspace_compat_argv(), runner=runner)
     run_checked(
