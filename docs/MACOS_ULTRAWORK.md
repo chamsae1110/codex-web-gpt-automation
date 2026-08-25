@@ -2,10 +2,14 @@
 
 ## 경계
 
-macOS 신규 작업은 Oracle 0.17.1, DevSpace 1.0.4, Tailscale Funnel,
+macOS 신규 작업은 Oracle 0.18.0, DevSpace 1.0.7, Tailscale Funnel,
 OMO Codex Light를 사용한다. 구형 CodexPro/agbrowse 자산은 저장된 Windows
 실행 복구 전용이다. `com.ventianima.codexpro-automation.*`만 이 프로젝트가
 관리하며 기존 `com.openclaw.codexpro*`와 `~/.codexpro`는 건드리지 않는다.
+
+신규 제출 경로는 Oracle과 수동 등록 DevSpace 앱이다. 아래 marketplace/hook
+plugin과 OMO 항목은 macOS 수명주기 보조 도구이며 제출 경로가 아니다. 최초
+설치와 ChatGPT 연결 순서는 [최초 설치 가이드](FIRST_INSTALL.md)가 기준이다.
 
 ## 설치 순서
 
@@ -22,10 +26,12 @@ codex plugin add codexpro-harness@ventianima-local
 OMO_CODEX_DISABLE_POSTHOG=1 npx lazycodex-ai install --no-tui --codex-autonomous
 ```
 
-OMO 설치 전 `[features.multi_agent_v2]`의
-`max_concurrent_threads_per_session = 5`를 설정한다. 설치 후에도 값이 5인지
-확인한다. 웹 wave와 로컬 subagent wave를 동시에 실행하지 않으므로 합산
-동시 상한도 5다.
+네이티브 subagent는 지원되는 `[agents]` 블록만 사용한다.
+`max_concurrent_threads_per_session = 3`이 하드 상한이고 실운영 기본
+동시 작업자는 2명이다. 불안정한 `multi_agent_v2`는 켜지 않는다. 설정은
+`python3 "$HOME/.codex/bin/codex_global_agents_setup.py" --doctor`로 확인한다.
+웹 wave와 로컬 subagent wave는 동시에 실행하지 않는다. Oracle Web Multi는
+provider 세션 5개로 별도 제한된다.
 
 ## DevSpace와 Tailscale
 

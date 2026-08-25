@@ -35,13 +35,16 @@ changes.
 
 Every run records the project, mission bytes, transport, model, effort, and
 artifact identity. Regular web work defaults to the highest supported non-Pro
-reasoning tier. Pro is an explicit, quota-aware opt-in and uses exact-root
-DevSpace with mission-scoped read/write authority. Attachment mode is an
-explicit immutable-evidence contract, not an automatic fallback.
+reasoning tier. New Pro is an explicit, quota-aware opt-in for exact-root,
+read-only DevSpace design, advice, or review. A regular `GPT-5.6` `extra-high`
+DevSpace stage performs every file creation, edit, removal, and command.
+Explicit attachment mode remains a separate read-only immutable-evidence
+contract, not an automatic fallback. Persisted legacy `pro-devspace` write
+runs preserve their exact original authority only during recovery.
 
 ## Recoverable lifecycle
 
-The project lock follows exact session authority:
+The task-scoped project lock follows exact session authority; different bound Codex tasks use distinct locks even at the same root:
 
 ```text
 pre-submit -> submitted/unknown -> live -> terminal -> harvested
@@ -76,6 +79,20 @@ terminate a run, release its lock, mark it failed, or authorize a replacement.
   final verifier. Each writer receives a distinct pre-created Git worktree;
   host-validated disjoint project-relative ownership and actual-delta auditing
   prevent concurrent overlap before the combined result reaches canonical.
+  When the web app withholds mutating tools, closed host-materialization
+  envelopes preserve the same identity and ownership checks without
+  mislabeling a write tool as read-only. A separate bounded `read_chunk`
+  surface reconstructs UTF-8 files whose first line exceeds the upstream 50KB
+  line-oriented reader limit. Its preflight executes the exact hash-gated
+  installed helper body in a dependency-minimal Node process instead of
+  importing the full MCP server graph. An explicit provider-UI user stop is terminalized
+  only through the comprehensive runner's hash-bound `CANCELED` settlement. It preserves the
+  Oracle run state, records authority/completion receipts, and releases only the
+  exact workflow scope; canceled workflows cannot be reactivated.
+  The same settlement command accepts the distinct
+  `user-confirmed-pre-submit-workflow-cancel` authority only for the exact
+  known bridge-timeout pre-submit state with empty stdout, no output, and no
+  conversation binding.
   Local Codex retains deterministic control and release duties.
 
 ## Installation lifecycle

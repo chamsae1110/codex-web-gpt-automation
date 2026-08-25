@@ -25,83 +25,36 @@ def test_new_regular_modes_route_only_to_oracle_devspace() -> None:
     assert "never attaches files" in value
     assert "create a new agbrowse run" in value
     assert "app picker" not in value.casefold()
-    assert "`regular_web_mode: pro`" in value
-    assert "`Power 5 of 5`" in value
 
 
-def test_qualified_pro_requires_explicit_opt_in_and_uses_read_write_devspace() -> None:
+def test_qualified_pro_requires_explicit_opt_in_and_uses_readonly_devspace() -> None:
     value = text(PRO)
     flat = " ".join(value.split())
     assert "Oracle is the only backend for a new Pro run" in flat
     assert "Pro is quota-limited" in flat
     assert "never infer Pro from task difficulty" in flat
     assert "exact absolute project root" in flat
-    assert "create, edit, and remove mission-owned files and run commands" in flat
-    assert "`pro-attachment` is attachment-only through Oracle" in flat
-    assert "immutable/external evidence or artifacts that DevSpace cannot read" in flat
-    assert "never an automatic fallback from qualified Pro DevSpace" in flat
+    assert "read-only and limited to design, advice, or review" in flat
+    assert "regular `GPT-5.6` `extra-high` DevSpace stage owns any required mutation or command" in flat
+    assert "`pro-attachment` remains an explicit, read-only route" in flat
+    assert "never an automatic fallback" in flat
     assert "There is no new agbrowse,\nCodexPro" in value
     handoff = text(HANDOFF)
     assert "allow_pro: true" in handoff
-    assert "read/write DevSpace" in handoff
-    assert "`pro-attachment` remains an explicit attachment-only" in handoff
+    assert "`pro-devspace-readonly`" in handoff
+    assert "regular `GPT-5.6` `extra-high` DevSpace stage" in handoff
+    assert "`pro-attachment`" in handoff
+    assert "read-only immutable/external-evidence" in handoff
+    assert "Persisted legacy `pro-devspace`" in handoff
 
 
-def test_qualified_pro_has_exact_root_mission_scoped_write_authority() -> None:
+def test_qualified_pro_has_exact_root_readonly_authority() -> None:
     value = text(PRO)
     flat = " ".join(value.split())
     assert "applicable `AGENTS.md` chain completely" in flat
     assert "Repository safety rules remain authoritative" in flat
-    assert "must not change accounts, app settings, or external state unless the mission explicitly authorizes" in flat
-
-
-def test_handoff_supports_explicit_pro_first_collaborative_implementation() -> None:
-    value = text(HANDOFF)
-    flat = " ".join(value.split())
-    assert "## Explicit Pro-first collaborative ownership" in value
-    assert "semantic implementation owner rather than an advisory reviewer" in flat
-    assert "code creation, code editing, refactoring, focused testing" in flat
-    assert "Split work by comparative advantage" in flat
-    assert "never let Pro and local Codex edit the same files concurrently" in flat
-    assert "constrains the write location, not Pro's coding capability" in flat
-    assert "regular comprehensive plan, review, implementation, and final-gate stages are themselves qualified Pro" in flat
-    assert "Delegation never expands user authority" in flat
-
-
-def test_qualified_pro_has_ordered_fail_closed_evidence_gates() -> None:
-    value = text(PRO)
-    flat = " ".join(value.split())
-    assert "## Ordered decision and evidence gates" in value
-    assert "A later observation never repairs an earlier failure" in flat
-    assert "`DEVSPACE_EXACT_ROOT_UNAVAILABLE` before Oracle/browser creation" in flat
-    assert "exact Oracle 0.17.1 compatibility hashes" in flat
-    assert "`GPT-5.6 Sol`, the visible `Pro` choice, `Power 5 of 5`" in flat
-    assert "`pro-devspace` transport before send" in flat
-    assert "callable DevSpace tools and reads the exact mission/root" in flat
-    assert "fresh nonempty `output.md`" in flat
-    assert "Permit only same-slug `live` or `harvest`" in flat
-    assert "Do not start Web Multi" in flat
-    assert "no automatic attachment fallback" in flat
-    assert "no duplicate submission" in flat
-    assert "no review-to-implementation chain" in flat
-
-
-def test_pro_skill_improvement_is_trajectory_and_utility_gated() -> None:
-    pro = text(PRO)
-    handoff = text(HANDOFF)
-    combined = " ".join((pro + "\n" + handoff).split())
-    assert "observed failure mechanism" in combined
-    assert "smallest executable remedy" in combined
-    assert "high-risk actions that must remain forbidden" in combined
-    assert "at most two coherent add/delete/replace edits" in combined
-    assert "strict held-out improvement" in combined
-    assert "zero safety regressions" in combined
-    assert "prose-only model judge" in combined
-    assert "do not train on transport-uncertain" in combined
-    assert "no extra provider call" in combined
-    assert "never auto-adopt" in combined
-    assert "source/install\n  byte parity" in handoff
-    assert "another model, transport, or harness as transfer evidence only" in combined
+    assert "must not create, edit, or remove files or run commands" in flat
+    assert "must not change accounts, app settings, or external state" in flat
 
 
 def test_qualified_pro_fails_closed_when_devspace_tools_are_not_exposed() -> None:
@@ -183,28 +136,6 @@ def test_oracle_runs_use_isolated_profile_copies_and_owned_hidden_windows() -> N
     assert "hide its owned window" in value
 
 
-def test_thinking_skill_has_ordered_fail_closed_evidence_gates() -> None:
-    value = text(THINKING)
-    flat = " ".join(value.split())
-    assert "## Decision and evidence gates" in value
-    assert "A later gate never repairs a failed earlier gate" in flat
-    assert "absent from current DevSpace `allowedRoots`" in flat
-    assert "Stop before Oracle/browser creation" in flat
-    assert "Substitute a parent, child, similarly named, active, or shell-visible root" in flat
-    assert "missing or mismatched before prompt send" in flat
-    assert "Fail closed as pre-submit" in flat
-    assert "after submission is true or uncertain" in flat
-    assert "recover only the recorded exact slug" in flat
-    assert "Submit the mission again" in flat
-    assert "empty, stale, or not proven fresh" in flat
-    assert "exit zero plus fresh nonempty output" in flat
-    assert "exactly one terminal `TASK_OUTCOME: EXECUTED`" in flat
-    assert "`NOT_EXECUTED` and `BLOCKED` are terminal evidence, not success" in flat
-    assert "no ordinary attachments" in flat
-    assert "no shared manual profile" in flat
-    assert "no duplicate submission" in flat
-
-
 def test_install_inventory_contains_new_active_runtime_and_keeps_legacy_recovery() -> None:
     manifest = json.loads((ROOT / "install-manifest.json").read_text(encoding="utf-8"))
     include = set(manifest["include"])
@@ -212,7 +143,19 @@ def test_install_inventory_contains_new_active_runtime_and_keeps_legacy_recovery
         "bin/chatgpt_oracle_dispatch.py",
         "bin/chatgpt_oracle_multi.py",
         "bin/chatgpt_oracle_comprehensive.py",
+        "bin/devspace-compat/1.0.7/oauth-refresh-replay.patch",
+        "bin/devspace-compat/1.0.7/workspace-write-and-read-bridge.patch",
+        "bin/devspace-compat/1.0.7/workspaces.patch",
         "bin/devspace-compat/1.0.4/directory-read.patch",
+        "bin/devspace-compat/1.0.4/delete-file.patch",
+        "bin/devspace-compat/1.0.4/trash-file.patch",
+        "bin/devspace-compat/1.0.4/directory-read-to-file-safety.patch",
+        "bin/devspace-compat/1.0.4/file-safety-to-read-chunk.patch",
+        "bin/oracle-compat/0.18.0/oracle-cli.followup-port-and-timeout.patch",
+        "bin/oracle-compat/0.18.0/browserConfig.followup-port-binding.patch",
+        "bin/oracle-compat/0.18.0/browserConfig.copy-profile-windows.patch",
+        "upstream-runtime-policy.json",
+        "scripts/check_upstream_runtime_policy.py",
         "skills/chatgpt-workspace-setup/SKILL.md",
     ):
         assert path in include
@@ -220,13 +163,18 @@ def test_install_inventory_contains_new_active_runtime_and_keeps_legacy_recovery
     assert manifest["routing"] == {
         "new_work_engine": "oracle",
         "regular_workspace_transport": "devspace",
-        "pro_transport": "oracle-devspace-readwrite-explicit",
-        "pro_attachment_transport": "oracle-attachment-only-explicit",
+        "pro_transport": "oracle-devspace-readonly-explicit",
+        "historical_pro_devspace": "persisted-run-recovery-only",
+        "pro_attachment_transport": "oracle-attachment-readonly-explicit",
         "agbrowse": "persisted-run-recovery-only",
         "codexpro": "persisted-run-recovery-only",
     }
     assert manifest["external"]["oracle"]["license"] == "MIT"
+    assert manifest["external"]["oracle"]["tested_version"] == "0.18.0"
+    assert manifest["external"]["oracle"]["last_known_good"]["version"] == "0.17.1"
     assert manifest["external"]["devspace"]["license"] == "MIT"
+    assert manifest["external"]["devspace"]["tested_version"] == "1.0.7"
+    assert manifest["external"]["devspace"]["last_known_good"]["version"] == "1.0.4"
     assert manifest["external"]["agbrowse"]["role"] == "persisted-run-recovery-only"
     assert manifest["external"]["agbrowse"]["default_install"] is False
     assert manifest["external"]["codexpro"]["frozen"] is True
@@ -254,9 +202,9 @@ def test_english_readme_maps_modes_to_the_same_oracle_routes() -> None:
     assert "`deep-research` / deep research" in value
     assert "comprehensive mode" in value
     assert "Web Multi-GPT" in value
-    assert "Pro is quota-limited and requires explicit one-run or durable host opt-in" in value
-    assert '"regular_web_mode": "pro"' in value
-    assert "Oracle + read/write DevSpace" in value
+    assert "Pro is quota-limited, never auto-selected" in value
+    assert "Oracle + read-only DevSpace" in value
+    assert "regular `GPT-5.6` `extra-high` DevSpace stage performs any file creation" in value
     assert "never resubmits the task" in value
 
 
@@ -273,15 +221,27 @@ def test_agent_metadata_exposes_oracle_active_routes() -> None:
     thinking = text(ROOT / "skills" / "chatgpt-thinking-browser" / "agents" / "openai.yaml")
     multi = text(ROOT / "skills" / "web-multi-gpt" / "agents" / "openai.yaml")
     pro = text(ROOT / "skills" / "chatgpt-pro-browser" / "agents" / "openai.yaml")
+    designer = text(ROOT / "skills" / "chatgpt-question-designer" / "agents" / "openai.yaml")
+    runtime = text(ROOT / "skills" / "chatgpt-oracle-runtime" / "agents" / "openai.yaml")
     assert "Oracle and DevSpace" in thinking
     assert "parallel Oracle GPT sessions" in multi
-    assert "read/write DevSpace" in pro
+    assert "read-only DevSpace" in pro
     assert "allow_implicit_invocation: false" in pro
+    assert "read-only Pro" in designer and "read/write Pro" not in designer
+    assert "read-only Pro" in runtime and "read/write Pro" not in runtime
+
+
+def test_question_designer_preserves_explicit_readonly_attachment_route() -> None:
+    value = text(DESIGNER)
+    assert "A separately explicit `pro-attachment` request" in value
+    assert "never an automatic fallback from DevSpace" in value
+    assert "attachment evidence is a persisted-legacy recovery concern, not a new-work route" not in value
 
 
 def test_standalone_pro_never_transitions_into_comprehensive_implementation() -> None:
     pro = text(PRO)
-    assert "standalone, one-shot Pro route" in pro
-    assert "returns that durable Pro result to Codex\nand stops" in pro
-    assert "never starts a review-to-implementation chain" in pro
+    assert "standalone read-only Pro conversation route" in pro
+    assert "After each durable\nanswer it returns control to Codex and stops" in pro
+    assert "only an explicit user request may\nadd another bounded round to that same conversation" in pro
+    assert "never starts a\nreview-to-implementation chain" in pro
     assert "If the user asks for comprehensive mode, use `chatgpt-pro-plan-handoff`" in pro

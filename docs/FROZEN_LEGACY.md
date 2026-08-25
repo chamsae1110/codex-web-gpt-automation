@@ -9,7 +9,12 @@
 
 - 신규 제출 경로는 Oracle뿐입니다. 일반·계획·검토·수정·지휘·심층
   리서치·종합모드·Web Multi는 Oracle + 수동 등록 DevSpace 앱을 쓰고,
-  Pro는 Oracle 첨부 전용으로 앱을 쓰지 않습니다.
+  명시적으로 요청된 신규 Pro도 같은 수동 등록 DevSpace 앱을 `pro-devspace-readonly`로
+  사용하지만 설계·자문·검토 전용 읽기 권한만 가집니다. 파일 생성·수정·삭제와
+  명령 실행은 최고 지원 비-Pro `GPT-5.6` `extra-high` regular DevSpace 단계가
+  수행합니다. 명시적 `pro-attachment`는 불변·외부 증거를 위한 별도 읽기 전용
+  경로이며 자동 fallback이 아닙니다. 저장된 legacy `pro-devspace` 쓰기 실행은
+  정확한 복구에서만 원래 transport와 권한을 유지합니다.
 - Oracle 실패는 다른 백엔드로 전환할 권한을 만들지 않습니다.
   agbrowse·CodexPro·in-app Browser·`@chrome`·Playwright/CDP·Proxima는
   fallback이 아닙니다.
@@ -58,11 +63,11 @@
 | `bin/chatgpt_oracle_state.py` | 프로젝트 잠금·신원·상태 장부 |
 | `bin/chatgpt_oracle_comprehensive.py` | 종합모드 단계 실행기 |
 | `bin/chatgpt_oracle_multi.py` | 진짜 Web Multi-GPT wave 실행 |
-| `bin/chatgpt_oracle_compat.py` | Oracle 0.17.1 해시 검증 호환 패치 |
+| `bin/chatgpt_oracle_compat.py` | 기본 Oracle 0.18.0 해시 검증과 Oracle 0.17.1 롤백 LKG/과거 실행 복구 계약 |
 | `bin/chatgpt_oracle_profiles.py` | lane별 throwaway 프로필 |
 | `bin/chatgpt_oracle_diagnose.py` | 실패 서명 분류 |
 | `bin/chatgpt_oracle_incident.py` | 단일 수리 소유자 인계 패킷 |
-| `bin/chatgpt_devspace_compat.py` | DevSpace 1.0.4 호환 패치 |
+| `bin/chatgpt_devspace_compat.py` | DevSpace 1.0.7 current 호환 패치와 1.0.4 롤백 LKG |
 
 ## 레거시 스텁 문서
 

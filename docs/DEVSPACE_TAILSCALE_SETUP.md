@@ -4,7 +4,7 @@ This repository does not modify DevSpace upstream and does not automate the Chat
 
 ## Prerequisites
 
-- Node.js 22.19–26.x, npm, and Git Bash on Windows.
+- Node.js 24–26.x, npm, and Git Bash on Windows.
 - Tailscale with MagicDNS, HTTPS, and Funnel permission enabled for this device.
 - A stable MagicDNS hostname, for example `your-device.your-tailnet.ts.net`.
 
@@ -108,8 +108,17 @@ mission. Repair of that external binding requires the one manual reconnect
 already described above, followed by one regular non-Pro probe; Pro remains
 blocked until that exact registered-app probe succeeds.
 
+If a terminal web answer reports the exact Oracle run's own live status instead
+of performing the mission, diagnosis requires the full bounded
+`post-submit-recursive-self-observation` signature: own run ID and slug,
+running/pending state, absent output, the exact continue-observing audit phrase,
+and terminal BLOCKED. The comprehensive controller releases its workflow scope
+without automatic retry. Direct fresh-run authority requires the append-only,
+three-artifact hash-bound `settle-recursive-self-observation` receipt; a general
+BLOCKED answer or a simple run-ID mention never qualifies.
+
 When a previously healthy long-running session fails only as its access token
-expires, the managed DevSpace 1.0.4 compatibility layer also checks a bounded
+expires, the managed DevSpace 1.0.7 compatibility layer also checks a bounded
 server-side refresh replay grace. It returns the same rotated pair only for an
 identical client, scope, and resource during a 30-second window, keeps at most
 32 entries in memory, and rejects expiry, mismatch, or revocation. This avoids
@@ -118,6 +127,13 @@ durably reusable. Apply the hash-gated compatibility update, recycle only the
 exact managed service once, and prove the registered app with a regular
 non-Pro read plus no-op command canary. Do not delete OAuth state or reconnect
 the app merely to exercise this repair.
+
+The same exact-version compatibility layer adds a read-only `read_chunk`
+tool for UTF-8 files whose first line exceeds the upstream 50KB reader limit.
+Read from byte offset 0, reuse each returned `nextOffsetBytes`, and stop only
+at `eof=true`; every chunk is capped at 24KiB and carries the same whole-file
+SHA-256 and total byte count. Its doctor reconstructs an isolated 60KB-plus
+single-line Unicode fixture, so this path does not depend on `bash`.
 
 ## Idempotent service/Funnel recovery
 

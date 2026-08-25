@@ -1,0 +1,13 @@
+diff --git a/dist/bin/oracle-cli.js b/dist/bin/oracle-cli.js
+--- a/dist/bin/oracle-cli.js
++++ b/dist/bin/oracle-cli.js
+@@ -1327,7 +1327,8 @@ const browserConfig = await (async () => {
+         if (sessionMode !== "browser")
+             return undefined;
+         if (browserFollowup) {
+-            return browserFollowup.browserConfig;
++            const { bindFollowupBrowserPort } = await import("../src/cli/browserConfig.js");
++            return bindFollowupBrowserPort(browserFollowup.browserConfig, options.browserPort ?? options.browserDebugPort);
+         }
+         const { buildBrowserConfig, resolveBrowserModelLabel } = await import("../src/cli/browserConfig.js");
+         const config = await buildBrowserConfig({

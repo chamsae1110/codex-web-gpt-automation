@@ -1,17 +1,23 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import importlib.util
+import io
 import json
+import os
+import re
 import shutil
 import subprocess
 import sys
+import tarfile
 from pathlib import Path
 
 import pytest
 
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "bin" / "chatgpt_oracle_compat.py"
+CI_PREP_PATH = Path(__file__).resolve().parents[1] / "scripts" / "prepare_oracle_018_ci.py"
 
 
 def load_compat():
@@ -24,15 +30,38 @@ def load_compat():
     return module
 
 
+def load_ci_prepare():
+    name = "prepare_oracle_018_ci_test"
+    spec = importlib.util.spec_from_file_location(name, CI_PREP_PATH)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def digest(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
+
+
+def make_package_archive(path: Path, files: dict[str, bytes]) -> tuple[Path, str]:
+    archive = path / "oracle.tgz"
+    with tarfile.open(archive, mode="w:gz") as package:
+        for relative, content in sorted(files.items()):
+            member = tarfile.TarInfo(f"package/{relative}")
+            member.size = len(content)
+            member.mode = 0o644
+            member.mtime = 0
+            package.addfile(member, io.BytesIO(content))
+    integrity = "sha512-" + base64.b64encode(hashlib.sha512(archive.read_bytes()).digest()).decode("ascii")
+    return archive, integrity
 
 
 def test_exact_version_patch_is_hash_gated_idempotent_and_backed_up(tmp_path: Path) -> None:
     compat = load_compat()
     package = tmp_path / "package"
     package.mkdir()
-    (package / "package.json").write_text(json.dumps({"version": "0.17.1"}), encoding="utf-8")
+    (package / "package.json").write_text(json.dumps({"version": "0.18.0"}), encoding="utf-8")
     target = package / "sample.txt"
     target.write_bytes(b"before\n")
     patches = tmp_path / "patches"
@@ -42,11 +71,11 @@ def test_exact_version_patch_is_hash_gated_idempotent_and_backed_up(tmp_path: Pa
         encoding="utf-8",
     )
     compat.PATCHES = {"sample.txt": {"patch": "sample.patch", "pristine": digest(b"before\n"), "patched": digest(b"after\n")}}
-    compat.patch_root = lambda: patches
+    compat.patch_root = lambda version=compat.SUPPORTED_VERSION: patches
     backup = tmp_path / "backup"
 
-    first = compat.ensure_oracle_compatibility("oracle 0.17.1", package_root=package, backup_root=backup)
-    second = compat.ensure_oracle_compatibility("oracle 0.17.1", package_root=package, backup_root=backup)
+    first = compat.ensure_oracle_compatibility("oracle 0.18.0", package_root=package, backup_root=backup)
+    second = compat.ensure_oracle_compatibility("oracle 0.18.0", package_root=package, backup_root=backup)
 
     assert first["changed"] == ["sample.txt"]
     assert second["already_patched"] == ["sample.txt"]
@@ -58,7 +87,7 @@ def test_hash_specific_legacy_patch_migrates_without_backup(tmp_path: Path) -> N
     compat = load_compat()
     package = tmp_path / "package"
     package.mkdir()
-    (package / "package.json").write_text(json.dumps({"version": "0.17.1"}), encoding="utf-8")
+    (package / "package.json").write_text(json.dumps({"version": "0.18.0"}), encoding="utf-8")
     target = package / "sample.txt"
     target.write_bytes(b"middle\n")
     patches = tmp_path / "patches"
@@ -81,11 +110,11 @@ def test_hash_specific_legacy_patch_migrates_without_backup(tmp_path: Path) -> N
             "legacy_patches": {legacy_hash: "legacy.patch"},
         }
     }
-    compat.patch_root = lambda: patches
+    compat.patch_root = lambda version=compat.SUPPORTED_VERSION: patches
     backup = tmp_path / "backup"
 
     result = compat.ensure_oracle_compatibility(
-        "oracle 0.17.1",
+        "oracle 0.18.0",
         package_root=package,
         backup_root=backup,
     )
@@ -100,15 +129,274 @@ def test_unknown_oracle_version_or_file_hash_fails_closed(tmp_path: Path) -> Non
     with pytest.raises(compat.OracleCompatError) as version:
         compat.ensure_oracle_compatibility("oracle 0.17.0", package_root=tmp_path)
     assert version.value.code == "ORACLE_VERSION_UNVALIDATED"
+    with pytest.raises(compat.OracleCompatError) as scoped_version_without_profile:
+        compat.ensure_oracle_compatibility("oracle 0.18.1", package_root=tmp_path)
+    assert scoped_version_without_profile.value.code == "ORACLE_VERSION_UNVALIDATED"
+    assert compat.SUPPORTED_VERSION in scoped_version_without_profile.value.evidence["supported"]
 
     package = tmp_path / "package"
     package.mkdir()
     (package / "package.json").write_text(json.dumps({"version": "0.17.1"}), encoding="utf-8")
     (package / "sample.txt").write_bytes(b"unknown\n")
-    compat.PATCHES = {"sample.txt": {"patch": "missing.patch", "pristine": digest(b"before\n"), "patched": digest(b"after\n")}}
+    compat.LKG_PATCHES = {"sample.txt": {"patch": "missing.patch", "pristine": digest(b"before\n"), "patched": digest(b"after\n")}}
     with pytest.raises(compat.OracleCompatError) as mismatch:
         compat.ensure_oracle_compatibility("oracle 0.17.1", package_root=package)
     assert mismatch.value.code == "ORACLE_FILE_HASH_MISMATCH"
+
+
+def test_scoped_oracle_version_requires_its_profile_and_uses_its_own_contract(tmp_path: Path) -> None:
+    compat = load_compat()
+    package = tmp_path / "package"
+    package.mkdir()
+    package_json = json.dumps({"version": "0.18.0"}).encode("utf-8")
+    (package / "package.json").write_bytes(package_json)
+    target = package / "sample.txt"
+    target.write_bytes(b"before\n")
+    other = package / "other.js"
+    other.write_bytes(b"export const trusted = true;\n")
+    dependency = package / "node_modules" / "dependency" / "index.js"
+    dependency.parent.mkdir(parents=True)
+    dependency.write_bytes(b"export const externalDependency = true;\n")
+    patches = tmp_path / "patches"
+    patches.mkdir()
+    (patches / "sample.patch").write_text(
+        "diff --git a/sample.txt b/sample.txt\n--- a/sample.txt\n+++ b/sample.txt\n@@ -1 +1 @@\n-before\n+after\n",
+        encoding="utf-8",
+    )
+    compat.SCOPED_PATCHES = {
+        "webjjonku-linux": {
+            "0.18.0": {
+                "sample.txt": {
+                    "patch": "sample.patch",
+                    "pristine": digest(b"before\n"),
+                    "patched": digest(b"after\n"),
+                }
+            }
+        }
+    }
+    archive, integrity = make_package_archive(tmp_path, {
+        "package.json": package_json,
+        "sample.txt": b"before\n",
+        "other.js": b"export const trusted = true;\n",
+    })
+    compat.SCOPED_PACKAGE_INTEGRITIES = {"webjjonku-linux": {"0.18.0": integrity}}
+    compat.patch_root = lambda version=compat.SUPPORTED_VERSION: patches
+
+    compat.PATCHES = {}
+    default_path = compat.ensure_oracle_compatibility("oracle 0.18.0", package_root=package)
+    assert default_path["version"] == "0.18.0"
+
+    with pytest.raises(compat.OracleCompatError) as unknown_profile:
+        compat.ensure_scoped_oracle_compatibility(
+            "oracle 0.18.0",
+            profile="other-linux",
+            package_root=package,
+            package_archive=archive,
+        )
+    assert unknown_profile.value.code == "ORACLE_COMPAT_PROFILE_UNVALIDATED"
+
+    with pytest.raises(compat.OracleCompatError) as missing_root:
+        compat.ensure_scoped_oracle_compatibility(
+            "oracle 0.18.0",
+            profile="webjjonku-linux",
+            package_archive=archive,
+        )
+    assert missing_root.value.code == "ORACLE_PACKAGE_ROOT_REQUIRED"
+
+    result = compat.ensure_scoped_oracle_compatibility(
+        "oracle 0.18.0",
+        profile="webjjonku-linux",
+        package_root=package,
+        package_archive=archive,
+        backup_root=tmp_path / "backup",
+    )
+
+    assert result["version"] == "0.18.0"
+    assert result["profile"] == "webjjonku-linux"
+    assert result["changed"] == ["sample.txt"]
+    assert result["package_integrity"] == integrity
+    assert target.read_bytes() == b"after\n"
+    assert dependency.is_file()
+    other.write_bytes(b"export const trusted = false;\n")
+    with pytest.raises(compat.OracleCompatError) as tree_mismatch:
+        compat.ensure_scoped_oracle_compatibility(
+            "oracle 0.18.0",
+            profile="webjjonku-linux",
+            package_root=package,
+            package_archive=archive,
+            backup_root=tmp_path / "backup",
+        )
+    assert tree_mismatch.value.code == "ORACLE_PACKAGE_TREE_MISMATCH"
+    other.write_bytes(b"export const trusted = true;\n")
+    (package / "injected.js").write_bytes(b"export const injected = true;\n")
+    with pytest.raises(compat.OracleCompatError) as extra_file:
+        compat.ensure_scoped_oracle_compatibility(
+            "oracle 0.18.0",
+            profile="webjjonku-linux",
+            package_root=package,
+            package_archive=archive,
+            backup_root=tmp_path / "backup",
+        )
+    assert extra_file.value.code == "ORACLE_PACKAGE_TREE_MISMATCH"
+    assert extra_file.value.evidence["path"] == "injected.js"
+
+
+def test_scoped_package_tree_rejects_directory_links_and_junctions(tmp_path: Path) -> None:
+    compat = load_compat()
+    package = tmp_path / "package"
+    package.mkdir()
+    external = tmp_path / "external"
+    external.mkdir()
+    link = package / "dist"
+    if os.name == "nt":
+        created = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link), str(external)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert created.returncode == 0, created.stderr
+    else:
+        link.symlink_to(external, target_is_directory=True)
+
+    with pytest.raises(compat.OracleCompatError) as unsafe_tree:
+        compat._scan_installed_package_tree(package.resolve(strict=True))
+    assert unsafe_tree.value.code == "ORACLE_PACKAGE_TREE_MISMATCH"
+    assert unsafe_tree.value.evidence["path"] == "dist"
+
+
+def test_ci_extractor_rejects_windows_escape_and_reserved_paths_before_writing(tmp_path: Path) -> None:
+    prepare = load_ci_prepare()
+    for index, unsafe_name in enumerate((r"package/a\..\..\..\escaped.txt", "package/CON.txt")):
+        stream = io.BytesIO()
+        with tarfile.open(fileobj=stream, mode="w:gz") as package:
+            content = b"unsafe\n"
+            member = tarfile.TarInfo(unsafe_name)
+            member.size = len(content)
+            package.addfile(member, io.BytesIO(content))
+        destination = tmp_path / f"extract-{index}"
+        with pytest.raises(RuntimeError, match="unsafe path"):
+            prepare.extract_verified(stream.getvalue(), destination)
+    assert not (tmp_path / "escaped.txt").exists()
+
+
+def test_scoped_cli_requires_explicit_version(capsys: pytest.CaptureFixture[str]) -> None:
+    compat = load_compat()
+    assert compat.main(["--profile", "webjjonku-linux"]) == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    assert payload["error"]["code"] == "ORACLE_VERSION_REQUIRED"
+
+
+def test_scoped_profile_rejects_missing_node_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    compat = load_compat()
+    monkeypatch.setattr(compat.shutil, "which", lambda _name: None)
+    with pytest.raises(compat.OracleCompatError) as unsupported:
+        compat._verify_scoped_node_runtime("webjjonku-linux")
+    assert unsupported.value.code == "ORACLE_NODE_VERSION_UNSUPPORTED"
+    assert unsupported.value.evidence["required"] == ">=24 <27"
+
+
+@pytest.mark.parametrize(
+    ("node", "stdout", "returncode"),
+    [
+        (None, "", 0),
+        ("node", "v23.11.1\n", 0),
+        ("node", "v27.0.0\n", 0),
+        ("node", "not-a-version\n", 0),
+        ("node", "v24.0.0\n", 1),
+    ],
+)
+def test_current_oracle_rejects_unvalidated_node_runtime(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, node: str | None, stdout: str, returncode: int
+) -> None:
+    compat = load_compat()
+    monkeypatch.setattr(compat.shutil, "which", lambda _name: node)
+    called: list[object] = []
+    monkeypatch.setattr(
+        compat.subprocess,
+        "run",
+        lambda *_args, **_kwargs: called.append(object())
+        or type("NodeResult", (), {"returncode": returncode, "stdout": stdout})(),
+    )
+    with pytest.raises(compat.OracleCompatError) as unsupported:
+        compat.ensure_oracle_compatibility("oracle 0.18.0", package_root=tmp_path)
+    assert unsupported.value.code == "ORACLE_NODE_VERSION_UNSUPPORTED"
+    assert unsupported.value.evidence["contract"] == "current:0.18.0"
+    assert unsupported.value.evidence["required"] == ">=24 <27"
+    assert bool(called) is (node is not None)
+
+
+def test_lkg_recovery_does_not_inherit_current_node_gate(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    compat = load_compat()
+    observed: dict[str, object] = {}
+    monkeypatch.setattr(compat.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(
+        compat,
+        "_apply_oracle_compatibility",
+        lambda version, **kwargs: observed.update(version=version, **kwargs) or {"ok": True, "version": version},
+    )
+    result = compat.ensure_oracle_compatibility("oracle 0.17.1", package_root=tmp_path)
+    assert result == {"ok": True, "version": "0.17.1"}
+    assert observed["contracts"] is compat.LKG_PATCHES
+
+
+def test_published_0180_followup_timeout_patch_preserves_parent_unless_cli_overrides(tmp_path: Path) -> None:
+    compat = load_compat()
+    configured = os.environ.get("ORACLE_018_PACKAGE_ROOT", "").strip()
+    configured_archive = os.environ.get("ORACLE_018_PACKAGE_ARCHIVE", "").strip()
+    source = Path(configured) if configured else Path("__oracle_018_cache_unset__")
+    archive = Path(configured_archive) if configured_archive else Path("__oracle_018_archive_unset__")
+    if not source.is_dir() or not archive.is_file():
+        pytest.skip("published Oracle 0.18.0 package root and archive are unavailable")
+    package = tmp_path / "oracle"
+    shutil.copytree(source, package)
+
+    result = compat.ensure_scoped_oracle_compatibility(
+        "oracle 0.18.0",
+        profile="webjjonku-linux",
+        package_root=package,
+        package_archive=archive,
+        backup_root=tmp_path / "backup",
+    )
+
+    relative = "dist/bin/oracle-cli.js"
+    assert relative in set(result["changed"]) | set(result["already_patched"])
+    target = package / relative
+    source_text = target.read_text(encoding="utf-8")
+    assert 'getSource("browserTimeout") !== "cli"' in source_text
+    assert "...browserFollowup.browserConfig" in source_text
+    assert "timeoutMs: cliConfig.timeoutMs" in source_text
+    assert compat.sha256_file(target) == compat.SCOPED_PATCHES["webjjonku-linux"]["0.18.0"][relative]["patched"]
+    node = shutil.which("node")
+    assert node is not None
+    syntax = subprocess.run([node, "--check", str(target)], capture_output=True, text=True, check=False)
+    assert syntax.returncode == 0, syntax.stderr
+
+
+def test_published_0180_default_contract_applies_every_current_patch(tmp_path: Path) -> None:
+    compat = load_compat()
+    configured = os.environ.get("ORACLE_018_PACKAGE_ROOT", "").strip()
+    source = Path(configured) if configured else Path("__oracle_018_cache_unset__")
+    if not source.is_dir():
+        if os.environ.get("CI"):
+            pytest.fail("CI must prepare the exact published Oracle 0.18.0 package")
+        pytest.skip("published Oracle 0.18.0 package root is unavailable")
+    package = tmp_path / "oracle-default"
+    shutil.copytree(source, package)
+
+    result = compat.ensure_oracle_compatibility(
+        "oracle 0.18.0", package_root=package, backup_root=tmp_path / "backup-default"
+    )
+    touched = set(result["changed"]) | set(result["already_patched"])
+    assert touched == set(compat.PATCHES)
+    node = shutil.which("node")
+    assert node is not None
+    for relative, contract in compat.PATCHES.items():
+        target = package / relative
+        assert compat.sha256_file(target) == contract["patched"]
+        syntax = subprocess.run([node, "--check", str(target)], capture_output=True, text=True, check=False)
+        assert syntax.returncode == 0, f"{relative}: {syntax.stderr}"
 
 
 def test_published_0171_patch_requires_extra_high_and_pro_selection_proof(tmp_path: Path) -> None:
@@ -135,6 +423,36 @@ def test_published_0171_patch_requires_extra_high_and_pro_selection_proof(tmp_pa
     assert set(compat.PATCHES) <= touched
     node = shutil.which("node")
     assert node is not None, "Node.js is required to validate the patched Oracle source"
+    followup = package / "dist/src/cli/followup.js"
+    followup_text = followup.read_text(encoding="utf-8")
+    assert "resumeArchivedConversation: parentWasArchived" in followup_text
+    assert 'archiveConversations: parentWasArchived ? "always" : "never"' in followup_text
+    archive_action = package / "dist/src/browser/actions/archiveConversation.js"
+    archive_text = archive_action.read_text(encoding="utf-8")
+    assert "FOLLOWUP_ARCHIVED_PARENT_UNARCHIVE_FAILED" in archive_text
+    assert "exact-conversation-url-mismatch" in archive_text
+    assert "unarchive-menu-ambiguous" in archive_text
+    assert "direct-control" in archive_text
+    assert "[role=\"menu\"],[role=\"dialog\"]" in archive_text
+    assert "typeof PointerEvent === 'function'" in archive_text
+    assert "waitForUniqueUnarchive(3000)" in archive_text
+    assert "waitForDirectRestoreConfirmation(5000)" in archive_text
+    assert "composerReady() && directUnarchiveCandidates().length === 0" in archive_text
+    browser_index = package / "dist/src/browser/index.js"
+    browser_index_text = browser_index.read_text(encoding="utf-8")
+    assert browser_index_text.count("restoreArchivedFollowupBeforeComposer(Runtime") == 4
+    assert 'stage: "followup-unarchive-before-composer"' in browser_index_text
+    assert "composerSubmitAttempted: false" in browser_index_text
+    assert "turnCountAfter" in browser_index_text
+    navigation = package / "dist/src/browser/actions/navigation.js"
+    navigation_text = navigation.read_text(encoding="utf-8")
+    assert "hydrationAttempt <= 2" in navigation_text
+    assert "retrying the same exact conversation once" in navigation_text
+    assert "actualConversationId !== expectedConversationId" in navigation_text
+    assert compat.sha256_file(navigation) == compat.PATCHES["dist/src/browser/actions/navigation.js"]["patched"]
+    for target in (followup, archive_action, browser_index, navigation):
+        syntax = subprocess.run([node, "--check", str(target)], capture_output=True, text=True, check=False)
+        assert syntax.returncode == 0, syntax.stderr
     browser_tabs = package / "dist/src/cli/browserTabs.js"
     browser_tabs_text = browser_tabs.read_text(encoding="utf-8")
     assert "ORACLE_LIVE_TERMINAL_TIMEOUT_MS" in browser_tabs_text
@@ -163,6 +481,236 @@ def test_published_0171_patch_requires_extra_high_and_pro_selection_proof(tmp_pa
     )
     assert recovery_syntax.returncode == 0, recovery_syntax.stderr
     assert compat.sha256_file(recovery_target) == compat.PATCHES["dist/src/browser/recoverConversation.js"]["patched"]
+
+
+def test_published_0171_terminal_marker_fallback_is_stable_exact_and_thinking_independent(
+    tmp_path: Path,
+) -> None:
+    compat = load_compat()
+    source = (
+        Path.home()
+        / "AppData"
+        / "Local"
+        / "npm-cache"
+        / "_npx"
+        / "0a10f56e3ba43148"
+        / "node_modules"
+        / "@steipete"
+        / "oracle"
+    )
+    if not source.is_dir():
+        pytest.skip("published Oracle 0.17.1 cache is unavailable")
+    package = tmp_path / "oracle-terminal-marker"
+    shutil.copytree(source, package)
+    compat.ensure_oracle_compatibility(
+        "oracle 0.17.1", package_root=package, backup_root=tmp_path / "backup-terminal-marker"
+    )
+
+    assistant = package / "dist/src/browser/actions/assistantResponse.js"
+    oracle_cli = package / "dist/bin/oracle-cli.js"
+    browser_config = package / "dist/src/cli/browserConfig.js"
+    thinking = package / "dist/src/browser/actions/thinkingStatus.js"
+    assert compat.sha256_file(assistant) == compat.LKG_PATCHES[
+        "dist/src/browser/actions/assistantResponse.js"
+    ]["patched"]
+    assert compat.sha256_file(thinking) == compat.LKG_PATCHES[
+        "dist/src/browser/actions/thinkingStatus.js"
+    ]["patched"]
+    assert compat.sha256_file(oracle_cli) == compat.LKG_PATCHES["dist/bin/oracle-cli.js"]["patched"]
+    assert compat.sha256_file(browser_config) == compat.LKG_PATCHES["dist/src/cli/browserConfig.js"]["patched"]
+    assistant_text = assistant.read_text(encoding="utf-8")
+    oracle_cli_text = oracle_cli.read_text(encoding="utf-8")
+    assert "readAssistantSnapshot(Runtime, minTurnIndex, expectedConversationId)" in assistant_text
+    assert "terminalMarker: hasContractTerminalMarker(normalized.text)" in assistant_text
+    assert "ORACLE_TERMINAL_MARKER_CONFIRM_CYCLES" not in assistant_text
+    assert "ORACLE_TERMINAL_MARKER_MIN_STABLE_MS" not in assistant_text
+    assert "bindFollowupBrowserPort(browserFollowup.browserConfig" in oracle_cli_text
+    browser_config_text = browser_config.read_text(encoding="utf-8")
+    helper_match = re.search(
+        r"export function bindFollowupBrowserPort\([\s\S]+?\n\}",
+        browser_config_text,
+    )
+    assert helper_match is not None
+    helper_source = helper_match.group(0).removeprefix("export ")
+
+    node = shutil.which("node")
+    assert node is not None
+    script = f"""
+import {{ createTerminalGateState, classifyTurnTerminal, hasContractTerminalMarker }} from {json.dumps(assistant.as_uri())};
+import {{ shouldWarnThinkingStatusUndetected, formatThinkingUndetectedWarningLog }} from {json.dumps(thinking.as_uri())};
+{helper_source}
+const config = {{
+  barConfirmCycles: 3,
+  minStableMs: 1200,
+  markerConfirmCycles: 2,
+  markerMinStableMs: 5000,
+  taskOutcomeContract: 'v1',
+}};
+const sample = (now, text, extra = {{}}) => ({{
+  now,
+  len: text.length,
+  contentKey: `new-turn::${{text}}`,
+  stopVisible: false,
+  barVisible: false,
+  strongThinkingActive: false,
+  terminalMarker: hasContractTerminalMarker(text),
+  ...extra,
+}});
+const answer = `${{'x'.repeat(15800)}}\\nTASK_OUTCOME: EXECUTED\\n`;
+let state = createTerminalGateState(0);
+let first = classifyTurnTerminal(state, sample(0, answer), config); state = first.state;
+let second = classifyTurnTerminal(state, sample(2500, answer), config); state = second.state;
+let third = classifyTurnTerminal(state, sample(5000, answer), config);
+let changed = classifyTurnTerminal(third.state, sample(5100, answer.replace('x', 'y')), config);
+let active = classifyTurnTerminal(second.state, sample(6000, answer, {{ strongThinkingActive: true }}), config);
+let stopped = classifyTurnTerminal(second.state, sample(6000, answer, {{ stopVisible: true }}), config);
+let contractAbsentState = createTerminalGateState(0);
+contractAbsentState = classifyTurnTerminal(contractAbsentState, sample(0, answer), {{ ...config, taskOutcomeContract: null }}).state;
+contractAbsentState = classifyTurnTerminal(contractAbsentState, sample(3000, answer), {{ ...config, taskOutcomeContract: null }}).state;
+let contractAbsent = classifyTurnTerminal(contractAbsentState, sample(6000, answer), {{ ...config, taskOutcomeContract: null }});
+console.log(JSON.stringify({{
+  exactMarker: hasContractTerminalMarker('answer\\nTASK_OUTCOME: BLOCKED\\n\\n'),
+  renderedReferences: hasContractTerminalMarker('answer\\nTASK_OUTCOME: EXECUTED\\nevidence/a.json. ↩\\nAGENTS.md. ↩'),
+  renderedReferenceList: hasContractTerminalMarker('answer\\nTASK_OUTCOME: EXECUTED\\nevidence/a.json; skills/check/SKILL.md. ↩'),
+  renderedReferenceAnnotations: hasContractTerminalMarker('answer\\nTASK_OUTCOME: EXECUTED\\nevidence/a.json; evidence/raw/b.json. ↩\\nAGENTS.md, section "Computation delegation, user instruction 2026-08-24". ↩\\n.codex-tmp/lane-markout/run_markout.py; checksum-verified Binance bookTicker and aggTrades inputs under .codex-tmp/lane-markout/raw/. ↩'),
+  tooManyRenderedReferences: hasContractTerminalMarker('TASK_OUTCOME: EXECUTED\\n' + Array(33).fill('evidence/a.json. ↩').join('\\n')),
+  malformedRenderedReference: hasContractTerminalMarker('TASK_OUTCOME: EXECUTED\\nevidence/a.json.'),
+  arbitraryBacklinkProse: hasContractTerminalMarker('TASK_OUTCOME: EXECUTED\\ncontinue observing ↩'),
+  pathPrefixedArbitraryProse: hasContractTerminalMarker('TASK_OUTCOME: EXECUTED\\nAGENTS.md arbitrary imperative prose should not be accepted. ↩'),
+  lowerMarker: hasContractTerminalMarker('answer\\nTASK_OUTCOME: executed'),
+  trailingProse: hasContractTerminalMarker('TASK_OUTCOME: EXECUTED\\nafter'),
+  duplicateMarker: hasContractTerminalMarker('TASK_OUTCOME: BLOCKED\\nTASK_OUTCOME: EXECUTED'),
+  embeddedEarlierMarker: hasContractTerminalMarker('analysis says TASK_OUTCOME: BLOCKED earlier\\nTASK_OUTCOME: EXECUTED'),
+  first: first.terminal,
+  second: second.terminal,
+  third: third.terminal,
+  changed: changed.terminal,
+  active: active.terminal,
+  stopped: stopped.terminal,
+  contractAbsent: contractAbsent.terminal,
+  warnEarly: shouldWarnThinkingStatusUndetected(false, false, 299999),
+  warnAtThreshold: shouldWarnThinkingStatusUndetected(false, false, 300000),
+  warnAfterDetected: shouldWarnThinkingStatusUndetected(true, false, 600000),
+  warnAfterLogged: shouldWarnThinkingStatusUndetected(false, true, 600000),
+  warningText: formatThinkingUndetectedWarningLog(0, 300000),
+  inheritedFollowupPort: bindFollowupBrowserPort({{ debugPort: 56527, profile: 'parent' }}, null),
+  isolatedFollowupPort: bindFollowupBrowserPort({{ debugPort: 56527, profile: 'parent' }}, 56442),
+}}));
+"""
+    result = subprocess.run(
+        [node, "--input-type=module", "-e", script], capture_output=True, text=True, check=False
+    )
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["exactMarker"] is True
+    assert payload["renderedReferences"] is True
+    assert payload["renderedReferenceList"] is True
+    assert payload["renderedReferenceAnnotations"] is True
+    assert payload["tooManyRenderedReferences"] is False
+    assert payload["malformedRenderedReference"] is False
+    assert payload["arbitraryBacklinkProse"] is False
+    assert payload["pathPrefixedArbitraryProse"] is False
+    assert payload["lowerMarker"] is False
+    assert payload["trailingProse"] is False
+    assert payload["duplicateMarker"] is False
+    assert payload["embeddedEarlierMarker"] is False
+    assert payload["first"] is False
+    assert payload["second"] is False
+    assert payload["third"] is True
+    assert payload["changed"] is False
+    assert payload["active"] is False
+    assert payload["stopped"] is False
+    assert payload["contractAbsent"] is False
+    assert payload["warnEarly"] is False
+    assert payload["warnAtThreshold"] is True
+    assert payload["warnAfterDetected"] is False
+    assert payload["warnAfterLogged"] is False
+    assert "independent terminal watchdog remains active" in payload["warningText"]
+    assert payload["inheritedFollowupPort"] == {"debugPort": 56527, "profile": "parent"}
+    assert payload["isolatedFollowupPort"] == {"debugPort": 56442, "profile": "parent"}
+
+
+def test_archived_parent_direct_restore_requires_exact_control_and_composer_transition(
+    tmp_path: Path,
+) -> None:
+    compat = load_compat()
+    source = (
+        Path.home()
+        / "AppData"
+        / "Local"
+        / "npm-cache"
+        / "_npx"
+        / "0a10f56e3ba43148"
+        / "node_modules"
+        / "@steipete"
+        / "oracle"
+    )
+    if not source.is_dir():
+        pytest.skip("published Oracle 0.17.1 cache is unavailable")
+    package = tmp_path / "oracle-dom"
+    shutil.copytree(source, package)
+    backup = tmp_path / "backup-dom"
+    compat.ensure_oracle_compatibility(
+        "oracle 0.17.1", package_root=package, backup_root=backup
+    )
+    module_url = (package / "dist/src/browser/actions/archiveConversation.js").as_uri()
+    script = f"""
+import {{ buildUnarchiveConversationExpressionForTest }} from {json.dumps(module_url)};
+class FakeElement {{
+  constructor(label, onClick = () => {{}}) {{ this.textContent = label; this.onClick = onClick; }}
+  getAttribute() {{ return null; }}
+  getBoundingClientRect() {{ return {{ width: 120, height: 30, top: 20, right: 900, left: 780 }}; }}
+  dispatchEvent(event) {{ if (event.type === 'click') this.onClick(); return true; }}
+}}
+globalThis.HTMLElement = FakeElement;
+globalThis.MouseEvent = class {{ constructor(type) {{ this.type = type; }} }};
+globalThis.PointerEvent = class {{ constructor(type) {{ this.type = type; }} }};
+globalThis.KeyboardEvent = class {{ constructor(type) {{ this.type = type; }} }};
+globalThis.getComputedStyle = () => ({{ visibility: 'visible', display: 'block' }});
+globalThis.window = {{ innerWidth: 1000 }};
+globalThis.location = {{ href: 'https://chatgpt.com/c/exact-parent' }};
+let clock = 0;
+Date.now = () => (clock += 1000);
+const runCase = async (label, transition) => {{
+  let restoreVisible = true;
+  let composerVisible = false;
+  const restore = new FakeElement(label, () => {{
+    if (transition) {{ restoreVisible = false; composerVisible = true; }}
+  }});
+  const composer = new FakeElement('composer');
+  globalThis.document = {{
+    querySelectorAll(selector) {{
+      if (selector.includes('#prompt-textarea')) return composerVisible ? [composer] : [];
+      if (selector.includes('button') || selector.includes('[role="menuitem"]')) return restoreVisible ? [restore] : [];
+      return [];
+    }},
+    dispatchEvent() {{ return true; }},
+  }};
+  return await eval(buildUnarchiveConversationExpressionForTest(location.href));
+}};
+const success = await runCase('아카이브 보관 취소하기', true);
+clock = 0;
+const noop = await runCase('아카이브 보관 취소하기', false);
+clock = 0;
+const unrelated = await runCase('복원', true);
+console.log(JSON.stringify({{ success, noop, unrelated }}));
+"""
+    node = shutil.which("node")
+    assert node is not None
+    completed = subprocess.run(
+        [node, "--input-type=module", "-e", script],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=15,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout)
+    assert result["success"]["status"] == "unarchived"
+    assert result["success"]["method"] == "direct-control"
+    assert result["noop"]["reason"] == "unarchive-not-confirmed"
+    assert result["unrelated"]["reason"] == "conversation-menu-not-found"
     target = package / "dist/src/browser/actions/thinkingTime.js"
     source_text = target.read_text(encoding="utf-8")
     assert "strictGpt56Effort" in source_text
@@ -185,7 +733,7 @@ def test_published_0171_patch_requires_extra_high_and_pro_selection_proof(tmp_pa
         check=False,
     )
     assert syntax.returncode == 0, syntax.stderr
-    assert compat.sha256_file(target) == compat.PATCHES["dist/src/browser/actions/thinkingTime.js"]["patched"]
+    assert compat.sha256_file(target) == compat.LKG_PATCHES["dist/src/browser/actions/thinkingTime.js"]["patched"]
     slider_script = (
         f"import {{ ensureThinkingTime }} from {json.dumps(target.as_uri())};"
         "const hiddenView={textContent:'',querySelector:()=>null,"
@@ -276,7 +824,7 @@ def test_published_0171_patch_requires_extra_high_and_pro_selection_proof(tmp_pa
     browser_config = package / "dist/src/browser/config.js"
     browser_config_text = browser_config.read_text(encoding="utf-8")
     assert "config?.copyProfileSource" in browser_config_text
-    assert compat.sha256_file(browser_config) == compat.PATCHES["dist/src/browser/config.js"]["patched"]
+    assert compat.sha256_file(browser_config) == compat.LKG_PATCHES["dist/src/browser/config.js"]["patched"]
     config_syntax = subprocess.run(
         [node, "--check", str(browser_config)],
         capture_output=True,
@@ -308,7 +856,7 @@ def test_published_0171_patch_requires_extra_high_and_pro_selection_proof(tmp_pa
     profile_copy_text = profile_copy.read_text(encoding="utf-8")
     assert 'process.platform === "win32"' in profile_copy_text
     assert "recursive: true" in profile_copy_text
-    assert compat.sha256_file(profile_copy) == compat.PATCHES["dist/src/browser/profileCopy.js"]["patched"]
+    assert compat.sha256_file(profile_copy) == compat.LKG_PATCHES["dist/src/browser/profileCopy.js"]["patched"]
     profile_syntax = subprocess.run(
         [node, "--check", str(profile_copy)],
         capture_output=True,
@@ -352,4 +900,345 @@ def test_published_0171_patch_requires_extra_high_and_pro_selection_proof(tmp_pa
     assert not (copied_profile / "Default/Service Worker/CacheStorage").exists()
 
     second = compat.ensure_oracle_compatibility("oracle 0.17.1", package_root=package, backup_root=backup)
-    assert set(second["already_patched"]) == set(compat.PATCHES)
+    assert set(second["already_patched"]) == set(compat.LKG_PATCHES)
+
+
+def make_raw_package_archive(
+    path: Path,
+    members: list[tuple[str, bytes, bytes | None]],
+) -> tuple[Path, str]:
+    archive = path / "raw-oracle.tgz"
+    with tarfile.open(archive, mode="w:gz") as package:
+        for name, member_type, content in members:
+            member = tarfile.TarInfo(name)
+            member.type = member_type
+            member.mode = 0o644
+            member.mtime = 0
+            if member_type == tarfile.DIRTYPE:
+                package.addfile(member)
+            elif member_type in {tarfile.SYMTYPE, tarfile.LNKTYPE}:
+                member.linkname = "package/target"
+                package.addfile(member)
+            else:
+                payload = content or b""
+                member.size = len(payload)
+                package.addfile(member, io.BytesIO(payload))
+    return archive, "sha512-" + base64.b64encode(hashlib.sha512(archive.read_bytes()).digest()).decode("ascii")
+
+
+def scoped_sample_fixture(tmp_path: Path, content: bytes = b"before\n") -> tuple[object, Path, Path, Path]:
+    compat = load_compat()
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    package = tmp_path / "package"
+    package.mkdir()
+    package_json = json.dumps({"version": "0.18.0"}).encode("utf-8")
+    (package / "package.json").write_bytes(package_json)
+    target = package / "sample.txt"
+    target.write_bytes(content)
+    patches = tmp_path / "patches"
+    patches.mkdir()
+    (patches / "sample.patch").write_text(
+        "diff --git a/sample.txt b/sample.txt\n--- a/sample.txt\n+++ b/sample.txt\n@@ -1 +1 @@\n-before\n+after\n",
+        encoding="utf-8",
+    )
+    compat.SCOPED_PATCHES = {
+        "webjjonku-linux": {
+            "0.18.0": {
+                "sample.txt": {
+                    "patch": "sample.patch",
+                    "pristine": digest(b"before\n"),
+                    "patched": digest(b"after\n"),
+                }
+            }
+        }
+    }
+    archive, integrity = make_package_archive(tmp_path, {"package.json": package_json, "sample.txt": content})
+    compat.SCOPED_PACKAGE_INTEGRITIES = {"webjjonku-linux": {"0.18.0": integrity}}
+    compat.patch_root = lambda version=compat.SUPPORTED_VERSION: patches
+    return compat, package, target, archive
+
+
+def stub_scoped_node(monkeypatch: pytest.MonkeyPatch, compat: object) -> None:
+    monkeypatch.setattr(compat.shutil, "which", lambda _name: "node")
+    original_run = compat.subprocess.run
+
+    def run(command: object, *args: object, **kwargs: object) -> object:
+        if command == ["node", "--version"]:
+            return type("NodeResult", (), {"returncode": 0, "stdout": "v24.0.0\n"})()
+        return original_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(
+        compat.subprocess,
+        "run",
+        run,
+    )
+
+
+def test_scoped_archive_integrity_and_read_fail_before_patch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    compat, package, target, archive = scoped_sample_fixture(tmp_path)
+    stub_scoped_node(monkeypatch, compat)
+    applied: list[object] = []
+    monkeypatch.setattr(compat, "_apply_patch", lambda *_args, **_kwargs: applied.append(object()))
+    compat.SCOPED_PACKAGE_INTEGRITIES["webjjonku-linux"]["0.18.0"] = "sha512-not-the-archive"
+
+    with pytest.raises(compat.OracleCompatError) as wrong_integrity:
+        compat.ensure_scoped_oracle_compatibility(
+            "oracle 0.18.0", profile="webjjonku-linux", package_root=package, package_archive=archive
+        )
+    assert wrong_integrity.value.code == "ORACLE_PACKAGE_INTEGRITY_MISMATCH"
+    assert target.read_bytes() == b"before\n"
+    assert not applied
+
+    compat.SCOPED_PACKAGE_INTEGRITIES["webjjonku-linux"]["0.18.0"] = compat.sha512_integrity(archive)
+    with pytest.raises(compat.OracleCompatError) as missing_archive:
+        compat.ensure_scoped_oracle_compatibility(
+            "oracle 0.18.0", profile="webjjonku-linux", package_root=package, package_archive=tmp_path / "missing.tgz"
+        )
+    assert missing_archive.value.code == "ORACLE_PACKAGE_ARCHIVE_INVALID"
+    assert target.read_bytes() == b"before\n"
+    assert not applied
+
+    original_read_bytes = Path.read_bytes
+
+    def unreadable(path: Path) -> bytes:
+        if path == archive:
+            raise OSError("synthetic archive read denial")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", unreadable)
+    with pytest.raises(compat.OracleCompatError) as unreadable_archive:
+        compat.ensure_scoped_oracle_compatibility(
+            "oracle 0.18.0", profile="webjjonku-linux", package_root=package, package_archive=archive
+        )
+    assert unreadable_archive.value.code == "ORACLE_PACKAGE_ARCHIVE_INVALID"
+    assert target.read_bytes() == b"before\n"
+    assert not applied
+
+
+@pytest.mark.parametrize("profile", ["other-linux", ""])
+def test_scoped_api_rejects_unknown_or_empty_profile(profile: str, tmp_path: Path) -> None:
+    compat = load_compat()
+    with pytest.raises(compat.OracleCompatError) as invalid_profile:
+        compat.ensure_scoped_oracle_compatibility("oracle 0.18.0", profile=profile, package_root=tmp_path)
+    assert invalid_profile.value.code == "ORACLE_COMPAT_PROFILE_UNVALIDATED"
+
+
+def test_scoped_api_rejects_none_profile(tmp_path: Path) -> None:
+    compat = load_compat()
+    with pytest.raises(compat.OracleCompatError) as captured:
+        compat.ensure_scoped_oracle_compatibility("oracle 0.18.0", profile=None, package_root=tmp_path)  # type: ignore[arg-type]
+    assert captured.value.code == "ORACLE_COMPAT_PROFILE_UNVALIDATED"
+
+
+@pytest.mark.parametrize(
+    ("node", "stdout", "returncode"),
+    [
+        (None, "", 0),
+        ("node", "v23.9.0\n", 0),
+        ("node", "v27.0.0\n", 0),
+        ("node", "not-a-version\n", 0),
+        ("node", "v24.0.0\n", 1),
+    ],
+)
+def test_scoped_node_runtime_rejects_invalid_runtime(
+    monkeypatch: pytest.MonkeyPatch, node: str | None, stdout: str, returncode: int
+) -> None:
+    compat = load_compat()
+    monkeypatch.setattr(compat.shutil, "which", lambda _name: node)
+    called: list[object] = []
+    monkeypatch.setattr(
+        compat.subprocess,
+        "run",
+        lambda *_args, **_kwargs: called.append(object()) or type("NodeResult", (), {"returncode": returncode, "stdout": stdout})(),
+    )
+    with pytest.raises(compat.OracleCompatError) as unsupported:
+        compat._verify_scoped_node_runtime("webjjonku-linux")
+    assert unsupported.value.code == "ORACLE_NODE_VERSION_UNSUPPORTED"
+    assert bool(called) is (node is not None)
+
+
+@pytest.mark.parametrize(
+    "unsafe_name",
+    [
+        "/package/dist/absolute.js",
+        "package/../traversal.js",
+        "package/dist/control\x01.js",
+        "outside-root.js",
+        "package/COM1.txt",
+        "package/dist/trailing-space ",
+        "package/dist/trailing-dot.",
+    ],
+)
+def test_scoped_archive_rejects_unsafe_member_names(tmp_path: Path, unsafe_name: str) -> None:
+    compat = load_compat()
+    package = tmp_path / "package"
+    package.mkdir()
+    archive, integrity = make_raw_package_archive(tmp_path, [(unsafe_name, tarfile.REGTYPE, b"unsafe\n")])
+    with pytest.raises(compat.OracleCompatError) as unsafe_archive:
+        compat._verify_scoped_package_archive(package, archive, expected_integrity=integrity, contracts={})
+    assert unsafe_archive.value.code == "ORACLE_PACKAGE_ARCHIVE_INVALID"
+
+
+def test_scoped_archive_rejects_nul_member_name() -> None:
+    compat = load_compat()
+    with pytest.raises(compat.OracleCompatError) as unsafe_name:
+        compat._safe_archive_relative("package/dist/nul\x00.js")
+    assert unsafe_name.value.code == "ORACLE_PACKAGE_ARCHIVE_INVALID"
+
+
+@pytest.mark.parametrize("member_type", [tarfile.SYMTYPE, tarfile.LNKTYPE])
+def test_scoped_archive_rejects_link_members(tmp_path: Path, member_type: bytes) -> None:
+    compat = load_compat()
+    package = tmp_path / "package"
+    package.mkdir()
+    archive, integrity = make_raw_package_archive(tmp_path, [("package/dist/link.js", member_type, None)])
+    with pytest.raises(compat.OracleCompatError) as link_member:
+        compat._verify_scoped_package_archive(package, archive, expected_integrity=integrity, contracts={})
+    assert link_member.value.code == "ORACLE_PACKAGE_ARCHIVE_INVALID"
+
+
+def test_scoped_archive_rejects_duplicate_and_casefolded_members(tmp_path: Path) -> None:
+    compat = load_compat()
+    package = tmp_path / "package"
+    (package / "dist").mkdir(parents=True)
+    (package / "dist" / "A.js").write_bytes(b"same\n")
+    archive, integrity = make_raw_package_archive(
+        tmp_path,
+        [
+            ("package/dist/A.js", tarfile.REGTYPE, b"same\n"),
+            ("package/dist/A.js", tarfile.REGTYPE, b"same\n"),
+        ],
+    )
+    with pytest.raises(compat.OracleCompatError) as duplicate:
+        compat._verify_scoped_package_archive(package, archive, expected_integrity=integrity, contracts={})
+    assert duplicate.value.code == "ORACLE_PACKAGE_ARCHIVE_INVALID"
+
+    archive, integrity = make_raw_package_archive(
+        tmp_path,
+        [
+            ("package/dist/A.js", tarfile.REGTYPE, b"same\n"),
+            ("package/dist/a.js", tarfile.REGTYPE, b"same\n"),
+        ],
+    )
+    with pytest.raises(compat.OracleCompatError) as casefolded:
+        compat._verify_scoped_package_archive(package, archive, expected_integrity=integrity, contracts={})
+    assert casefolded.value.code == "ORACLE_PACKAGE_ARCHIVE_INVALID"
+
+
+def test_scoped_archive_rejects_directory_only_payload(tmp_path: Path) -> None:
+    compat = load_compat()
+    package = tmp_path / "package"
+    package.mkdir()
+    archive, integrity = make_raw_package_archive(
+        tmp_path, [("package", tarfile.DIRTYPE, None), ("package/dist", tarfile.DIRTYPE, None)]
+    )
+    with pytest.raises(compat.OracleCompatError) as empty_payload:
+        compat._verify_scoped_package_archive(package, archive, expected_integrity=integrity, contracts={})
+    assert empty_payload.value.code == "ORACLE_PACKAGE_ARCHIVE_INVALID"
+
+
+@pytest.mark.parametrize(("limit_name", "members"), [("SCOPED_ARCHIVE_MAX_FILES", 2), ("SCOPED_ARCHIVE_MAX_BYTES", 1)])
+def test_scoped_archive_rejects_resource_ceiling_exhaustion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, limit_name: str, members: int
+) -> None:
+    compat = load_compat()
+    package = tmp_path / "package"
+    package.mkdir()
+    files = {f"file-{index}.js": b"xx" for index in range(members)}
+    for relative, content in files.items():
+        (package / relative).write_bytes(content)
+    archive, integrity = make_package_archive(tmp_path, files)
+    monkeypatch.setattr(compat, limit_name, 1)
+    monkeypatch.setattr(compat, "_scan_installed_package_tree", lambda _root: {relative: package / relative for relative in files})
+    with pytest.raises(compat.OracleCompatError) as exhausted:
+        compat._verify_scoped_package_archive(package, archive, expected_integrity=integrity, contracts={})
+    assert exhausted.value.code == "ORACLE_PACKAGE_ARCHIVE_INVALID"
+
+
+def test_scoped_tree_rejects_symlink_root_and_nested_link(tmp_path: Path) -> None:
+    compat = load_compat()
+    external = tmp_path / "external"
+    external.mkdir()
+    root_link = tmp_path / "root-link"
+    nested_root = tmp_path / "nested-root"
+    nested_root.mkdir()
+    nested_link = nested_root / "link.js"
+    try:
+        root_link.symlink_to(external, target_is_directory=True)
+        nested_link.symlink_to(external, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symlink creation is unavailable on this platform: {exc}")
+
+    empty_archive, integrity = make_package_archive(tmp_path, {})
+    with pytest.raises(compat.OracleCompatError) as linked_root:
+        compat._verify_scoped_package_archive(root_link, empty_archive, expected_integrity=integrity, contracts={})
+    assert linked_root.value.code == "ORACLE_PACKAGE_TREE_MISMATCH"
+    with pytest.raises(compat.OracleCompatError) as nested_link_error:
+        compat._scan_installed_package_tree(nested_root.resolve(strict=True))
+    assert nested_link_error.value.code == "ORACLE_PACKAGE_TREE_MISMATCH"
+    assert nested_link_error.value.evidence["path"] == "link.js"
+
+
+def test_scoped_tree_rejects_hardlinked_patch_target_before_patch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    compat, package, target, archive = scoped_sample_fixture(tmp_path)
+    sibling = package / "hardlink-source.txt"
+    try:
+        os.link(target, sibling)
+    except OSError as exc:
+        pytest.skip(f"hardlink creation is unavailable on this platform: {exc}")
+    stub_scoped_node(monkeypatch, compat)
+    applied: list[object] = []
+    monkeypatch.setattr(compat, "_apply_patch", lambda *_args, **_kwargs: applied.append(object()))
+    with pytest.raises(compat.OracleCompatError) as hardlinked:
+        compat.ensure_scoped_oracle_compatibility(
+            "oracle 0.18.0", profile="webjjonku-linux", package_root=package, package_archive=archive
+        )
+    assert hardlinked.value.code == "ORACLE_PACKAGE_TREE_MISMATCH"
+    assert target.read_bytes() == b"before\n"
+    assert not applied
+
+
+def test_scoped_patch_hash_gates_pristine_and_rolls_back_patched_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    compat, package, target, archive = scoped_sample_fixture(tmp_path, content=b"unexpected\n")
+    stub_scoped_node(monkeypatch, compat)
+    with pytest.raises(compat.OracleCompatError) as pristine_mismatch:
+        compat.ensure_scoped_oracle_compatibility(
+            "oracle 0.18.0", profile="webjjonku-linux", package_root=package, package_archive=archive
+        )
+    assert pristine_mismatch.value.code == "ORACLE_PACKAGE_CONTRACT_MISMATCH"
+    assert target.read_bytes() == b"unexpected\n"
+
+    compat, package, target, archive = scoped_sample_fixture(tmp_path / "patched")
+    stub_scoped_node(monkeypatch, compat)
+    compat.SCOPED_PATCHES["webjjonku-linux"]["0.18.0"]["sample.txt"]["patched"] = digest(b"wrong\n")
+    with pytest.raises(compat.OracleCompatError) as patched_mismatch:
+        compat.ensure_scoped_oracle_compatibility(
+            "oracle 0.18.0", profile="webjjonku-linux", package_root=package, package_archive=archive
+        )
+    assert patched_mismatch.value.code == "ORACLE_PATCH_HASH_MISMATCH"
+    assert target.read_bytes() == b"before\n"
+
+
+def test_default_path_remains_isolated_from_scoped_tables(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    compat = load_compat()
+    monkeypatch.setattr(compat, "SCOPED_PATCHES", None)
+    monkeypatch.setattr(compat, "SCOPED_PACKAGE_INTEGRITIES", None)
+    monkeypatch.setattr(compat, "SCOPED_NODE_MAJOR_RANGES", None)
+    package = tmp_path / "default-package"
+    package.mkdir()
+    (package / "package.json").write_text(json.dumps({"version": "0.18.0"}), encoding="utf-8")
+    target = package / "sample.txt"
+    target.write_bytes(b"before\n")
+    patches = tmp_path / "default-patches"
+    patches.mkdir()
+    (patches / "sample.patch").write_text(
+        "diff --git a/sample.txt b/sample.txt\n--- a/sample.txt\n+++ b/sample.txt\n@@ -1 +1 @@\n-before\n+after\n",
+        encoding="utf-8",
+    )
+    compat.PATCHES = {"sample.txt": {"patch": "sample.patch", "pristine": digest(b"before\n"), "patched": digest(b"after\n")}}
+    compat.patch_root = lambda version=compat.SUPPORTED_VERSION: patches
+    result = compat.ensure_oracle_compatibility("oracle 0.18.0", package_root=package, backup_root=tmp_path / "backup")
+    assert result["changed"] == ["sample.txt"]
+    assert target.read_bytes() == b"after\n"

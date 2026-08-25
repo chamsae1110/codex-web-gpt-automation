@@ -102,13 +102,35 @@ def resolve_codex_cli(codex_home: Path) -> tuple[Path, str]:
         if version.returncode != 0:
             failures.append(f"{candidate}:version")
             continue
-        # This catches old CLIs that exist but cannot parse the active config.
-        probe = _run([str(candidate), "mcp", "list", "--json"], codex_home=codex_home)
+        # Resolve configuration plus the fixed Luna Max contract without
+        # creating a model request or Codex session.
+        probe = _run([
+            str(candidate), "--model", "gpt-5.6-luna",
+            "-c", 'model_reasoning_effort="max"',
+            "mcp", "list", "--json",
+        ], codex_home=codex_home)
         if probe.returncode != 0:
             failures.append(f"{candidate}:config")
             continue
         return candidate, version.stdout.strip()
     raise SetupError("COMPATIBLE_CODEX_CLI_NOT_FOUND: " + ",".join(failures))
+
+
+def _registration_owns_server(value: dict[str, Any] | None, server: Path) -> bool:
+    """Allow refreshing only our exact stdio server registration."""
+    if not value or value.get("enabled") is not True:
+        return False
+    transport = value.get("transport")
+    if not isinstance(transport, dict) or transport.get("type") != "stdio":
+        return False
+    args = transport.get("args")
+    return (
+        str(transport.get("command") or "").lower() in {"node", "node.exe"}
+        and isinstance(args, list)
+        and len(args) == 1
+        and os.path.normcase(str(Path(str(args[0])).resolve(strict=False)))
+        == os.path.normcase(str(server))
+    )
 
 
 def _registration(cli: Path, codex_home: Path) -> dict[str, Any] | None:
@@ -154,7 +176,7 @@ def enable(codex_home: Path) -> dict[str, Any]:
     current = _registration(cli, codex_home)
     if _matches(current, server, cli):
         return {"ok": True, "enabled": True, "changed": False, "cli": str(cli), "cli_version": version, "receipt": None}
-    if current is not None:
+    if current is not None and not _registration_owns_server(current, server):
         raise SetupError("LOCAL_MULTI_GPT_REGISTRATION_CONFLICT")
 
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S%f")
@@ -167,21 +189,28 @@ def enable(codex_home: Path) -> dict[str, Any]:
     backup = backup_root / "config.toml"
     if existed:
         _copy_atomic(config, backup)
-    command = [
-        str(cli), "mcp", "add", SERVER_NAME,
-        "--env", f"MULTI_GPT_CODEX_CLI_PATH={cli}",
-        "--", "node", str(server),
-    ]
-    result = _run(command, codex_home=codex_home)
-    if result.returncode != 0:
-        raise SetupError("MCP_ADD_FAILED: " + (result.stderr.strip() or result.stdout.strip()))
-    verified = _registration(cli, codex_home)
-    if not _matches(verified, server, cli):
+    try:
+        if current is not None:
+            removed = _run([str(cli), "mcp", "remove", SERVER_NAME], codex_home=codex_home)
+            if removed.returncode != 0:
+                raise SetupError("MCP_REMOVE_FAILED: " + (removed.stderr.strip() or removed.stdout.strip()))
+        command = [
+            str(cli), "mcp", "add", SERVER_NAME,
+            "--env", f"MULTI_GPT_CODEX_CLI_PATH={cli}",
+            "--", "node", str(server),
+        ]
+        result = _run(command, codex_home=codex_home)
+        if result.returncode != 0:
+            raise SetupError("MCP_ADD_FAILED: " + (result.stderr.strip() or result.stdout.strip()))
+        verified = _registration(cli, codex_home)
+        if not _matches(verified, server, cli):
+            raise SetupError("MCP_ADD_POSTCONDITION_FAILED")
+    except Exception:
         if existed and backup.is_file():
             _copy_atomic(backup, config)
         elif config.exists():
             config.unlink()
-        raise SetupError("MCP_ADD_POSTCONDITION_FAILED")
+        raise
     after_hash = _sha256(config)
     payload = {
         "schema": RECEIPT_SCHEMA,

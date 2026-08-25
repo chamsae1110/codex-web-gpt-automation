@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import importlib.util
 import json
@@ -9,12 +10,21 @@ import re
 import subprocess
 import sys
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
 SCHEMA = "codex.chatgpt.oracle-comprehensive/v1"
 RECEIPT_SCHEMA = "codex.chatgpt.oracle-stage-result/v1"
 PRO_OUTPUT_SCHEMA = "codex.chatgpt.oracle-pro-stage-output/v1"
+REGULAR_OUTPUT_SCHEMA = "codex.chatgpt.oracle-regular-stage-output/v1"
+REGULAR_OUTPUT_BEGIN = "[ORACLE_STAGE_OUTPUT]"
+REGULAR_OUTPUT_END = "[/ORACLE_STAGE_OUTPUT]"
+REGULAR_OUTPUT_KEYS = {
+    "schema", "workflow_id", "stage", "attempt_id", "input_mission_sha256",
+    "status", "output_text", "next_stage", "next_mission_text", "ready_for_next",
+    "blocker", "critical_finding_ids", "critical_findings_sha256",
+}
 PRO_ATTACHMENT_SCHEMA = "codex.chatgpt.oracle-pro-attachments/v1"
 PRO_ATTACHMENT_BEGIN = "[PRO_ATTACHMENT_CONTRACT]"
 PRO_ATTACHMENT_END = "[/PRO_ATTACHMENT_CONTRACT]"
@@ -28,10 +38,30 @@ PRO_OUTPUT_PREFIX_KEYS = (
 PRO_OUTPUT_RECOVERY_SCHEMA = "codex.chatgpt.oracle-pro-output-recovery/v1"
 STATE_SCHEMA = "codex.chatgpt.oracle-comprehensive-state/v1"
 SCOPE_SCHEMA = "codex.chatgpt.oracle-comprehensive-scope/v1"
-MISSING_LAYOUT_PRE_SUBMIT_SCHEMA = "codex.chatgpt.oracle-missing-layout-pre-submit/v1"
+USER_STOP_SETTLEMENT_SCHEMA = "codex.chatgpt.oracle-comprehensive-user-stop/v1"
+USER_STOP_COMPLETION_SCHEMA = "codex.chatgpt.oracle-comprehensive-user-stop-completion/v1"
+USER_STOP_CONFIRMATION = "user-confirmed-provider-stop"
+PRE_SUBMIT_CANCEL_CONFIRMATION = "user-confirmed-pre-submit-workflow-cancel"
+PRE_SUBMIT_DEVSPACE_BRIDGE_TIMEOUT = (
+    "version resolution failed: DevSpace large single-line read bridge check timed out"
+)
+PRE_SUBMIT_DEVSPACE_SERVICE_RESTART = (
+    "version resolution failed: DEVSPACE_SERVICE_RESTART_REQUIRED: "
+    "DevSpace was safely patched before submission and must be restarted once"
+)
+PRE_SUBMIT_CANCEL_ERRORS = {
+    PRE_SUBMIT_DEVSPACE_BRIDGE_TIMEOUT: "pre-submit-devspace-bridge-timeout",
+    PRE_SUBMIT_DEVSPACE_SERVICE_RESTART: "pre-submit-devspace-service-restart-required",
+}
+TERMINAL_SCOPE_STATUSES = {"complete", "canceled", "blocked"}
+USER_STOPPABLE_OUTCOMES = {"blocked", "not_executed", "pending", "unknown"}
 STANDARD_PROFILE = "standard"
 ULTRA_ECONOMY_PROFILE = "ultra-economy"
 ULTRA_GPT_PROFILE = "ultra-gpt"
+# Compatibility-only input accepted for manifests created before v1.19.0.
+# New workflows select ultra-gpt and add a closed_audit contract instead of
+# presenting audit policy as another execution mode.
+STRICT_ULTRA_PROFILE = "strict-ultra"
 MAX_PLAN_REVISIONS = 2
 REVIEW_STATUSES = {"PASS", "PASS_WITH_NOTES", "REVISE", "FAIL"}
 UNAMBIGUOUS_PRE_SUBMIT_MARKERS = (
@@ -68,7 +98,21 @@ def _load(name: str, path: Path):
 
 RUNNER = _load("oracle_comprehensive_runner", BIN / "chatgpt_oracle_run.py")
 MULTI = _load("oracle_comprehensive_multi", BIN / "chatgpt_oracle_multi.py")
+STRICT_ULTRA = _load("oracle_comprehensive_strict_ultra", BIN / "chatgpt_strict_ultra.py")
 WORKSPACE_CONFIG = _load("oracle_comprehensive_workspace_config", BIN / "chatgpt_workspace_config.py")
+
+
+def _is_ultra_gpt(config_or_profile: dict[str, Any] | str) -> bool:
+    profile = (
+        str(config_or_profile.get("workflow_profile") or "")
+        if isinstance(config_or_profile, dict)
+        else str(config_or_profile or "")
+    ).strip().casefold()
+    return profile in {ULTRA_GPT_PROFILE, STRICT_ULTRA_PROFILE}
+
+
+def _closed_audit_enabled(config: dict[str, Any]) -> bool:
+    return config.get("closed_audit_enabled") is True
 
 
 class WorkflowError(RuntimeError):
@@ -83,6 +127,24 @@ def _json(path: Path) -> dict[str, Any]:
     value = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(value, dict):
         raise WorkflowError(f"JSON object required: {path}")
+    return value
+
+
+def _json_object_no_duplicates(text: str, *, label: str) -> dict[str, Any]:
+    def pairs(values: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in values:
+            if key in result:
+                raise WorkflowError(f"{label} contains duplicate key: {key}")
+            result[key] = value
+        return result
+
+    try:
+        value = json.loads(text, object_pairs_hook=pairs)
+    except json.JSONDecodeError as exc:
+        raise WorkflowError(f"{label} must be strict JSON") from exc
+    if not isinstance(value, dict):
+        raise WorkflowError(f"{label} must be a JSON object")
     return value
 
 
@@ -128,12 +190,26 @@ def load_manifest(path: Path) -> dict[str, Any]:
     if not 1 <= maximum <= 12:
         raise WorkflowError("max_stages must be within 1..12")
     workflow_profile = str(value.get("workflow_profile") or STANDARD_PROFILE).strip().casefold()
-    if workflow_profile not in {STANDARD_PROFILE, ULTRA_ECONOMY_PROFILE, ULTRA_GPT_PROFILE}:
-        raise WorkflowError("workflow_profile must be standard, ultra-economy, or ultra-gpt")
+    if workflow_profile not in {STANDARD_PROFILE, ULTRA_ECONOMY_PROFILE, ULTRA_GPT_PROFILE, STRICT_ULTRA_PROFILE}:
+        raise WorkflowError(
+            "workflow_profile must be standard, ultra-economy, or ultra-gpt; "
+            "strict-ultra is accepted only as a deprecated compatibility alias"
+        )
+    legacy_strict_alias = workflow_profile == STRICT_ULTRA_PROFILE
+    closed_audit_present = "closed_audit" in value
+    closed_audit_raw = value.get("closed_audit")
+    if closed_audit_present and not isinstance(closed_audit_raw, dict):
+        raise WorkflowError("closed_audit must be an object with contract_path and contract_sha256")
+    closed_audit_enabled = legacy_strict_alias or closed_audit_present
+    if closed_audit_present and workflow_profile != ULTRA_GPT_PROFILE:
+        raise WorkflowError("CLOSED_WORKFLOW_AUDIT_REQUIRES_ULTRA_GPT")
+    if isinstance(closed_audit_raw, dict) and set(closed_audit_raw) != {"contract_path", "contract_sha256"}:
+        raise WorkflowError("CLOSED_WORKFLOW_AUDIT_KEYSET_MISMATCH")
     allow_pro_raw = value.get("allow_pro", False)
     if not isinstance(allow_pro_raw, bool):
         raise WorkflowError("allow_pro must be a boolean explicit opt-in")
     allow_pro = allow_pro_raw or workflow_profile == ULTRA_ECONOMY_PROFILE
+    regular_model = str(value.get("model") or "gpt-5.6").strip()
     initial_stage = str(
         value.get("initial_stage")
         or ("pro" if workflow_profile == ULTRA_ECONOMY_PROFILE else "plan")
@@ -147,7 +223,11 @@ def load_manifest(path: Path) -> dict[str, Any]:
             raise WorkflowError("ULTRA_ECONOMY_INITIAL_STAGE_REQUIRED: initial_stage must be pro")
         if maximum < 4:
             raise WorkflowError("ULTRA_ECONOMY_STAGE_BUDGET_TOO_SMALL: max_stages must be at least 4")
-    elif workflow_profile == ULTRA_GPT_PROFILE:
+        if regular_model != "gpt-5.6":
+            raise WorkflowError(
+                "COMPREHENSIVE_REGULAR_MODEL_REQUIRED: regular write stages must use gpt-5.6 at extra-high"
+            )
+    elif _is_ultra_gpt(workflow_profile):
         if allow_pro:
             raise WorkflowError(
                 "ULTRA_GPT_PRO_IS_SEPARATE: use at most one explicitly authorized Pro design advisory before "
@@ -157,11 +237,15 @@ def load_manifest(path: Path) -> dict[str, Any]:
             raise WorkflowError("ULTRA_GPT_INITIAL_STAGE_REQUIRED: initial_stage must be plan")
         if maximum < 5:
             raise WorkflowError("ULTRA_GPT_STAGE_BUDGET_TOO_SMALL: max_stages must be at least 5")
-        if str(value.get("model") or "gpt-5.6").strip() != "gpt-5.6":
+        if regular_model != "gpt-5.6":
             raise WorkflowError("ULTRA_GPT_REGULAR_MODEL_REQUIRED: model must be gpt-5.6")
     else:
         if initial_stage != "plan":
             raise WorkflowError("standard workflow initial_stage must be plan")
+        if regular_model != "gpt-5.6":
+            raise WorkflowError(
+                "COMPREHENSIVE_REGULAR_MODEL_REQUIRED: regular write stages must use gpt-5.6 at extra-high"
+            )
     local_gate = value.get("local_gate_command")
     if not isinstance(local_gate, list) or not local_gate or not all(isinstance(item, str) and item for item in local_gate):
         raise WorkflowError("local_gate_command must be a nonempty string list")
@@ -177,29 +261,98 @@ def load_manifest(path: Path) -> dict[str, Any]:
         )
     except ValueError as exc:
         raise WorkflowError(str(exc)) from exc
-    return {
+    explicit_source_thread_id = str(value.get("source_thread_id") or "").strip().casefold() or None
+    runtime_source_thread_id = RUNNER.STATE.current_source_thread_id()
+    if (
+        explicit_source_thread_id is not None
+        and runtime_source_thread_id is not None
+        and explicit_source_thread_id != runtime_source_thread_id
+    ):
+        raise WorkflowError(
+            "SOURCE_THREAD_ID_MISMATCH: comprehensive manifest belongs to a different Codex task"
+        )
+    source_thread_id = explicit_source_thread_id or runtime_source_thread_id
+    if source_thread_id is not None and RUNNER.STATE.SOURCE_THREAD_ID_RE.fullmatch(source_thread_id) is None:
+        raise WorkflowError("source_thread_id must be one Codex task UUID")
+    normalized = {
         **value,
         "project_root": root,
         "workflow_dir": workflow_dir,
         "initial_mission_path": mission,
         "max_stages": maximum,
         "workflow_profile": workflow_profile,
+        "workflow_profile_canonical": ULTRA_GPT_PROFILE if legacy_strict_alias else workflow_profile,
+        "workflow_profile_legacy_alias": legacy_strict_alias,
+        "closed_audit_enabled": closed_audit_enabled,
         "allow_pro": allow_pro,
         "initial_stage": initial_stage,
         "app_name": app_name,
-        "model": str(value.get("model") or "gpt-5.6"),
+        "model": regular_model,
         "copy_profile": Path(
             str(value.get("copy_profile") or (Path.home() / ".oracle" / "browser-profile"))
         ).expanduser().resolve(),
         "local_gate_command": list(local_gate),
         "manifest_sha256": sha(path.resolve(strict=True)),
         "workflow_id": workflow_id,
+        "source_thread_id": source_thread_id,
     }
+    if closed_audit_enabled:
+        legacy_allowed = {
+            "schema", "workflow_id", "project_root", "workflow_dir", "initial_mission_path",
+            "workflow_profile", "initial_stage", "max_stages", "allow_pro", "app_name", "model",
+            "copy_profile", "local_gate_command", "strict_ultra_contract_path",
+            "strict_ultra_contract_sha256", "source_thread_id",
+        }
+        integrated_allowed = {
+            "schema", "workflow_id", "project_root", "workflow_dir", "initial_mission_path",
+            "workflow_profile", "closed_audit", "initial_stage", "max_stages", "allow_pro",
+            "app_name", "model", "copy_profile", "local_gate_command", "source_thread_id",
+        }
+        allowed = legacy_allowed if legacy_strict_alias else integrated_allowed
+        extra = sorted(set(value) - allowed)
+        if extra:
+            raise WorkflowError(f"CLOSED_WORKFLOW_AUDIT_MANIFEST_EXTRA_KEYS: {extra}")
+        if allow_pro:
+            raise WorkflowError("CLOSED_WORKFLOW_AUDIT_PRO_FORBIDDEN: pre-workflow Pro is separate and advisory-only")
+        contract_path = (
+            value.get("strict_ultra_contract_path")
+            if legacy_strict_alias
+            else closed_audit_raw.get("contract_path")
+        )
+        contract_sha256 = (
+            value.get("strict_ultra_contract_sha256")
+            if legacy_strict_alias
+            else closed_audit_raw.get("contract_sha256")
+        )
+        try:
+            normalized["strict_ultra"] = STRICT_ULTRA.load_contract(
+                root, contract_path, contract_sha256
+            )
+        except STRICT_ULTRA.StrictUltraError as exc:
+            raise WorkflowError(str(exc)) from exc
+    return normalized
 
 
 def _write(path: Path, value: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _atomic_write(path: Path, value: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{uuid.uuid4().hex[:12]}.tmp")
+    data = (json.dumps(value, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    try:
+        with temporary.open("xb") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def _finding_hash(ids: list[str]) -> str:
@@ -279,7 +432,7 @@ def _review_policy_from_history(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def _validate_ultra_gpt_multi(config: dict[str, Any], multi_config: dict[str, Any]) -> None:
-    if config.get("workflow_profile") != ULTRA_GPT_PROFILE:
+    if not _is_ultra_gpt(config):
         return
     if not 2 <= len(multi_config["solvers"]) <= 5:
         raise WorkflowError("ULTRA_GPT_SOLVER_COUNT_INVALID: web-multi requires 2..5 lanes")
@@ -302,7 +455,7 @@ def _validate_ultra_gpt_multi(config: dict[str, Any], multi_config: dict[str, An
 
 
 def _allowed_transitions(config: dict[str, Any], stage: str) -> set[str]:
-    if config.get("workflow_profile") == ULTRA_GPT_PROFILE:
+    if _is_ultra_gpt(config):
         return {
             "plan": {"review"},
             "review": {"web-multi"},
@@ -314,7 +467,10 @@ def _allowed_transitions(config: dict[str, Any], stage: str) -> set[str]:
 
 def _scope_path(config: dict[str, Any]) -> Path:
     project_key = hashlib.sha256(str(config["project_root"]).casefold().encode("utf-8")).hexdigest()[:24]
-    scope_material = f"{config['project_root']}|{config['workflow_dir'].parent}".casefold()
+    scope_material = (
+        f"{config['project_root']}|{config['workflow_dir'].parent}|"
+        f"{config.get('source_thread_id') or 'legacy-unbound'}"
+    ).casefold()
     scope_key = hashlib.sha256(scope_material.encode("utf-8")).hexdigest()[:32]
     return RUNNER.STATE.oracle_state_root() / "comprehensive-scopes" / project_key / f"{scope_key}.json"
 
@@ -325,7 +481,9 @@ def _claim_scope(config: dict[str, Any], workflow_id: str) -> None:
         stored = _json(path)
         active = str(stored.get("active_workflow_id") or "")
         status = str(stored.get("status") or "")
-        if active and active != workflow_id and status != "complete":
+        if active == workflow_id and status in TERMINAL_SCOPE_STATUSES:
+            return
+        if active and active != workflow_id and status not in TERMINAL_SCOPE_STATUSES:
             raise WorkflowError(
                 f"comprehensive scope already belongs to active workflow {active}; recover that exact workflow"
             )
@@ -335,23 +493,528 @@ def _claim_scope(config: dict[str, Any], workflow_id: str) -> None:
         "active_workflow_id": workflow_id,
         "project_root": str(config["project_root"]),
         "workflow_parent": str(config["workflow_dir"].parent),
+        "source_thread_id": config.get("source_thread_id"),
         "review_policy": config["_review_policy"],
     })
 
 
 def _write_workflow_state(path: Path, config: dict[str, Any], value: dict[str, Any]) -> None:
-    payload = {**value, "review_policy": dict(config["_review_policy"])}
+    payload = {
+        **value,
+        "source_thread_id": config.get("source_thread_id"),
+        "workflow_profile": config["workflow_profile"],
+        "workflow_profile_canonical": config["workflow_profile_canonical"],
+        "workflow_profile_legacy_alias": config["workflow_profile_legacy_alias"],
+        "closed_audit_enabled": config["closed_audit_enabled"],
+        "review_policy": dict(config["_review_policy"]),
+    }
     _write(path, payload)
     scope_status = str(payload.get("status") or "active")
-    _write(_scope_path(config), {
+    scope_payload = {
         "schema": SCOPE_SCHEMA,
-        "status": scope_status if scope_status in {"complete", "attention_required", "failed"} else "active",
+        "status": scope_status if scope_status in {"complete", "canceled", "blocked", "attention_required", "failed"} else "active",
         "active_workflow_id": config["workflow_id"],
         "project_root": str(config["project_root"]),
         "workflow_parent": str(config["workflow_dir"].parent),
+        "source_thread_id": config.get("source_thread_id"),
+        "workflow_profile": config["workflow_profile"],
+        "workflow_profile_canonical": config["workflow_profile_canonical"],
+        "workflow_profile_legacy_alias": config["workflow_profile_legacy_alias"],
+        "closed_audit_enabled": config["closed_audit_enabled"],
         "workflow_state_path": str(path),
         "review_policy": dict(config["_review_policy"]),
-    })
+    }
+    if (
+        scope_status == "blocked"
+        and payload.get("terminal") is True
+        and payload.get("scope_released") is True
+        and str(payload.get("terminal_status") or "")
+    ):
+        scope_payload.update({
+            "terminal": True,
+            "terminal_status": payload.get("terminal_status"),
+            "scope_released": True,
+        })
+        if payload.get("review_receipt_sha256"):
+            scope_payload["review_receipt_sha256"] = payload.get("review_receipt_sha256")
+    _write(_scope_path(config), scope_payload)
+    if _closed_audit_enabled(config):
+        try:
+            STRICT_ULTRA.sync_identity_ledger(config, payload)
+        except STRICT_ULTRA.StrictUltraError as exc:
+            raise WorkflowError(str(exc)) from exc
+
+
+def _finalize_complete_workflow(
+    state_path: Path,
+    config: dict[str, Any],
+    complete: dict[str, Any],
+    gate: dict[str, Any],
+) -> dict[str, Any]:
+    """Seal optional audit before making terminal success authoritative."""
+    result = {**complete, "local_gate": gate}
+    if not _closed_audit_enabled(config):
+        _write_workflow_state(state_path, config, result)
+        return result
+    try:
+        # Append the final identity event without publishing a completed state.
+        # The later state write sees the same event and therefore cannot move the
+        # ledger hash sealed into the audit. If audit creation fails, the prior
+        # recoverable workflow state remains authoritative.
+        STRICT_ULTRA.sync_identity_ledger(config, result)
+        audit_path = STRICT_ULTRA.write_workflow_audit(config, result, gate)
+    except STRICT_ULTRA.StrictUltraError as exc:
+        raise WorkflowError(str(exc)) from exc
+    result = {
+        **result,
+        "workflow_audit_path": str(audit_path),
+        "workflow_audit_sha256": sha(audit_path),
+    }
+    _write_workflow_state(state_path, config, result)
+    return result
+
+
+def _required_sha256(value: str, *, label: str) -> str:
+    normalized = str(value or "").strip().casefold()
+    if not re.fullmatch(r"[0-9a-f]{64}", normalized):
+        raise WorkflowError(f"{label} must be an exact SHA-256")
+    return normalized
+
+
+def _load_expected_json(path: Path, expected_sha256: str, *, label: str) -> tuple[dict[str, Any], str]:
+    if path.is_symlink():
+        raise WorkflowError(f"{label} must not be a symlink")
+    data = path.read_bytes()
+    digest = hashlib.sha256(data).hexdigest()
+    if digest != expected_sha256:
+        raise WorkflowError(f"{label} SHA-256 mismatch")
+    try:
+        text = data.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise WorkflowError(f"{label} must be strict UTF-8") from exc
+    return _json_object_no_duplicates(text, label=label), digest
+
+
+def _relative_state_path(path: Path, root: Path, *, label: str) -> tuple[str, ...]:
+    try:
+        return path.relative_to(root).parts
+    except ValueError as exc:
+        raise WorkflowError(f"{label} must remain inside the Oracle state root") from exc
+
+
+def _user_stop_receipt_path(state_root: Path, project_key: str, workflow_id: str, run_id: str) -> Path:
+    return (
+        state_root
+        / "workflow-user-stop-settlements"
+        / project_key
+        / workflow_id
+        / f"{run_id}.json"
+    )
+
+
+def _user_stop_completion_path(state_root: Path, project_key: str, workflow_id: str, run_id: str) -> Path:
+    return (
+        state_root
+        / "workflow-user-stop-settlements"
+        / project_key
+        / workflow_id
+        / f"{run_id}.completion.json"
+    )
+
+
+def _binding_sha256(value: dict[str, Any]) -> str:
+    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _decode_preimage(value: Any, *, expected_sha256: str, label: str) -> dict[str, Any]:
+    if not isinstance(value, str) or not value:
+        raise WorkflowError(f"{label} preimage is missing")
+    try:
+        data = base64.b64decode(value, validate=True)
+    except (ValueError, TypeError) as exc:
+        raise WorkflowError(f"{label} preimage is not valid base64") from exc
+    if hashlib.sha256(data).hexdigest() != expected_sha256:
+        raise WorkflowError(f"{label} preimage SHA-256 mismatch")
+    try:
+        text = data.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise WorkflowError(f"{label} preimage must be strict UTF-8") from exc
+    return _json_object_no_duplicates(text, label=f"{label} preimage")
+
+
+def _user_stop_evidence_mode(run_state: dict[str, Any], run_dir: Path, confirmation: str) -> str:
+    if confirmation == USER_STOP_CONFIRMATION:
+        if (
+            run_state.get("schema") != RUNNER.STATE.STATE_SCHEMA
+            or run_state.get("status") != "attention_required"
+            or run_state.get("session_authority") != "terminal"
+            or run_state.get("terminal_harvested") is not True
+            or run_state.get("task_outcome") not in USER_STOPPABLE_OUTCOMES
+            or run_state.get("transport_status") not in {"complete", "failed"}
+        ):
+            raise WorkflowError("Oracle run is not a bounded terminal user-stop candidate")
+        return "provider-terminal-user-stop"
+    if confirmation != PRE_SUBMIT_CANCEL_CONFIRMATION:
+        raise WorkflowError(
+            f"confirmation must be {USER_STOP_CONFIRMATION} or {PRE_SUBMIT_CANCEL_CONFIRMATION}"
+        )
+    stdout_path = run_dir / "stdout.log"
+    stderr_path = run_dir / "stderr.log"
+    output_path = run_dir / "output.md"
+    stderr_text = (
+        stderr_path.read_text(encoding="utf-8", errors="strict").strip()
+        if stderr_path.is_file() and not stderr_path.is_symlink()
+        else ""
+    )
+    if (
+        run_state.get("schema") != RUNNER.STATE.STATE_SCHEMA
+        or run_state.get("status") != "failed"
+        or run_state.get("session_authority") != "pre_submit"
+        or run_state.get("terminal_harvested") is not False
+        or run_state.get("transport_status") != "prepared"
+        or run_state.get("task_outcome") != "pending"
+        or run_state.get("exit_code") is not None
+        or str(run_state.get("conversation_url") or "").strip()
+        or output_path.exists()
+        or not stdout_path.is_file()
+        or stdout_path.is_symlink()
+        or stdout_path.stat().st_size != 0
+        or stderr_text not in PRE_SUBMIT_CANCEL_ERRORS
+    ):
+        raise WorkflowError("Oracle run is not a bounded pre-submit DevSpace compatibility failure")
+    return PRE_SUBMIT_CANCEL_ERRORS[stderr_text]
+
+
+def settle_user_stopped_workflow(
+    *,
+    workflow_state_path: Path,
+    scope_state_path: Path,
+    run_dir: Path,
+    workflow_id: str,
+    run_id: str,
+    expected_workflow_sha256: str,
+    expected_scope_sha256: str,
+    expected_run_state_sha256: str,
+    confirmation: str,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    if confirmation not in {USER_STOP_CONFIRMATION, PRE_SUBMIT_CANCEL_CONFIRMATION}:
+        raise WorkflowError(
+            f"confirmation must be {USER_STOP_CONFIRMATION} or {PRE_SUBMIT_CANCEL_CONFIRMATION}"
+        )
+    if not re.fullmatch(r"[0-9a-f]{32}", workflow_id):
+        raise WorkflowError("workflow_id must be exact 32-character lowercase hex")
+    if not re.fullmatch(r"[0-9a-f]{32}", run_id):
+        raise WorkflowError("run_id must be exact 32-character lowercase hex")
+    expected_workflow_sha256 = _required_sha256(expected_workflow_sha256, label="workflow state")
+    expected_scope_sha256 = _required_sha256(expected_scope_sha256, label="scope state")
+    expected_run_state_sha256 = _required_sha256(expected_run_state_sha256, label="Oracle run state")
+
+    state_root = RUNNER.STATE.oracle_state_root().resolve(strict=True)
+    workflow_path = workflow_state_path.expanduser().resolve(strict=True)
+    scope_path = scope_state_path.expanduser().resolve(strict=True)
+    directory = run_dir.expanduser().resolve(strict=True)
+    run_state_path = (directory / "state.json").resolve(strict=True)
+    for candidate, label in (
+        (workflow_path, "workflow state"),
+        (scope_path, "scope state"),
+        (run_state_path, "Oracle run state"),
+    ):
+        if not candidate.is_file() or candidate.is_symlink():
+            raise WorkflowError(f"{label} must be a regular non-symlink file")
+
+    workflow_parts = _relative_state_path(workflow_path, state_root, label="workflow state")
+    scope_parts = _relative_state_path(scope_path, state_root, label="scope state")
+    run_parts = _relative_state_path(directory, state_root, label="Oracle run directory")
+    if len(workflow_parts) != 3 or workflow_parts[0] != "workflows" or workflow_path.name != f"{workflow_id}.json":
+        raise WorkflowError("workflow state path identity mismatch")
+    project_key = workflow_parts[1]
+    if (
+        len(scope_parts) != 3
+        or scope_parts[0] != "comprehensive-scopes"
+        or scope_parts[1] != project_key
+        or scope_path.suffix != ".json"
+    ):
+        raise WorkflowError("scope state path identity mismatch")
+    if (
+        len(run_parts) != 4
+        or run_parts[0] != "projects"
+        or run_parts[1] != project_key
+        or run_parts[2] != "runs"
+        or run_parts[3] != run_id
+    ):
+        raise WorkflowError("Oracle run directory identity mismatch")
+
+    run_state, _ = _load_expected_json(
+        run_state_path, expected_run_state_sha256, label="Oracle run state"
+    )
+    project_root = Path(str(run_state.get("project_root") or "")).expanduser()
+    if not project_root.is_absolute():
+        raise WorkflowError("Oracle run project_root is not absolute")
+    expected_project_key = hashlib.sha256(str(project_root.resolve()).casefold().encode("utf-8")).hexdigest()[:24]
+    if expected_project_key != project_key:
+        raise WorkflowError("Oracle run project binding mismatch")
+
+    receipt_path = _user_stop_receipt_path(state_root, project_key, workflow_id, run_id)
+    source_thread_id = RUNNER.STATE.source_thread_id_from_state(run_state)
+    current_thread_id = RUNNER.STATE.current_source_thread_id()
+    workflow_owner = str(_json(workflow_path).get("source_thread_id") or "").strip().casefold() or None
+    scope_owner = str(_json(scope_path).get("source_thread_id") or "").strip().casefold() or None
+    if (
+        current_thread_id is None
+        or source_thread_id is None
+        or workflow_owner is None
+        or scope_owner is None
+        or len({current_thread_id, source_thread_id, workflow_owner, scope_owner}) != 1
+    ):
+        raise WorkflowError(
+            "FOREIGN_TASK_SESSION: user-stop settlement requires the current task, Oracle run, "
+            "workflow, and scope to have one exact source_thread_id"
+        )
+    with RUNNER.STATE.project_submit_mutex(
+        project_root,
+        timeout_seconds=30,
+        source_thread_id=source_thread_id,
+    ):
+        run_state, _ = _load_expected_json(
+            run_state_path, expected_run_state_sha256, label="Oracle run state"
+        )
+        if run_state.get("run_id") != run_id:
+            raise WorkflowError("Oracle run ID mismatch")
+        evidence_mode = _user_stop_evidence_mode(run_state, directory, confirmation)
+
+        receipt: dict[str, Any] | None = None
+        receipt_sha256 = ""
+        completion_path = _user_stop_completion_path(state_root, project_key, workflow_id, run_id)
+        if receipt_path.exists() or receipt_path.is_symlink():
+            if receipt_path.is_symlink() or not receipt_path.is_file():
+                raise WorkflowError("user-stop settlement receipt path is unsafe")
+            receipt = _json_object_no_duplicates(
+                receipt_path.read_text(encoding="utf-8", errors="strict"),
+                label="user-stop settlement receipt",
+            )
+            receipt_sha256 = sha(receipt_path)
+
+        workflow_current_bytes = workflow_path.read_bytes()
+        scope_current_bytes = scope_path.read_bytes()
+        workflow_current = _json_object_no_duplicates(
+            workflow_current_bytes.decode("utf-8", errors="strict"), label="workflow state"
+        )
+        scope_current = _json_object_no_duplicates(
+            scope_current_bytes.decode("utf-8", errors="strict"), label="scope state"
+        )
+        workflow_current_sha = hashlib.sha256(workflow_current_bytes).hexdigest()
+        scope_current_sha = hashlib.sha256(scope_current_bytes).hexdigest()
+
+        if receipt is None:
+            workflow_before = workflow_current
+            scope_before = scope_current
+        else:
+            workflow_before = _decode_preimage(
+                receipt.get("workflow_state_preimage_base64"),
+                expected_sha256=expected_workflow_sha256,
+                label="workflow state",
+            )
+            scope_before = _decode_preimage(
+                receipt.get("scope_state_preimage_base64"),
+                expected_sha256=expected_scope_sha256,
+                label="scope state",
+            )
+
+        binding = {
+            "confirmation": confirmation,
+            "source_thread_id": source_thread_id,
+            "workflow_id": workflow_id,
+            "run_id": run_id,
+            "project_key": project_key,
+            "manifest_sha256": str(workflow_before.get("manifest_sha256") or ""),
+            "workflow_state_sha256": expected_workflow_sha256,
+            "scope_state_sha256": expected_scope_sha256,
+            "run_state_sha256": expected_run_state_sha256,
+            "current_stage": str(workflow_before.get("current_stage") or ""),
+            "current_attempt_id": str(workflow_before.get("current_attempt_id") or ""),
+            "current_input_sha256": str(workflow_before.get("current_input_sha256") or ""),
+        }
+        if evidence_mode != "provider-terminal-user-stop":
+            binding["evidence_mode"] = evidence_mode
+        binding_sha256 = _binding_sha256(binding)
+
+        if receipt is not None:
+            expected_receipt = {
+                "schema": USER_STOP_SETTLEMENT_SCHEMA,
+                "status": "CANCELED",
+                "authority": confirmation,
+                "authority_binding_sha256": binding_sha256,
+                **binding,
+            }
+            if any(receipt.get(key) != value for key, value in expected_receipt.items()):
+                raise WorkflowError("existing user-stop settlement receipt binding mismatch")
+            if receipt.get("workflow_state_path") != str(workflow_path):
+                raise WorkflowError("existing settlement workflow path mismatch")
+            if receipt.get("scope_state_path") != str(scope_path):
+                raise WorkflowError("existing settlement scope path mismatch")
+            if receipt.get("run_state_path") != str(run_state_path):
+                raise WorkflowError("existing settlement run path mismatch")
+            if dry_run:
+                return {
+                    "ok": True,
+                    "status": "dry-run",
+                    "terminal_status": "CANCELED",
+                    "workflow_id": workflow_id,
+                    "run_id": run_id,
+                    "authority_binding_sha256": binding_sha256,
+                    "settlement_path": str(receipt_path),
+                    "submission_action": "none",
+                }
+        else:
+            if workflow_current_sha != expected_workflow_sha256:
+                raise WorkflowError("workflow state SHA-256 mismatch")
+            if scope_current_sha != expected_scope_sha256:
+                raise WorkflowError("scope state SHA-256 mismatch")
+            if (
+                workflow_current.get("schema") != STATE_SCHEMA
+                or workflow_current.get("status") not in {"running", "attention_required"}
+                or workflow_current.get("workflow_id") != workflow_id
+                or workflow_current.get("current_attempt_id") != run_id
+                or workflow_current.get("oracle_run_id") != run_id
+                or Path(str(workflow_current.get("oracle_run_dir") or "")).expanduser().resolve() != directory
+                or not re.fullmatch(r"[0-9a-f]{64}", str(workflow_current.get("manifest_sha256") or ""))
+                or not re.fullmatch(r"[0-9a-f]{64}", str(workflow_current.get("current_input_sha256") or ""))
+            ):
+                raise WorkflowError("workflow state is not bound to the exact Oracle run")
+            records = workflow_current.get("records")
+            if not isinstance(records, list) or not any(
+                isinstance(record, dict)
+                and Path(str(record.get("run_dir") or "")).expanduser().resolve() == directory
+                for record in records
+            ):
+                raise WorkflowError("workflow records do not bind the exact Oracle run")
+            if (
+                scope_current.get("schema") != SCOPE_SCHEMA
+                or scope_current.get("status") in TERMINAL_SCOPE_STATUSES
+                or scope_current.get("active_workflow_id") != workflow_id
+            ):
+                raise WorkflowError("scope state is not owned by the exact workflow")
+            receipt = {
+                "schema": USER_STOP_SETTLEMENT_SCHEMA,
+                "status": "CANCELED",
+                "authority": confirmation,
+                "authority_binding_sha256": binding_sha256,
+                **binding,
+                "workflow_state_path": str(workflow_path),
+                "scope_state_path": str(scope_path),
+                "run_state_path": str(run_state_path),
+                "workflow_state_preimage_base64": base64.b64encode(workflow_current_bytes).decode("ascii"),
+                "scope_state_preimage_base64": base64.b64encode(scope_current_bytes).decode("ascii"),
+                "settled_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            }
+            if dry_run:
+                return {
+                    "ok": True,
+                    "status": "dry-run",
+                    "terminal_status": "CANCELED",
+                    "workflow_id": workflow_id,
+                    "run_id": run_id,
+                    "authority_binding_sha256": binding_sha256,
+                    "settlement_path": str(receipt_path),
+                    "submission_action": "none",
+                }
+            _atomic_write(receipt_path, receipt)
+            receipt_sha256 = sha(receipt_path)
+
+        if not receipt_sha256:
+            receipt_sha256 = sha(receipt_path)
+        reference = {
+            "schema": USER_STOP_SETTLEMENT_SCHEMA,
+            "status": "CANCELED",
+            "run_id": run_id,
+            "path": str(receipt_path),
+            "sha256": receipt_sha256,
+            "authority_binding_sha256": binding_sha256,
+        }
+        canceled_workflow = {
+            **workflow_before,
+            "status": "canceled",
+            "terminal": True,
+            "terminal_status": "CANCELED",
+            "blocker": (
+                "user explicitly stopped the provider response and canceled this workflow"
+                if evidence_mode == "provider-terminal-user-stop"
+                else "user explicitly canceled this workflow after a proven pre-submit failure"
+            ),
+            "user_stop_settlement": reference,
+        }
+        canceled_scope = {
+            **scope_before,
+            "status": "canceled",
+            "terminal": True,
+            "terminal_status": "CANCELED",
+            "scope_released": True,
+            "user_stop_settlement": reference,
+        }
+        if workflow_current_sha == expected_workflow_sha256:
+            _atomic_write(workflow_path, canceled_workflow)
+        elif workflow_current != canceled_workflow:
+            raise WorkflowError("workflow state changed outside the user-stop settlement")
+
+        if scope_current_sha == expected_scope_sha256:
+            _atomic_write(scope_path, canceled_scope)
+        elif scope_current != canceled_scope:
+            raise WorkflowError("scope state changed outside the user-stop settlement")
+
+        final_workflow = _json(workflow_path)
+        final_scope = _json(scope_path)
+        if final_workflow.get("status") != "canceled" or final_scope.get("status") != "canceled":
+            raise WorkflowError("user-stop settlement did not reach a terminal canceled state")
+        workflow_final_sha = sha(workflow_path)
+        scope_final_sha = sha(scope_path)
+        if completion_path.exists() or completion_path.is_symlink():
+            if completion_path.is_symlink() or not completion_path.is_file():
+                raise WorkflowError("user-stop completion receipt path is unsafe")
+            completion = _json_object_no_duplicates(
+                completion_path.read_text(encoding="utf-8", errors="strict"),
+                label="user-stop completion receipt",
+            )
+            if (
+                completion.get("schema") != USER_STOP_COMPLETION_SCHEMA
+                or completion.get("settlement_sha256") != receipt_sha256
+                or completion.get("workflow_state_sha256") != workflow_final_sha
+                or completion.get("scope_state_sha256") != scope_final_sha
+            ):
+                raise WorkflowError("user-stop completion receipt binding mismatch")
+        else:
+            completion = {
+                "schema": USER_STOP_COMPLETION_SCHEMA,
+                "status": "CANCELED",
+                "workflow_id": workflow_id,
+                "run_id": run_id,
+                "settlement_path": str(receipt_path),
+                "settlement_sha256": receipt_sha256,
+                "workflow_state_path": str(workflow_path),
+                "workflow_state_sha256": workflow_final_sha,
+                "scope_state_path": str(scope_path),
+                "scope_state_sha256": scope_final_sha,
+                "completed_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            }
+            _atomic_write(completion_path, completion)
+        completion_sha256 = sha(completion_path)
+        return {
+            "ok": True,
+            "status": "canceled",
+            "terminal_status": "CANCELED",
+            "workflow_id": workflow_id,
+            "run_id": run_id,
+            "authority_binding_sha256": binding_sha256,
+            "settlement_path": str(receipt_path),
+            "settlement_sha256": receipt_sha256,
+            "completion_path": str(completion_path),
+            "completion_sha256": completion_sha256,
+            "workflow_state_sha256": workflow_final_sha,
+            "scope_state_sha256": scope_final_sha,
+            "scope_released": True,
+            "submission_action": "none",
+        }
 
 
 def _stage_mission(
@@ -382,6 +1045,19 @@ def _stage_mission(
         "the host will validate bytes and hashes but will not rewrite its meaning. "
         "The supplied input_mission_sha256 binds the upstream source mission bytes before this HOST_STAGE_CONTRACT "
         "was appended; copy it exactly into the receipt and do not replace it with a hash of this augmented mission.md.\n"
+        "\n[HOST_STAGE_MATERIALIZATION_FALLBACK]\n"
+        "If and only if the registered DevSpace surface does not expose write/edit/bash, do not stop merely because "
+        "you cannot create output_path, next_mission_path, or stage-result.json. Return those three artifacts through "
+        "the host bridge instead. Emit exactly one [ORACLE_STAGE_OUTPUT] line, one strict JSON object, one "
+        "[/ORACLE_STAGE_OUTPUT] line, then TASK_OUTCOME: EXECUTED as the final nonempty line. The JSON exact keys are "
+        "schema, workflow_id, stage, attempt_id, input_mission_sha256, status, output_text, next_stage, "
+        "next_mission_text, ready_for_next, blocker, critical_finding_ids, critical_findings_sha256. schema must be "
+        f"{REGULAR_OUTPUT_SCHEMA}; copy the bound identity fields exactly. output_text is the complete output file; "
+        "next_mission_text is the complete next mission, or an empty string only for a terminal transition. "
+        "critical_finding_ids is a sorted unique string array and critical_findings_sha256 is its compact-JSON "
+        "SHA-256 for review, otherwise use [] and an empty string. Do not both write the receipt/files and return "
+        "this fallback envelope. The host preserves UTF-8 bytes, creates only its workflow-owned stage artifacts, "
+        "and runs the same receipt and transition validation.\n"
         "\n[DEVSPACE_WORKSPACE_ENTRY_CONTRACT]\n"
         "Use only exact_project_root as the project workspace. Reuse an already registered DevSpace workspace whose "
         "normalized root is exactly equal to it, or open that exact root. Windows separators and Unicode characters "
@@ -392,6 +1068,13 @@ def _stage_mission(
         "during a stage. If the exact root remains unavailable, stop this stage with a concise external workspace "
         "blocker instead of changing scope. Keep progress narration compact; tool activity and the durable receipt "
         "are the authority.\n"
+        "\n[ORACLE_SELF_OBSERVATION_GUARD]\n"
+        f"exact_oracle_run_id={attempt_id}\n"
+        f"exact_oracle_slug={RUNNER.STATE.oracle_slug(config['project_root'], attempt_id)}\n"
+        "Do not inspect, read, wait for, poll, invoke, recover, or report on this exact Oracle run or slug, "
+        "including its state.json, output.md, transcript.md, recovery, observer, or process status. Do not launch "
+        "a nested Oracle run. Perform this stage directly; if a required project resource is unavailable, return "
+        "one concrete blocker without observing the host controller.\n"
     )
     if stage == "plan":
         pro_selection_instruction = (
@@ -399,17 +1082,19 @@ def _stage_mission(
             if config["allow_pro"]
             else (
                 "Do not emit next_stage=pro; continue with review.\n"
-                if config.get("workflow_profile") == ULTRA_GPT_PROFILE
+                if _is_ultra_gpt(config)
                 else "Do not emit next_stage=pro; continue with review or an authorized web-multi stage.\n"
             )
         )
         protocol += (
             "\n[PRO_SELECTION_POLICY]\n"
             f"pro_selection_allowed={'true' if config['allow_pro'] else 'false'}\n"
-            "Pro is quota-limited and may be selected only when this manifest explicitly authorizes it. "
+            "Pro is quota-limited, read-only, and may be selected only when this manifest explicitly authorizes it. "
+            "Use Pro only for architecture, research, advice, or review; route every write or command task to the "
+            "separate regular GPT-5.6 extra-high implementation stage. "
             f"{pro_selection_instruction}"
             "\n[PRO_ATTACHMENT_AUTHORING_CONTRACT]\n"
-            "Use the default Pro DevSpace route unless frozen external evidence is unavailable or inappropriate "
+            "Use the default read-only Pro DevSpace route unless frozen external evidence is unavailable or inappropriate "
             "through the live exact root. If and only if next_stage=pro requires such evidence files, the authored "
             "next mission must contain exactly "
             "one closed [PRO_ATTACHMENT_CONTRACT] block. Its body must be one JSON object with "
@@ -423,7 +1108,7 @@ def _stage_mission(
             "Canonical plan receipt status is PLAN_READY. The legacy status completed is accepted only when the "
             "receipt is otherwise a complete, hash-valid, blocker-free ready transition to review, web-multi, or pro.\n"
         )
-        if config.get("workflow_profile") == ULTRA_GPT_PROFILE:
+        if _is_ultra_gpt(config):
             protocol += (
                 "\n[ULTRA_GPT_WEB_AGENT_CONTRACT]\n"
                 "This workflow replaces every cognitive native Codex subagent with a separate web GPT session. "
@@ -438,7 +1123,7 @@ def _stage_mission(
         review_handoff = (
             "Then author the complete bound Oracle Multi implementation manifest and return PASS or "
             "PASS_WITH_NOTES with next_stage=web-multi. Notes must travel inside the lane and merger missions. "
-            if config.get("workflow_profile") == ULTRA_GPT_PROFILE
+            if _is_ultra_gpt(config)
             else "Then write a complete implementation mission and return PASS or PASS_WITH_NOTES with "
             "next_stage=implementation. Notes are non-blocking and must travel inside that implementation mission. "
         )
@@ -466,7 +1151,7 @@ def _stage_mission(
             f"baseline_critical_finding_ids={json.dumps(policy['baseline_critical_finding_ids'], ensure_ascii=False, separators=(',', ':'))}\n"
             f"baseline_critical_findings_sha256={policy['baseline_critical_findings_sha256'] or ''}\n"
         )
-        if config.get("workflow_profile") == ULTRA_GPT_PROFILE:
+        if _is_ultra_gpt(config):
             protocol += (
                 "\n[ULTRA_GPT_PARALLEL_IMPLEMENTATION_CONTRACT]\n"
                 "After repairing and finalizing the plan, author a bound Oracle Multi manifest and return "
@@ -524,6 +1209,13 @@ def _pro_stage_mission(
             "must remain separate later sessions. Do not ask the local Luna commander to perform project analysis, "
             "implementation, or semantic review.\n"
         )
+    protocol += (
+        "\n[PRO_READ_ONLY_AUTHORITY]\n"
+        "This Pro stage is advisory and read-only. Do not create, edit, delete, or rename project files; do not "
+        "run commands or change settings, accounts, or external state. Return analysis and an implementation-ready "
+        "next mission only. A separate regular GPT-5.6 extra-high DevSpace implementation stage owns all writes "
+        "and commands.\n"
+    )
     target.write_text(body.rstrip() + protocol, encoding="utf-8")
     return target, receipt, input_sha
 
@@ -539,30 +1231,30 @@ def _oracle_manifest(
 ) -> Path:
     pro_attachments = tuple(pro_attachments)
     path = stage_dir / "oracle.json"
-    configured_pro = WORKSPACE_CONFIG.configured_regular_web_mode() == "pro"
-    use_pro = stage == "pro" or configured_pro
     payload: dict[str, Any] = {
         "schema": RUNNER.STATE.SCHEMA,
         "project_root": str(config["project_root"]),
         "mission_path": str(mission),
         "mode": "browser",
-        "model": "gpt-5.6-sol" if use_pro else config["model"],
+        "model": "gpt-5.6-sol" if stage == "pro" else config["model"],
         "model_strategy": "select",
-        # A durable host-level Pro preference is itself explicit user opt-in.
-        # Otherwise regular stages keep the separately verified Extra High.
-        "thinking_time": "heavy" if use_pro else "extra-high",
+        # Pro is the explicit highest effort in the current GPT-5.6 Sol UI;
+        # regular comprehensive stages use the separately verified Extra High.
+        "thinking_time": "heavy" if stage == "pro" else "extra-high",
         "research": "off",
         "archive": "auto",
         "parallel_parent_id": config["_parallel_parent_id"],
         "run_id": run_id,
+        "source_thread_id": config.get("source_thread_id"),
     }
-    if stage == "pro" and pro_attachments:
-        payload["transport"] = "pro-attachment-only"
-        payload["attachments"] = [str(mission), *(str(item) for item in pro_attachments)]
-    elif use_pro:
-        payload["transport"] = "pro-devspace"
-        payload["app_name"] = config["app_name"]
-        payload["task_outcome_contract"] = "v1"
+    if stage == "pro":
+        if pro_attachments:
+            payload["transport"] = "pro-attachment-only"
+            payload["attachments"] = [str(mission), *(str(item) for item in pro_attachments)]
+        else:
+            payload["transport"] = "pro-devspace-readonly"
+            payload["app_name"] = config["app_name"]
+            payload["task_outcome_contract"] = "v1"
     else:
         payload["transport"] = "devspace"
         payload["app_name"] = config["app_name"]
@@ -869,6 +1561,102 @@ def _materialize_pro_receipt(
     _write(receipt_path, receipt)
 
 
+def _materialize_bound_text(path: Path, text: str) -> None:
+    data = text.encode("utf-8")
+    if path.exists():
+        if not path.is_file() or path.is_symlink() or path.read_bytes() != data:
+            raise WorkflowError(f"host materialization target already exists with different bytes: {path}")
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("xb") as handle:
+        handle.write(data)
+
+
+def _load_regular_envelope(output_path: Path) -> dict[str, Any]:
+    try:
+        text = output_path.read_text(encoding="utf-8")
+    except UnicodeDecodeError as exc:
+        raise WorkflowError("regular Oracle output must be UTF-8") from exc
+    if text.count(REGULAR_OUTPUT_BEGIN) != 1 or text.count(REGULAR_OUTPUT_END) != 1:
+        raise WorkflowError("regular Oracle output has no unambiguous stage envelope")
+    start = text.index(REGULAR_OUTPUT_BEGIN) + len(REGULAR_OUTPUT_BEGIN)
+    end = text.index(REGULAR_OUTPUT_END, start)
+    envelope = _json_object_no_duplicates(text[start:end].strip(), label="regular stage envelope")
+    if set(envelope) != REGULAR_OUTPUT_KEYS:
+        raise WorkflowError("regular stage envelope must contain the exact closed key set")
+    return envelope
+
+
+def _materialize_regular_receipt(
+    config: dict[str, Any],
+    receipt_path: Path,
+    workflow_id: str,
+    stage: str,
+    attempt_id: str,
+    input_sha: str,
+    oracle_result: dict[str, Any],
+    *,
+    run_dir: Any = None,
+) -> None:
+    output_path = _oracle_output_path(oracle_result, run_dir)
+    if output_path is None or not output_path.resolve(strict=True).is_file():
+        raise WorkflowError("regular Oracle output is unavailable")
+    envelope = _load_regular_envelope(output_path)
+    if (
+        envelope.get("schema") != REGULAR_OUTPUT_SCHEMA
+        or envelope.get("workflow_id") != workflow_id
+        or envelope.get("stage") != stage
+        or envelope.get("attempt_id") != attempt_id
+        or envelope.get("input_mission_sha256") != input_sha
+    ):
+        raise WorkflowError("regular stage envelope identity mismatch")
+    output_text = envelope.get("output_text")
+    next_mission_text = envelope.get("next_mission_text")
+    finding_ids = envelope.get("critical_finding_ids")
+    finding_hash = envelope.get("critical_findings_sha256")
+    if (
+        not isinstance(output_text, str)
+        or not output_text.strip()
+        or not isinstance(next_mission_text, str)
+        or not isinstance(finding_ids, list)
+        or any(not isinstance(item, str) for item in finding_ids)
+        or not isinstance(finding_hash, str)
+    ):
+        raise WorkflowError("regular stage envelope artifact fields are invalid")
+    if finding_ids != sorted(set(finding_ids)):
+        raise WorkflowError("regular stage envelope critical findings are not sorted unique")
+    if stage == "review":
+        if finding_hash != _finding_hash(finding_ids):
+            raise WorkflowError("regular stage envelope critical findings hash mismatch")
+    elif finding_ids or finding_hash:
+        raise WorkflowError("non-review stage envelope cannot carry critical findings")
+    stage_dir = receipt_path.parent
+    materialized_output = stage_dir / "output.md"
+    _materialize_bound_text(materialized_output, output_text)
+    receipt: dict[str, Any] = {
+        "schema": RECEIPT_SCHEMA,
+        "workflow_id": workflow_id,
+        "stage": stage,
+        "attempt_id": attempt_id,
+        "input_mission_sha256": input_sha,
+        "status": envelope.get("status"),
+        "output_path": str(materialized_output),
+        "output_sha256": sha(materialized_output),
+        "next_stage": envelope.get("next_stage"),
+        "ready_for_next": envelope.get("ready_for_next"),
+        "blocker": envelope.get("blocker"),
+    }
+    if stage == "review":
+        receipt["critical_finding_ids"] = finding_ids
+        receipt["critical_findings_sha256"] = finding_hash
+    if next_mission_text:
+        next_mission = stage_dir / "next-mission.md"
+        _materialize_bound_text(next_mission, next_mission_text)
+        receipt["next_mission_path"] = str(next_mission)
+        receipt["next_mission_sha256"] = sha(next_mission)
+    _write(receipt_path, receipt)
+
+
 def _validate_receipt(
     config: dict[str, Any],
     receipt_path: Path,
@@ -877,7 +1665,21 @@ def _validate_receipt(
     attempt_id: str,
     input_sha: str,
 ) -> dict[str, Any]:
-    value = _json(receipt_path)
+    value = (
+        STRICT_ULTRA.load_json(receipt_path)
+        if _closed_audit_enabled(config)
+        else _json(receipt_path)
+    )
+    if _closed_audit_enabled(config):
+        allowed_receipt_keys = {
+            "schema", "workflow_id", "stage", "attempt_id", "input_mission_sha256",
+            "status", "output_path", "output_sha256", "next_stage", "next_mission_path",
+            "next_mission_sha256", "ready_for_next", "blocker", "critical_finding_ids",
+            "critical_findings_sha256",
+        }
+        extra = sorted(set(value) - allowed_receipt_keys)
+        if extra:
+            raise WorkflowError(f"STRICT_ULTRA_RECEIPT_EXTRA_KEYS: {extra}")
     has_schema = "schema" in value
     has_legacy_schema = "schema_version" in value
     schema = value.get("schema")
@@ -896,12 +1698,19 @@ def _validate_receipt(
         raise WorkflowError("stage receipt identity mismatch")
     raw_status = str(value.get("status") or "")
     next_stage = str(value.get("next_stage") or "")
-    if config.get("workflow_profile") == ULTRA_GPT_PROFILE:
+    if _is_ultra_gpt(config):
         required_next = {
             "plan": "review", "review": "web-multi", "web-multi": "final-web-gate",
             "final-web-gate": "complete",
         }.get(stage)
-        if required_next and next_stage != required_next:
+        terminal_review_fail = (
+            stage == "review"
+            and raw_status == "FAIL"
+            and not next_stage
+            and value.get("ready_for_next") is False
+            and bool(value.get("blocker"))
+        )
+        if required_next and next_stage != required_next and not terminal_review_fail:
             raise WorkflowError(
                 f"ULTRA_GPT_STAGE_ORDER_REQUIRED: {stage} must proceed to {required_next}"
             )
@@ -919,7 +1728,7 @@ def _validate_receipt(
         if status not in REVIEW_STATUSES:
             raise WorkflowError("review status must be PASS, PASS_WITH_NOTES, REVISE, or FAIL")
         required_review_next = (
-            "web-multi" if config.get("workflow_profile") == ULTRA_GPT_PROFILE else "implementation"
+            "web-multi" if _is_ultra_gpt(config) else "implementation"
         )
         if status in {"PASS", "PASS_WITH_NOTES"} and next_stage != required_review_next:
             raise WorkflowError(f"passing review must proceed to {required_review_next}")
@@ -978,6 +1787,8 @@ def _validate_receipt(
         **value,
         **compatibility,
         "output_path": str(output),
+        "_receipt_path": str(receipt_path.resolve(strict=True)),
+        "_receipt_sha256": sha(receipt_path),
         **({"_receipt_path_compatibility": path_compatibility} if path_compatibility else {}),
     }
     if stage == "review":
@@ -1047,129 +1858,6 @@ def _is_unambiguous_pre_submit_failure(run_dir: Path) -> bool:
         return False
     text = stdout.read_text(encoding="utf-8", errors="replace")
     return any(marker in text for marker in UNAMBIGUOUS_PRE_SUBMIT_MARKERS)
-
-
-def _missing_layout_pre_submit_proof(
-    stored: dict[str, Any],
-    *,
-    config: dict[str, Any],
-    workflow_id: str,
-) -> dict[str, Any] | None:
-    """Prove that a persisted attempt never crossed Oracle's layout boundary.
-
-    ``chatgpt_oracle_run.execute_run`` creates the exact run directory before
-    it writes run state, starts a browser, or can submit a prompt.  Older
-    comprehensive versions persisted the planned directory before calling the
-    runner, so an exact-root qualification exception could leave a running
-    workflow whose directory never existed.  Treat that legacy shape as
-    pre-submit only when every immutable binding still matches and no execution
-    result record exists for the attempt.  A missing directory alone is never
-    sufficient because an operator could have removed a real run afterward.
-    """
-    attempt_id = str(stored.get("current_attempt_id") or "").strip()
-    run_id = str(stored.get("oracle_run_id") or "").strip()
-    raw_run_dir = str(stored.get("oracle_run_dir") or "").strip()
-    raw_manifest = str(stored.get("oracle_manifest_path") or "").strip()
-    if not attempt_id or run_id != attempt_id or not raw_run_dir or not raw_manifest:
-        return None
-    if str(stored.get("workflow_id") or "") != workflow_id:
-        return None
-
-    run_dir = Path(raw_run_dir).expanduser()
-    manifest_path = Path(raw_manifest).expanduser()
-    if (
-        not run_dir.is_absolute()
-        or run_dir.exists()
-        or run_dir.is_symlink()
-        or not manifest_path.is_absolute()
-        or manifest_path.is_symlink()
-        or not manifest_path.is_file()
-    ):
-        return None
-    receipt_path = Path(str(stored.get("receipt_path") or "")).expanduser()
-    if receipt_path.is_file():
-        return None
-
-    augmented_candidate = Path(str(stored.get("current_augmented_mission_path") or "")).expanduser()
-    binding_candidate = Path(str(stored.get("current_binding_source_path") or "")).expanduser()
-    current_candidate = Path(str(stored.get("current_mission_path") or "")).expanduser()
-    if any(path.is_symlink() for path in (augmented_candidate, binding_candidate, current_candidate)):
-        return None
-    try:
-        oracle_config = RUNNER.STATE.load_manifest(manifest_path)
-        expected_layout = RUNNER.STATE.create_layout(oracle_config, run_id=attempt_id)
-        augmented_mission = augmented_candidate.resolve(strict=True)
-        binding_source = binding_candidate.resolve(strict=True)
-        current_mission = current_candidate.resolve(strict=True)
-    except (OSError, ValueError, TypeError, RUNNER.STATE.OracleStateError):
-        return None
-    if not all(path.is_file() for path in (augmented_mission, binding_source, current_mission)):
-        return None
-    if (
-        expected_layout.run_dir.resolve() != run_dir.resolve()
-        or str(getattr(oracle_config, "requested_run_id", "") or "") != attempt_id
-        or Path(oracle_config.project_root).resolve() != config["project_root"]
-        or Path(oracle_config.mission_path).resolve() != augmented_mission
-        or binding_source != current_mission
-        or str(getattr(oracle_config, "mission_sha256", "") or "") != sha(augmented_mission)
-        or str(stored.get("current_augmented_mission_sha256") or "") != sha(augmented_mission)
-        or str(stored.get("current_input_sha256") or "") != sha(binding_source)
-        or str(stored.get("current_binding_source_sha256") or "") != sha(binding_source)
-    ):
-        return None
-
-    for record in stored.get("records") or []:
-        if not isinstance(record, dict):
-            return None
-        record_run_id = str(record.get("run_id") or "").strip()
-        record_run_dir = str(record.get("run_dir") or "").strip()
-        same_run = record_run_id == attempt_id
-        if record_run_dir:
-            try:
-                same_run = same_run or Path(record_run_dir).resolve() == run_dir.resolve()
-            except OSError:
-                return None
-        if not same_run:
-            continue
-        # The comprehensive runner appends ``ok`` only after execute_run
-        # returns.  Its presence means this is not the legacy pre-call gap.
-        if "ok" in record or record.get("recovered") is not True:
-            return None
-        if record.get("recovery_status") not in {None, ""}:
-            return None
-
-    return {
-        "schema": MISSING_LAYOUT_PRE_SUBMIT_SCHEMA,
-        "kind": "oracle-layout-not-created",
-        "safe_for_fresh_run": True,
-        "workflow_id": workflow_id,
-        "attempt_id": attempt_id,
-        "run_dir": str(run_dir.resolve()),
-        "oracle_manifest_path": str(manifest_path.resolve()),
-        "reason": "the exact bound Oracle layout was never created and no execution result was recorded",
-    }
-
-
-def _missing_layout_pre_submit_record(
-    proof: dict[str, Any],
-    *,
-    stage: str,
-    input_sha256: str,
-    failure_code: str,
-    failure_evidence: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    return {
-        "stage": stage,
-        "run_id": proof["attempt_id"],
-        "run_dir": proof["run_dir"],
-        "pre_submit_failure": True,
-        "pre_submit_retry_consumed": True,
-        "input_mission_sha256": input_sha256,
-        "failure_code": failure_code,
-        "failure_evidence": dict(failure_evidence or {}),
-        "settlement": "oracle-layout-not-created-pre-submit",
-        "settlement_proof": proof,
-    }
 
 
 def _pre_submit_retry_count(
@@ -1312,8 +2000,23 @@ def _pre_submit_retry_record(
 
 
 def _run_local_gate(config: dict[str, Any], runner: Callable[..., Any]) -> dict[str, Any]:
+    command = list(config["local_gate_command"])
+    bound_path = None
+    if _closed_audit_enabled(config):
+        bound_path = config["strict_ultra"]["research_governor_path"]
+        bound_sha = sha(bound_path)
+        if not any("{artifact_path}" in item for item in command) or not any(
+            "{artifact_sha256}" in item for item in command
+        ):
+            raise WorkflowError(
+                "STRICT_ULTRA_LOCAL_GATE_BINDING_REQUIRED: command must contain {artifact_path} and {artifact_sha256}"
+            )
+        command = [
+            item.replace("{artifact_path}", str(bound_path)).replace("{artifact_sha256}", bound_sha)
+            for item in command
+        ]
     completed = runner(
-        config["local_gate_command"],
+        command,
         cwd=str(config["project_root"]),
         stdin=subprocess.DEVNULL,
         capture_output=True,
@@ -1321,11 +2024,25 @@ def _run_local_gate(config: dict[str, Any], runner: Callable[..., Any]) -> dict[
         check=False,
         **RUNNER.STATE.windows_subprocess_kwargs(),
     )
-    return {
+    result = {
         "exit_code": int(completed.returncode),
         "stdout_sha256": hashlib.sha256((completed.stdout or "").encode("utf-8")).hexdigest(),
         "stderr_sha256": hashlib.sha256((completed.stderr or "").encode("utf-8")).hexdigest(),
     }
+    if bound_path is not None and completed.returncode == 0:
+        try:
+            receipt = STRICT_ULTRA.validate_gate_receipt(config, completed.stdout or "", bound_path)
+            STRICT_ULTRA.write_json_atomic(config["strict_ultra"]["local_gate_receipt_path"], receipt)
+        except STRICT_ULTRA.StrictUltraError as exc:
+            raise WorkflowError(str(exc)) from exc
+        result.update({
+            "receipt_path": str(config["strict_ultra"]["local_gate_receipt_path"]),
+            "receipt_sha256": sha(config["strict_ultra"]["local_gate_receipt_path"]),
+            "opened_path": receipt["opened_path"],
+            "opened_sha256": receipt["opened_sha256"],
+            "validator": receipt["validator"],
+        })
+    return result
 
 
 def _terminal_review_state(
@@ -1339,13 +2056,67 @@ def _terminal_review_state(
         return None
     return {
         "schema": STATE_SCHEMA,
-        "status": "attention_required",
+        "status": "blocked",
+        "terminal": True,
+        "terminal_status": "REVIEW_FAILED",
+        "scope_released": True,
         "workflow_id": workflow_id,
         "manifest_sha256": config["manifest_sha256"],
         "records": records,
         "review_status": receipt.get("status"),
         "review_output_path": receipt.get("output_path"),
-        "blocker": blocker,
+        "review_receipt_path": receipt.get("_receipt_path"),
+        "review_receipt_sha256": receipt.get("_receipt_sha256"),
+        "critical_findings_sha256": receipt.get("critical_findings_sha256"),
+        "critical_finding_count": len(receipt.get("critical_finding_ids") or []),
+        "blocker": "review returned a valid terminal FAIL receipt",
+        "next_stage": None,
+    }
+
+
+def _terminal_recursive_self_observation_state(
+    config: dict[str, Any],
+    workflow_id: str,
+    run_dir: Path,
+    records: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Terminalize only the exact bounded provider self-observation signature."""
+    try:
+        state_path = run_dir / "state.json"
+        run_state = RUNNER.STATE.load_state(state_path)
+        artifacts = (
+            run_state.get("artifacts")
+            if isinstance(run_state.get("artifacts"), dict)
+            else {}
+        )
+        output_path = Path(
+            str(artifacts.get("output") or run_dir / "output.md")
+        ).resolve(strict=True)
+        output_text = output_path.read_text(encoding="utf-8", errors="strict")
+        evidence = RUNNER.STATE.recursive_self_observation_evidence(
+            run_state, output_text
+        )
+    except (OSError, UnicodeDecodeError, RUNNER.STATE.OracleStateError):
+        return None
+    if evidence is None:
+        return None
+    return {
+        "schema": STATE_SCHEMA,
+        "status": "blocked",
+        "terminal": True,
+        "terminal_status": "ORACLE_RECURSIVE_SELF_OBSERVATION",
+        "scope_released": True,
+        "workflow_id": workflow_id,
+        "manifest_sha256": config["manifest_sha256"],
+        "records": records,
+        "oracle_run_id": run_state.get("run_id"),
+        "oracle_run_dir": str(run_dir),
+        "oracle_output_sha256": sha(output_path),
+        "incident_signature": evidence["signature"],
+        "safe_for_fresh_run": False,
+        "auto_retry": False,
+        "submission_action": "none",
+        "blocker": "Oracle stage recursively observed its own controller run instead of executing the mission",
         "next_stage": None,
     }
 
@@ -1463,6 +2234,14 @@ def _run_workflow_locked(
             "workflow_id": workflow_id,
             "stage": initial_stage,
             "workflow_profile": config["workflow_profile"],
+            "workflow_profile_canonical": config["workflow_profile_canonical"],
+            "workflow_profile_legacy_alias": config["workflow_profile_legacy_alias"],
+            "closed_audit_enabled": config["closed_audit_enabled"],
+            "warnings": (
+                ["strict-ultra is a deprecated input alias; use ultra-gpt with closed_audit"]
+                if config["workflow_profile_legacy_alias"]
+                else []
+            ),
             "attempt_id": attempt_id,
             "input_mission_sha256": input_sha,
             "receipt_path": str(receipt_path),
@@ -1476,6 +2255,10 @@ def _run_workflow_locked(
             raise WorkflowError("workflow manifest changed after preparation")
         if stored.get("status") == "complete":
             return {"ok": True, **stored}
+        if stored.get("status") == "canceled":
+            return {"ok": False, **stored}
+        if stored.get("status") == "blocked" and stored.get("terminal_status") == "REVIEW_FAILED":
+            return {"ok": False, **stored}
         if stored.get("status") == "awaiting_receipt":
             stored_receipt = Path(str(stored["receipt_path"])).resolve()
             if not stored_receipt.is_file():
@@ -1502,7 +2285,7 @@ def _run_workflow_locked(
                 complete = {
                     **stored, "status": "complete", "final_output_path": receipt["output_path"], "local_gate": gate
                 }
-                _write_workflow_state(state_path, config, complete)
+                complete = _finalize_complete_workflow(state_path, config, complete, gate)
                 return {"ok": True, **complete}
             stage = str(receipt["next_stage"])
             source = receipt["_next_mission"]
@@ -1582,48 +2365,14 @@ def _run_workflow_locked(
             stored_records = list(stored.get("records") or [])
             stored_stage = str(stored["current_stage"])
             stored_input_sha = str(stored.get("current_input_sha256") or "")
-            retry_count = _pre_submit_retry_count(
-                stored_records,
-                stage=stored_stage,
-                input_sha256=stored_input_sha,
-                current_run_dir=persisted_run_dir,
-                legacy_total=pre_submit_retries,
-            )
-            missing_layout_proof = _missing_layout_pre_submit_proof(
-                stored,
-                config=config,
-                workflow_id=workflow_id,
-            )
-            if retry_count < 1 and missing_layout_proof is not None:
-                source = Path(str(stored["current_mission_path"])).resolve(strict=True)
-                retry_record = _missing_layout_pre_submit_record(
-                    missing_layout_proof,
+            if (
+                _pre_submit_retry_count(
+                    stored_records,
                     stage=stored_stage,
                     input_sha256=stored_input_sha,
-                    failure_code="ORACLE_LAYOUT_NOT_CREATED_PRE_SUBMIT",
-                )
-                prepared = {
-                    "schema": STATE_SCHEMA,
-                    "status": "prepared",
-                    "workflow_id": workflow_id,
-                    "manifest_sha256": config["manifest_sha256"],
-                    "next_stage": stored_stage,
-                    "next_mission_path": str(source),
-                    "next_mission_sha256": sha(source),
-                    "next_index": int(stored["next_index"]),
-                    "records": stored_records + [retry_record],
-                    "pre_submit_retries": pre_submit_retries + 1,
-                }
-                _write_workflow_state(state_path, config, prepared)
-                return {
-                    "ok": False,
-                    **prepared,
-                    "safe_for_fresh_run": True,
-                    "settlement": "oracle-layout-not-created-pre-submit",
-                    "blocker": "pre-submit attempt settled without a replacement submission; rerun the existing workflow manifest",
-                }
-            if (
-                retry_count < 1
+                    current_run_dir=persisted_run_dir,
+                    legacy_total=pre_submit_retries,
+                ) < 1
                 and persisted_run_dir.is_dir()
                 and _is_unambiguous_pre_submit_failure(persisted_run_dir)
                 and _user_confirmed_retry_binding_matches(
@@ -1797,67 +2546,7 @@ def _run_workflow_locked(
             "oracle_run_id": attempt_id, "oracle_run_dir": str(oracle_layout.run_dir), "oracle_manifest_path": str(oracle_manifest),
             "next_index": index, "records": records, "pre_submit_retries": stage_pre_submit_retries,
         })
-        try:
-            run = oracle_execute(oracle_manifest, dry_run=False)
-        except RUNNER.OracleRunError as exc:
-            if exc.code != "DEVSPACE_EXACT_ROOT_UNAVAILABLE" or oracle_layout.run_dir.exists():
-                raise
-            current = _json(state_path)
-            proof = _missing_layout_pre_submit_proof(
-                current,
-                config=config,
-                workflow_id=workflow_id,
-            )
-            if proof is None:
-                raise
-            retry_count = _pre_submit_retry_count(
-                records,
-                stage=stage,
-                input_sha256=input_sha,
-                current_run_dir=oracle_layout.run_dir,
-                legacy_total=stage_pre_submit_retries,
-            )
-            if retry_count >= 1:
-                blocked = {
-                    **current,
-                    "status": "attention_required",
-                    "blocker": "exact-root pre-submit retry budget is exhausted; no replacement was submitted",
-                    "pre_submit_failure": {
-                        "code": exc.code,
-                        "message": str(exc),
-                        "evidence": dict(exc.evidence),
-                        "proof": proof,
-                    },
-                }
-                _write_workflow_state(state_path, config, blocked)
-                return {"ok": False, **blocked, "safe_for_fresh_run": False}
-            retry_record = _missing_layout_pre_submit_record(
-                proof,
-                stage=stage,
-                input_sha256=input_sha,
-                failure_code=exc.code,
-                failure_evidence=exc.evidence,
-            )
-            prepared = {
-                "schema": STATE_SCHEMA,
-                "status": "prepared",
-                "workflow_id": workflow_id,
-                "manifest_sha256": config["manifest_sha256"],
-                "next_stage": stage,
-                "next_mission_path": str(source),
-                "next_mission_sha256": sha(source),
-                "next_index": index,
-                "records": records + [retry_record],
-                "pre_submit_retries": stage_pre_submit_retries + 1,
-            }
-            _write_workflow_state(state_path, config, prepared)
-            return {
-                "ok": False,
-                **prepared,
-                "safe_for_fresh_run": True,
-                "settlement": "oracle-layout-not-created-pre-submit",
-                "blocker": "exact DevSpace root must be registered before rerunning the existing workflow manifest",
-            }
+        run = oracle_execute(oracle_manifest, dry_run=False)
         records.append({"stage": stage, "run_dir": run.get("run_dir"), "ok": bool(run.get("ok"))})
         if stage == "pro" and run.get("ok") and not receipt_path.is_file():
             _materialize_pro_receipt(
@@ -1869,6 +2558,24 @@ def _run_workflow_locked(
                 run,
                 run_dir=run.get("run_dir"),
             )
+        if stage != "pro" and run.get("ok") and not receipt_path.is_file():
+            try:
+                _materialize_regular_receipt(
+                    config,
+                    receipt_path,
+                    workflow_id,
+                    stage,
+                    attempt_id,
+                    input_sha,
+                    run,
+                    run_dir=run.get("run_dir"),
+                )
+            except WorkflowError as exc:
+                records.append({
+                    "stage": stage,
+                    "host_materialization": "unavailable",
+                    "error": str(exc),
+                })
         if run.get("ok"):
             _write_workflow_state(state_path, config, {
                 "schema": STATE_SCHEMA, "status": "awaiting_receipt", "workflow_id": workflow_id,
@@ -1885,6 +2592,16 @@ def _run_workflow_locked(
             return {"ok": False, **_json(state_path)}
         if not run.get("ok"):
             failed_run_dir = Path(str(run.get("run_dir") or "")).resolve()
+            recursive_terminal = (
+                _terminal_recursive_self_observation_state(
+                    config, workflow_id, failed_run_dir, records
+                )
+                if failed_run_dir.is_dir()
+                else None
+            )
+            if recursive_terminal is not None:
+                _write_workflow_state(state_path, config, recursive_terminal)
+                return {"ok": False, **recursive_terminal}
             pre_submit_retries = int(_json(state_path).get("pre_submit_retries") or 0)
             if (
                 _pre_submit_retry_count(
@@ -1957,7 +2674,7 @@ def _run_workflow_locked(
             result = {"schema": STATE_SCHEMA, "status": "complete", "workflow_id": workflow_id,
                       "manifest_sha256": config["manifest_sha256"], "records": records,
                       "final_output_path": receipt["output_path"], "local_gate": gate}
-            _write_workflow_state(state_path, config, result)
+            result = _finalize_complete_workflow(state_path, config, result, gate)
             return {"ok": True, **result}
         stage, source = str(receipt["next_stage"]), receipt["_next_mission"]
         _write_workflow_state(state_path, config, {
@@ -1991,7 +2708,11 @@ def run_workflow(
             multi_execute=multi_execute,
             local_gate_runner=local_gate_runner,
         )
-    with RUNNER.STATE.project_submit_mutex(config["project_root"], timeout_seconds=30):
+    with RUNNER.STATE.project_submit_mutex(
+        config["project_root"],
+        timeout_seconds=30,
+        source_thread_id=config.get("source_thread_id"),
+    ):
         return _run_workflow_locked(
             manifest_path,
             dry_run=False,
@@ -2004,11 +2725,53 @@ def run_workflow(
 
 def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run a bounded Oracle comprehensive workflow.")
-    parser.add_argument("--manifest", type=Path, required=True)
+    parser.add_argument("--manifest", type=Path)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--cancel-user-stopped", action="store_true")
+    parser.add_argument("--workflow-state", type=Path)
+    parser.add_argument("--scope-state", type=Path)
+    parser.add_argument("--run-dir", type=Path)
+    parser.add_argument("--workflow-id")
+    parser.add_argument("--run-id")
+    parser.add_argument("--expected-workflow-sha256")
+    parser.add_argument("--expected-scope-sha256")
+    parser.add_argument("--expected-run-state-sha256")
+    parser.add_argument("--confirmation")
     args = parser.parse_args(argv)
     try:
-        value = run_workflow(args.manifest, dry_run=args.dry_run)
+        if args.cancel_user_stopped:
+            if args.manifest is not None:
+                raise WorkflowError("--manifest cannot be combined with --cancel-user-stopped")
+            required = {
+                "workflow_state": args.workflow_state,
+                "scope_state": args.scope_state,
+                "run_dir": args.run_dir,
+                "workflow_id": args.workflow_id,
+                "run_id": args.run_id,
+                "expected_workflow_sha256": args.expected_workflow_sha256,
+                "expected_scope_sha256": args.expected_scope_sha256,
+                "expected_run_state_sha256": args.expected_run_state_sha256,
+                "confirmation": args.confirmation,
+            }
+            missing = sorted(key for key, value in required.items() if value in {None, ""})
+            if missing:
+                raise WorkflowError(f"cancel-user-stopped requires: {', '.join(missing)}")
+            value = settle_user_stopped_workflow(
+                workflow_state_path=args.workflow_state,
+                scope_state_path=args.scope_state,
+                run_dir=args.run_dir,
+                workflow_id=args.workflow_id,
+                run_id=args.run_id,
+                expected_workflow_sha256=args.expected_workflow_sha256,
+                expected_scope_sha256=args.expected_scope_sha256,
+                expected_run_state_sha256=args.expected_run_state_sha256,
+                confirmation=args.confirmation,
+                dry_run=args.dry_run,
+            )
+        else:
+            if args.manifest is None:
+                raise WorkflowError("--manifest is required unless --cancel-user-stopped is selected")
+            value = run_workflow(args.manifest, dry_run=args.dry_run)
     except Exception as exc:
         value = {"ok": False, "error": {"code": "ORACLE_COMPREHENSIVE_FAILED", "message": str(exc)}}
     print(json.dumps(value, ensure_ascii=False, indent=2))

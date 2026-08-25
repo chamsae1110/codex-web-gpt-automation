@@ -11,23 +11,35 @@ import time
 from pathlib import Path
 from typing import Any, Sequence
 
-SUPPORTED_VERSION = "1.0.4"
+SUPPORTED_VERSION = "1.0.7"
+# 1.0.4 remains the last-known-good rollback artifact.  It is intentionally
+# not accepted by the updater: applying current compatibility patches to an
+# old package would hide an incomplete rollback from the service health gates.
+LEGACY_LKG_VERSION = "1.0.4"
 CREATE_NO_WINDOW = 0x08000000
 PATCHES = {
+    "dist/artifact-tools.js": {
+        "patch": "artifact-audit-readonly.patch",
+        "pristine": "53a045b3961875afce5a95b3992aea3d156b64c0268b1d22724d2ed8e2c3aad2",
+        "patched": "fd5204b37da657d6183c8394b5ee8bed09bbffd50999946b4d0421897a52dfa7",
+    },
     "dist/oauth-provider.js": {
         "patch": "oauth-refresh-replay.patch",
         "pristine": "90ff3fd116735e98af5751de1065538964f6eaae913171223e8e19337b9831b8",
         "patched": "51376673f3def7a3dc05884a409ef52b1ae8580510ba9de86d0b4014b3cd6239",
     },
     "dist/server.js": {
-        "patch": "directory-read.patch",
-        "pristine": "c49c1c607b42e040cdf0b15d5a4a93cfef9ddb8147d492a3cfa2a8c3889dab24",
-        "patched": "d5d9b08c482b282f3390f415d69d460f4ee844046962a4013f11612cbb6b52e0",
+        "patch": "workspace-write-and-read-bridge.patch",
+        "pristine": "42d340924421182eea7f2580f96c8d1d5aae459061a6a90804e6900905ef2d72",
+        "patched": "3b258463fcd5a31b754727545ac2b6ecbc0dd922bee568573a8e5a0643842bfc",
+        "upgrades": {
+            "259b5810206bc87e1e16e7963d084f4c90adc19ea9f54b4655d90ad51e49a967": "tool-read-receipts.patch",
+        },
     },
     "dist/workspaces.js": {
         "patch": "workspaces.patch",
-        "pristine": "b4438d551f5ecccfa7942f8ec92f16fda1b0ab7b3256014c8983404acb0b9dcb",
-        "patched": "d5014ef0bcbab51750e3eea74f58fa131d258aa98f60bf65ed30cd8b732e42bf",
+        "pristine": "e11517f291cac33e37a66e84aeb80e1664a5abd0b6eb1e9bdb933d84c186efad",
+        "patched": "68a4c61ae0f509bd40d2a682e0b9bbbac72cb00dc96693f7646e6a535cc872ed",
     },
 }
 
@@ -84,6 +96,29 @@ def resolve_package_roots(version: str = SUPPORTED_VERSION) -> list[Path]:
             {"version": version, "candidates": [str(path) for path in _candidate_roots()[:8]]},
         )
     return roots
+
+
+def resolve_service_stop_roots() -> list[Path]:
+    """Resolve only validated current/LKG package roots for an exact upgrade stop.
+
+    The updater never patches the LKG package, but an in-place upgrade must be
+    able to stop the still-running LKG service before starting the tested
+    current package.  Identity remains bound to an exact installed CLI path.
+    """
+    roots: list[Path] = []
+    for version in (SUPPORTED_VERSION, LEGACY_LKG_VERSION):
+        try:
+            roots.extend(resolve_package_roots(version))
+        except DevSpaceCompatError as exc:
+            if exc.code != "DEVSPACE_PACKAGE_NOT_FOUND":
+                raise
+    if not roots:
+        raise DevSpaceCompatError(
+            "DEVSPACE_PACKAGE_NOT_FOUND",
+            "No validated current or last-known-good DevSpace package is installed",
+            {"versions": [SUPPORTED_VERSION, LEGACY_LKG_VERSION]},
+        )
+    return list(dict.fromkeys(roots))
 
 
 def check_native_runtime(
@@ -244,6 +279,131 @@ try {
     return {**result, "root": str(root), "status": "bounded-replay-verified"}
 
 
+def check_large_read_bridge(
+    *,
+    package_root: Path,
+    runner: Any = subprocess.run,
+) -> dict[str, Any]:
+    """Prove a long single UTF-8 line can be reconstructed without shell access."""
+    root = package_root.expanduser().resolve(strict=True)
+    node = shutil.which("node")
+    if not node:
+        raise DevSpaceCompatError("DEVSPACE_NODE_MISSING", "Node.js is required for DevSpace")
+    server_path = root / "dist" / "server.js"
+    try:
+        server_source = server_path.read_text(encoding="utf-8", errors="strict")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise DevSpaceCompatError(
+            "DEVSPACE_LARGE_READ_BRIDGE_SOURCE_UNREADABLE",
+            "DevSpace large single-line read bridge source is unreadable",
+            {"path": str(server_path)},
+        ) from exc
+    match = re.search(
+        r"export async function readUtf8Chunk\(path, offsetBytes, limitBytes\) \{.*?\n\}\n(?=(?:const workspaceIdDescription|function serverInstructions)\b)",
+        server_source,
+        flags=re.DOTALL,
+    )
+    if match is None:
+        raise DevSpaceCompatError(
+            "DEVSPACE_LARGE_READ_BRIDGE_SOURCE_MISSING",
+            "DevSpace large single-line read bridge source is missing",
+            {"path": str(server_path)},
+        )
+    # Importing dist/server.js loads the entire MCP dependency graph. Some
+    # supported Windows hosts can block indefinitely in that graph even though
+    # the bridge itself is valid. Execute the exact installed function body in
+    # a dependency-minimal Node process instead; the enclosing package file is
+    # already hash-gated by ensure_devspace_compatibility().
+    bridge_source = match.group(0).replace("export async function", "async function", 1)
+    source = r"""
+import assert from "node:assert/strict";
+import crypto, { createHash } from "node:crypto";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { open } from "node:fs/promises";
+""" + bridge_source + r"""
+const state = fs.mkdtempSync(path.join(os.tmpdir(), "codex-devspace-read-chunk-"));
+const target = path.join(state, "single-line.json");
+const expected = JSON.stringify({payload: "\uAC00".repeat(24000)});
+try {
+  fs.writeFileSync(target, expected, "utf8");
+  const chunks = [];
+  let offset = 0;
+  let identity;
+  for (let calls = 0; calls < 16; calls += 1) {
+    const result = await readUtf8Chunk(target, offset, 24 * 1024);
+    assert.equal(result.offsetBytes, offset);
+    assert.ok(result.bytesReturned <= 24 * 1024);
+    assert.ok(result.nextOffsetBytes >= offset);
+    assert.equal(result.totalBytes, Buffer.byteLength(expected, "utf8"));
+    identity ??= result.sha256;
+    assert.equal(result.sha256, identity);
+    chunks.push(result.content);
+    offset = result.nextOffsetBytes;
+    if (result.eof) break;
+    assert.ok(result.bytesReturned > 0);
+  }
+  assert.equal(chunks.join(""), expected);
+  assert.equal(identity, crypto.createHash("sha256").update(expected, "utf8").digest("hex"));
+  console.log(JSON.stringify({
+    ok: true,
+    reconstructed: true,
+    utf8_boundary_safe: true,
+    max_chunk_bytes: 24576,
+  }));
+} finally {
+  fs.rmSync(state, {recursive: true, force: true});
+}
+process.exit(0);
+"""
+    try:
+        completed = runner(
+            [node, "--input-type=module", "-e", source],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            timeout=30,
+            **_git_kwargs(),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise DevSpaceCompatError(
+            "DEVSPACE_LARGE_READ_BRIDGE_CHECK_TIMEOUT",
+            "DevSpace large single-line read bridge check timed out",
+            {"root": str(root), "timeout_seconds": 30},
+        ) from exc
+    if completed.returncode != 0:
+        raise DevSpaceCompatError(
+            "DEVSPACE_LARGE_READ_BRIDGE_CHECK_FAILED",
+            "DevSpace large single-line read bridge check failed",
+            {"root": str(root), "stderr": (completed.stderr or "").strip()[-1200:]},
+        )
+    try:
+        result = json.loads((completed.stdout or "").strip())
+    except json.JSONDecodeError as exc:
+        raise DevSpaceCompatError(
+            "DEVSPACE_LARGE_READ_BRIDGE_CHECK_INVALID",
+            "DevSpace large read bridge check did not return valid JSON",
+            {"root": str(root)},
+        ) from exc
+    expected = {
+        "ok": True,
+        "reconstructed": True,
+        "utf8_boundary_safe": True,
+        "max_chunk_bytes": 24576,
+    }
+    if result != expected:
+        raise DevSpaceCompatError(
+            "DEVSPACE_LARGE_READ_BRIDGE_CHECK_INCOMPLETE",
+            "DevSpace large read bridge check did not prove every boundary",
+            {"root": str(root), "result": result},
+        )
+    return {**result, "root": str(root), "status": "chunk-reconstruction-verified"}
+
+
 def patch_root() -> Path:
     return Path(__file__).resolve().parent / "devspace-compat" / SUPPORTED_VERSION
 
@@ -390,7 +550,7 @@ def stop_exact_devspace_service(
     identity = service_probe(local_port)
     if identity is None:
         return {"ok": True, "stopped": False, "reason": "service-absent"}
-    roots = list(package_roots or resolve_package_roots())
+    roots = list(package_roots or resolve_service_stop_roots())
     identity = _assert_devspace_service_identity(identity, roots)
     pid = int(identity["pid"])
     if stopper is not None:
@@ -441,7 +601,7 @@ def _apply_patch(package_root: Path, patch_path: Path) -> None:
     isolated_env["GIT_CEILING_DIRECTORIES"] = str(package_root.parent)
     patch_bytes = patch_path.read_bytes().replace(b"\r\n", b"\n")
     for check_only in (True, False):
-        argv = ["git", "-c", "core.autocrlf=false", "apply"]
+        argv = ["git", "-c", "core.autocrlf=false", "apply", "--ignore-space-change"]
         if check_only:
             argv.append("--check")
         argv.append("-")
@@ -482,6 +642,7 @@ def ensure_devspace_compatibility(
     changed: list[str] = []
     already: list[str] = []
     oauth_checks: list[dict[str, Any]] = []
+    large_read_checks: list[dict[str, Any]] = []
     for root in roots:
         if package_version(root) != SUPPORTED_VERSION:
             raise DevSpaceCompatError(
@@ -496,31 +657,48 @@ def ensure_devspace_compatibility(
             if current == contract["patched"]:
                 already.append(item)
                 continue
-            if current != contract["pristine"]:
+            upgrades = contract.get("upgrades") if isinstance(contract.get("upgrades"), dict) else {}
+            if current != contract["pristine"] and current not in upgrades:
                 raise DevSpaceCompatError(
                     "DEVSPACE_FILE_HASH_MISMATCH",
                     "DevSpace compatibility refuses an unknown third-party file",
                     {
                         "path": str(target),
                         "actual": current,
-                        "expected": [contract["pristine"], contract["patched"]],
+                        "expected": [contract["pristine"], contract["patched"], *sorted(upgrades)],
                     },
                 )
             backup_path = backup / Path(relative)
             backup_path.parent.mkdir(parents=True, exist_ok=True)
             if not backup_path.exists():
                 shutil.copy2(target, backup_path)
-            _apply_patch(root, patch_root() / str(contract["patch"]))
-            actual = sha256_file(target)
-            if actual != contract["patched"]:
-                raise DevSpaceCompatError(
-                    "DEVSPACE_PATCH_HASH_MISMATCH",
-                    "DevSpace compatibility patch output hash is unexpected",
-                    {"path": str(target), "actual": actual, "expected": contract["patched"]},
-                )
+            observed: set[str] = set()
+            while current != contract["patched"]:
+                if current in observed:
+                    raise DevSpaceCompatError(
+                        "DEVSPACE_PATCH_CYCLE",
+                        "DevSpace compatibility patch chain did not converge",
+                        {"path": str(target), "actual": current},
+                    )
+                observed.add(current)
+                patch_name = contract["patch"] if current == contract["pristine"] else upgrades.get(current)
+                if not patch_name:
+                    raise DevSpaceCompatError(
+                        "DEVSPACE_PATCH_HASH_MISMATCH",
+                        "DevSpace compatibility patch output hash is unexpected",
+                        {
+                            "path": str(target),
+                            "actual": current,
+                            "expected": contract["patched"],
+                        },
+                    )
+                _apply_patch(root, patch_root() / str(patch_name))
+                current = sha256_file(target)
             changed.append(item)
         if "dist/oauth-provider.js" in PATCHES:
             oauth_checks.append(check_oauth_refresh_replay(package_root=root))
+        if "dist/server.js" in PATCHES:
+            large_read_checks.append(check_large_read_bridge(package_root=root))
     marker = restart_marker_path()
     if changed:
         marker = _write_restart_marker(roots)
@@ -531,6 +709,7 @@ def ensure_devspace_compatibility(
         "changed": changed,
         "already_patched": already,
         "oauth_refresh_replay_checks": oauth_checks,
+        "large_read_bridge_checks": large_read_checks,
         "service_restart_required": marker.is_file(),
         "restart_marker": str(marker),
     }
@@ -615,7 +794,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser(
         description=(
-            "Apply the exact DevSpace 1.0.4 bounded workspace and OAuth refresh "
+            "Apply the exact DevSpace 1.0.7 bounded workspace and OAuth refresh "
             "compatibility patches."
         )
     )
@@ -661,7 +840,25 @@ def main(argv: Sequence[str] | None = None) -> int:
                 local_port=args.local_port,
             )
         elif args.stop_exact_service:
-            result = stop_exact_devspace_service(local_port=args.local_port)
+            roots = None
+            if args.package_root is not None:
+                root = args.package_root.expanduser().resolve(strict=True)
+                version = package_version(root)
+                if version not in {SUPPORTED_VERSION, LEGACY_LKG_VERSION}:
+                    raise DevSpaceCompatError(
+                        "DEVSPACE_SERVICE_STOP_VERSION_UNSUPPORTED",
+                        "service stop accepts only the validated current or last-known-good package",
+                        {
+                            "root": str(root),
+                            "version": version,
+                            "allowed_versions": [SUPPORTED_VERSION, LEGACY_LKG_VERSION],
+                        },
+                    )
+                roots = [root]
+            result = stop_exact_devspace_service(
+                local_port=args.local_port,
+                package_roots=roots,
+            )
         else:
             result = ensure_devspace_compatibility(package_root=args.package_root)
     except DevSpaceCompatError as exc:

@@ -23,6 +23,7 @@ SKIP_DIRS = {
     "__pycache__",
     "node_modules",
     ".tmp",
+    ".codex-tmp",
     "data",
     "profile",
     "state",

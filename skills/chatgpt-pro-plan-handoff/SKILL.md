@@ -1,107 +1,23 @@
 ---
 name: chatgpt-pro-plan-handoff
-description: Run staged work with explicitly authorized read/write DevSpace Pro and Oracle-based regular comprehensive stages; explicit Pro attachments remain available for bounded evidence.
+description: Run staged work with explicitly authorized read-only DevSpace Pro design, advice, or review and Oracle-based regular comprehensive stages.
 ---
 
 # Pro and comprehensive handoff
 
 Pro uses Oracle and is quota-limited. A standard comprehensive workflow may
 select it only when its manifest has `allow_pro: true` after an explicit user
-request. Ordinary comprehensive sessions honor the durable host
-`regular_web_mode` preference: `pro` uses `GPT-5.6 Sol` at the Pro effort,
-while the unset/default value remains at the highest supported non-Pro tier.
-This power preference does not create the distinct optional Pro design stage.
-The qualified `GPT-5.6 Sol` Pro stage uses read/write DevSpace at the exact
-project root and may perform mission-authorized edits and commands under the
-repository safety policy. `pro-attachment` remains an explicit attachment-only
-contract for immutable/external evidence or DevSpace-unreadable artifacts, not
-an automatic fallback. CodexPro and all agbrowse creation are frozen; legacy
-files remain only for exact persisted-run recovery.
-
-## Explicit Pro-first collaborative ownership
-
-When the user explicitly asks to delegate heavily to qualified Pro, treat Pro
-as a semantic implementation owner rather than an advisory reviewer. Give the
-Oracle DevSpace stages as much mission-authorized architecture, exploration,
-code creation, code editing, refactoring, focused testing, and candidate review
-as the exact workspace and safety boundary allow.
-
-- Split work by comparative advantage. Pro normally owns broad semantic design
-  and implementation; local Codex normally retains exact-root qualification,
-  protected host-only observations, workflow identity and recovery, hashes,
-  deterministic gates, and irreversible release boundaries.
-- Local Codex may still implement a bounded integration slice when it is
-  materially safer or more efficient, but the mission must name the ownership
-  boundary. Serialize handoffs and never let Pro and local Codex edit the same
-  files concurrently.
-- A dirty live checkout or protected operational runtime constrains the write
-  location, not Pro's coding capability. Put candidate writes in the authorized
-  isolated root and pass bounded, non-secret host observations into the mission
-  instead of reducing Pro to read-only advice. Never copy an uncommitted live
-  diff or mutate live tasks, credentials, profiles, tokens, or state without
-  explicit authority.
-- When durable regular_web_mode is already pro, regular comprehensive plan,
-  review, implementation, and final-gate stages are themselves qualified Pro.
-  Do not add a redundant optional Pro stage merely to relabel them.
-- Delegation never expands user authority. Commit, push, deployment, provider
-  calls, credential use, and other external mutations keep their independent
-  approval gates.
-
-## Evidence-economical review loop
-
-Minimize redundant verification without lowering the safety floor.
-
-- Freeze one candidate SHA and give the web reviewer the exact diff, direct
-  dependency/risk cone, unresolved finding IDs, and hash-bound prior report.
-  Do not ask it to re-review the whole tree, settled findings, or unchanged
-  operational boundaries unless the new diff can affect them or prior evidence
-  is stale, ambiguous, or missing.
-- During editing, run focused tests for changed behavior. Run the broad local
-  gate once after the candidate is frozen. Reuse an exact-SHA receipt instead of
-  rerunning unchanged suites in the same task; invalidate it when tracked bytes,
-  relevant configuration, runtime prerequisites, or the tested boundary change.
-- Use one web review per coherent candidate by default. Blocking findings may
-  trigger fixes followed by one targeted rereview of those findings and the new
-  diff. `PASS` or `PASS_WITH_NOTES` ends the automatic review loop. Nonblocking
-  notes do not trigger another web review unless the user explicitly asks, the
-  fix changes an authentication, credential, data-loss, deployment, or other
-  high-risk boundary, or the fix materially expands the reviewed scope.
-- Label live browser/provider/task/deployment observations as bounded host
-  evidence. Do not ask a read-only web reviewer to reproduce them or repeat an
-  unchanged canary. Refresh live evidence only when its boundary changed, it is
-  cheap and drift-prone, or it is an explicit completion gate.
-- After a web submission, prefer event-driven terminal output. If a manual
-  status audit is needed, perform the first audit at 20 minutes and later audits
-  at 10-minute intervals. Do not use 30-second or 1-minute audit polling.
-  Explicit terminal/error output or a user interruption is handled immediately;
-  internal liveness and terminal-watch safety probes are not manual audits.
-- Never optimize away the minimum gate: exact root and SHA, clean/diff identity,
-  relevant unresolved findings, focused coverage for changed behavior, one final
-  deterministic local gate, and fail-closed handling of stale or contradictory
-  evidence.
-
-## Trajectory-gated review-skill evolution
-
-This is a maintenance gate, not another web stage. Ordinary runs do not edit
-their own skill and incur no extra provider call for it.
-
-- Base an explicitly requested skill change on raw exact-run trajectories and
-  receipts from this `GPT-5.6 Sol` Pro + Oracle + DevSpace consumer. Separate
-  successful and failed task behavior; do not train on transport-uncertain or
-  stale evidence as if it were a model failure.
-- Encode concrete recurring failure mechanisms, executable remedies, and an
-  explicit high-risk action blacklist. Reject generic caution, formatting-only
-  rewrites, and prose preference as improvement evidence.
-- Limit one candidate to at most two coherent add/delete/replace edits. Preserve
-  successful behavior and retain rejected edit directions in the source-side
-  evaluation record instead of the deployed skill.
-- Accept a candidate only when disjoint held-out cases show strict task-outcome
-  improvement, no safety regression, and no unjustified increase in web calls,
-  repeated audits, or broad test work. Require manual review and source/install
-  byte parity; never auto-adopt from the optimizer output.
-- Evaluate transfer to another model, transport, or harness separately. It does
-  not replace the acceptance gate for the exact consumer that will load this
-  skill.
+request; regular work remains at the highest supported non-Pro reasoning tier.
+Every new qualified `GPT-5.6 Sol` Pro stage uses `pro-devspace-readonly`
+read-only DevSpace at the exact project root for design, advice, or review and
+must not create, edit, or
+remove files or run commands. A regular `GPT-5.6` `extra-high` DevSpace stage
+owns all such work under the repository safety policy. Explicit
+`pro-attachment` remains a separate read-only immutable/external-evidence
+route and is never an automatic fallback. Persisted legacy `pro-devspace`
+write runs retain their exact authority only during recovery. CodexPro and all
+agbrowse creation are frozen; legacy files remain only for exact persisted-run
+recovery.
 
 New GPT comprehensive work uses
 `bin/chatgpt_oracle_comprehensive.py` with schema
@@ -122,7 +38,7 @@ repeat that question later in the same task. Follow
 subagent contract.
 
 The optional `ultra-gpt` profile replaces every semantic native Codex
-subagent role with a separate configured-power web GPT session. Local Codex remains a
+subagent role with a separate regular web GPT session. Local Codex remains a
 deterministic controller only. The enforced path is plan, independent web
 review and partitioning, bounded parallel isolated-worktree Web Multi lanes plus
 merger, final web verification, and the local deterministic gate. Pro is not a
@@ -143,7 +59,7 @@ one authorized pass should finish the work at the lowest cost. Use
 comprehensive mode when the plan needs an independent review stage, when Pro or
 Web Multi must participate, or when completion must be proven deterministically.
 Do not emulate comprehensive staging by chaining `orchestrator` submissions by
-hand; same-project web submissions stay serialized and the workflow engine owns
+hand; same-task submissions against one project stay serialized while foreign task owners remain isolated, and the workflow engine owns
 stage identity and recovery.
 
 The manifest supplies absolute `project_root`, `workflow_dir`,
@@ -153,18 +69,19 @@ bound `codex.chatgpt.oracle-stage-result/v1` receipt. The host validates
 workflow/stage/attempt/input hashes, UTF-8 paths, output hashes, PASS status,
 and the transition; it never rewrites the semantic prompt.
 
-An explicitly authorized Pro stage runs through Oracle with read/write DevSpace.
-It returns one strict identity-bound JSON envelope containing its output and
-next-mission text. The host mechanically preserves those strings as UTF-8 files
-and computes the standard receipt; it does not summarize or rewrite them.
+An explicitly authorized new Pro stage runs through Oracle with read-only
+DevSpace for design, advice, or review. Any resulting file mutation or command
+belongs to a regular `GPT-5.6` `extra-high` stage. Pro returns one strict
+identity-bound JSON envelope containing its output and next-mission text. The
+host mechanically preserves those strings as UTF-8 files and computes the
+standard receipt; it does not summarize or rewrite them.
 
 When a plan explicitly selects `pro-attachment`, its next mission declares one
-closed `[PRO_ATTACHMENT_CONTRACT]` block. The JSON body uses schema
-`codex.chatgpt.oracle-pro-attachments/v1` and an `attachments` array of
-absolute project-root-contained regular non-symlink paths with optional
-SHA-256 values. The host attaches only the mission and these declared files; it
-never discovers ZIPs from prose. An authorized Pro mission without the block
-uses the read/write DevSpace route. Ordinary DevSpace stages reject this block.
+closed `[PRO_ATTACHMENT_CONTRACT]` block for immutable/external evidence. The
+host attaches only the declared project-contained regular non-symlink files
+and validates optional SHA-256 values; it never discovers attachments from
+prose. New DevSpace Pro remains read-only, and regular non-Pro DevSpace stages
+perform any required mutation or command.
 
 Plan receipts should use `PLAN_READY`. For compatibility, `completed` is
 accepted only when the plan receipt is otherwise a fully ready, blocker-free,
@@ -205,9 +122,10 @@ Transport or runner recovery keeps the same workflow and stage identity. It
 must never create a `workflow-retryN` replacement. The revision budget and
 remaining critical finding set are persisted in the workflow state for
 operator visibility. Only final web PASS plus a zero-exit local gate can
-complete. An explicitly authorized Pro selection launches the qualified read/write DevSpace stage unless
-its plan explicitly declares `pro-attachment`, then waits for a bound receipt;
-it is never downgraded. Missing receipt/output,
+complete. An explicitly authorized new Pro selection launches the qualified
+read-only DevSpace design/advice/review stage and waits for a bound receipt;
+the plan sends mutations and commands to a regular `GPT-5.6` `extra-high`
+stage. Missing receipt/output,
 crash, or ambiguity returns attention-required without a replacement submit.
 Regular-stage `--browser-timeout` is a browser observation window, not a work
 termination deadline. At 4,800 seconds comprehensive mode performs a caution
@@ -231,6 +149,29 @@ recovery evidence, writes a workflow/stage/attempt/input-bound settlement, and
 lets comprehensive mode consume at most one replacement for that immutable
 binding. Missing or changed evidence restores fail-closed project ownership;
 a replacement failure never authorizes a second submission.
+
+If the user explicitly clicks the provider UI stop control and then explicitly
+abandons the whole comprehensive workflow, do not use the legacy agbrowse stop
+path and do not edit Oracle or workflow JSON by hand. The maintenance owner may
+use the installed comprehensive runner's `--cancel-user-stopped` command only
+after binding the exact workflow state, scope state, and terminal-harvested
+Oracle run `state.json` by their current SHA-256 values. The exact confirmation
+token is `user-confirmed-provider-stop`. Dry-run first. The command launches no
+prompt or recovery, preserves the Oracle run state byte-for-byte, writes a
+durable authority and completion receipt, marks the workflow `CANCELED`, and
+releases only its exact comprehensive scope. Missing, live, executed, foreign,
+or changed evidence fails closed.
+
+For the bounded pre-submit error `version resolution failed: DevSpace large
+single-line read bridge check timed out`, the same command accepts only the
+explicit token `user-confirmed-pre-submit-workflow-cancel`. It additionally
+requires empty stdout, no output, no conversation URL, and exact pre-submit
+state before it can write `CANCELED` and release the scope. Never use this token
+for another error or a possibly submitted run.
+The exact `DEVSPACE_SERVICE_RESTART_REQUIRED` pre-submit error uses the same
+token only after the managed setup procedure has restarted DevSpace once and
+verified the preserved roots and endpoints. Settlement itself never restarts
+the service.
 
 Existing v1-v4 agbrowse comprehensive state and v3 parallel implementation are
 legacy recovery-only. Their files remain installed for exact recovery but are

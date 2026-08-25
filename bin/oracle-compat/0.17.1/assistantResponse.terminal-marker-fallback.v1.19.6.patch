@@ -1,0 +1,86 @@
+diff --git a/dist/src/browser/actions/assistantResponse.js b/dist/src/browser/actions/assistantResponse.js
+--- a/dist/src/browser/actions/assistantResponse.js
++++ b/dist/src/browser/actions/assistantResponse.js
+@@ -15,12 +15,16 @@ function readPositiveIntEnv(name, fallback) {
+ const TERMINAL_GATE_CONFIG = {
+     barConfirmCycles: readPositiveIntEnv("ORACLE_BAR_CONFIRM_CYCLES", 3),
+     minStableMs: readPositiveIntEnv("ORACLE_TERMINAL_MIN_STABLE_MS", 1_200),
++    markerConfirmCycles: 2,
++    markerMinStableMs: 5_000,
++    taskOutcomeContract: process.env.ORACLE_TASK_OUTCOME_TERMINAL_CONTRACT === "v1" ? "v1" : null,
+ };
+ export function createTerminalGateState(now) {
+     return {
+         lastKey: "",
+         lastChangeAt: now,
+         barStableCycles: 0,
++        markerStableCycles: 0,
+         seen: false,
+     };
+ }
+@@ -35,10 +39,18 @@ export function classifyTurnTerminal(state, sample, config) {
+     const barStableCycles = sample.barVisible && !sample.stopVisible && !sample.strongThinkingActive && !changed
+         ? state.barStableCycles + 1
+         : 0;
++    // proofB is independent of transient thinking/streaming labels and completion-action
++    // controls. It is intentionally narrower: the exact marker must be the last semantic line
++    // (optionally followed only by bounded rendered reference backlinks), remain byte-stable across
++    // multiple polls, and neither a stop control nor strong activity may be visible.
++    const markerStableCycles = config.taskOutcomeContract === "v1" && sample.terminalMarker && !sample.stopVisible && !sample.strongThinkingActive && !changed
++        ? state.markerStableCycles + 1
++        : 0;
+     const next = {
+         lastKey: sample.contentKey,
+         lastChangeAt,
+         barStableCycles,
++        markerStableCycles,
+         seen: true,
+     };
+     let terminal = false;
+@@ -48,14 +60,37 @@ export function classifyTurnTerminal(state, sample, config) {
+         // requirement guards the documented race where finished-action controls surface while only
+         // the first tokens have rendered. Weak sidecar evidence cannot hang a finished turn, but
+         // strong live activity vetoes this proof and restarts its debounce.
+-        terminal =
++        const actionBarProof =
+             sample.barVisible &&
+                 !sample.strongThinkingActive &&
+                 barStableCycles >= config.barConfirmCycles &&
+                 stableMs >= config.minStableMs;
++        const terminalMarkerProof =
++            config.taskOutcomeContract === "v1" &&
++                sample.terminalMarker &&
++                !sample.strongThinkingActive &&
++                markerStableCycles >= config.markerConfirmCycles &&
++                stableMs >= config.markerMinStableMs;
++        terminal = actionBarProof || terminalMarkerProof;
+     }
+     return { state: next, terminal };
+ }
++const TASK_OUTCOME_TERMINAL_LINE = /^TASK_OUTCOME: (?:EXECUTED|NOT_EXECUTED|BLOCKED)$/;
++const RENDERED_REFERENCE_FOOTER_LINE = /^(?:(?:[\p{L}\p{N}_.-]+\/)*[\p{L}\p{N}_.-]+\.[\p{L}\p{N}_.-]+)(?:;\s*(?:(?:[\p{L}\p{N}_.-]+\/)*[\p{L}\p{N}_.-]+\.[\p{L}\p{N}_.-]+))*\.\s↩$/u;
++export function hasContractTerminalMarker(value) {
++    const text = String(value ?? "");
++    const occurrences = text.match(/TASK_OUTCOME:\s*(?:EXECUTED|NOT_EXECUTED|BLOCKED)/gi) ?? [];
++    const lines = text
++        .split(/\r?\n/)
++        .map((line) => line.trim())
++        .filter(Boolean);
++    const markerIndex = lines.findIndex((line) => TASK_OUTCOME_TERMINAL_LINE.test(line));
++    const renderedReferenceFooter = lines.slice(markerIndex + 1);
++    return occurrences.length === 1 &&
++        markerIndex >= 0 &&
++        renderedReferenceFooter.length <= 32 &&
++        renderedReferenceFooter.every((line) => line.length <= 512 && RENDERED_REFERENCE_FOOTER_LINE.test(line));
++}
+ const THINKING_STATUS_LABELS = [
+     "thinking",
+     "pro thinking",
+@@ -441,6 +476,7 @@ async function pollAssistantCompletion(Runtime, timeoutMs, minTurnIndex, expecte
+                 stopVisible,
+                 barVisible,
+                 strongThinkingActive: thinkingActivity.strong,
++                terminalMarker: hasContractTerminalMarker(normalized.text),
+             }, TERMINAL_GATE_CONFIG);
+             gate = decision.state;
+             if (decision.terminal) {

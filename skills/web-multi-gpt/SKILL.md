@@ -32,7 +32,7 @@ python "$env:USERPROFILE\.codex\bin\chatgpt_oracle_multi.py" --manifest C:\proje
 Each lane receives its own Oracle slug/run/output and only the configured app
 mention (default `@codex`) plus its mission path. Lanes run in stable waves of at most five; a larger topology is
 not reduced. Successful handoffs are preserved and exactly one merger consumes
-their paths in lane order. The parent holds same-project exclusion while child
+their paths in lane order. The parent holds same-task project exclusion while child
 launches use a short parent-scoped mutex. On Windows each lane uses a separate
 throwaway copy of the signed-in Oracle profile, preventing one solver from
 closing or taking over another solver's Chrome session.

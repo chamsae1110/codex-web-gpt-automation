@@ -1,0 +1,43 @@
+diff --git a/dist/src/browser/index.js b/dist/src/browser/index.js
+index fde071c..a3ac291 100644
+--- a/dist/src/browser/index.js
++++ b/dist/src/browser/index.js
+@@ -29,7 +29,7 @@ import { chatgptDomProvider } from "./providers/index.js";
+ import { resolveAttachRunningConnection } from "./attachRunning.js";
+ import { connectToExistingChatGptTab } from "./liveTabs.js";
+ import { captureBrowserDiagnostics } from "./domDebug.js";
+-import { archiveChatGptConversation, resolveBrowserArchiveDecision, } from "./actions/archiveConversation.js";
++import { archiveChatGptConversation, resolveBrowserArchiveDecision, unarchiveChatGptConversation, } from "./actions/archiveConversation.js";
+ import { assertManualLoginProfileReadyForRun, defaultManualLoginProfileDir, formatManualLoginSetupCommand, isManualLoginProfileInitialized, resolveManualLoginWaitMs, } from "./manualLoginProfile.js";
+ import { describeBrowserControlPlan, formatBrowserControlPlan } from "./controlPlan.js";
+ import { createConversationUrlMonitor, } from "./conversationUrlMonitor.js";
+@@ -926,6 +926,9 @@ export async function runBrowserMode(options) {
+             }
+             await raceWithDisconnect(ensureNotBlocked(Runtime, config.headless, logger));
+             await raceWithDisconnect(ensureLoggedIn(Runtime, logger));
++            if (isResumingConversation && config.resumeArchivedConversation) {
++                await raceWithDisconnect(unarchiveChatGptConversation(Runtime, logger, { expectedConversationUrl: config.resumeConversationUrl }));
++            }
+             await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
+             if (isResumingConversation) {
+                 await raceWithDisconnect(waitForResumedConversationHydration(Runtime, config.inputTimeoutMs, logger, {
+@@ -953,6 +956,9 @@ export async function runBrowserMode(options) {
+             if (isResumingConversation) {
+                 await raceWithDisconnect(navigateToChatGPT(Page, Runtime, config.resumeConversationUrl, logger));
+                 await raceWithDisconnect(ensureNotBlocked(Runtime, config.headless, logger));
++                if (config.resumeArchivedConversation) {
++                    await raceWithDisconnect(unarchiveChatGptConversation(Runtime, logger, { expectedConversationUrl: config.resumeConversationUrl }));
++                }
+                 await raceWithDisconnect(ensurePromptReady(Runtime, config.inputTimeoutMs, logger));
+             }
+             else if (config.url !== baseUrl) {
+@@ -2335,6 +2341,9 @@ async function runRemoteBrowserMode(promptText, attachments, config, logger, opt
+         }
+         await ensureNotBlocked(Runtime, config.headless, logger);
+         await ensureLoggedIn(Runtime, logger, { remoteSession: true });
++        if (config.resumeConversationUrl && config.resumeArchivedConversation) {
++            await unarchiveChatGptConversation(Runtime, logger, { expectedConversationUrl: config.resumeConversationUrl });
++        }
+         await ensurePromptReady(Runtime, config.inputTimeoutMs, logger);
+         if (config.resumeConversationUrl) {
+             await waitForResumedConversationHydration(Runtime, config.inputTimeoutMs, logger, {

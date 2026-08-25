@@ -37,10 +37,12 @@ python3 install.py --enable-local-multi-gpt
 ```
 
 The opt-in installs the skill and MCP server together, selects a Codex CLI that
-can parse the active `config.toml`, registers the `multi_gpt` stdio MCP, and
-records the exact CLI path in the MCP environment. This prevents an older
-`codex` earlier on `PATH` from breaking after newer global `[agents]` settings
-are installed.
+can parse the active `config.toml` **and** accept the exact Luna Max override,
+registers the `multi_gpt` stdio MCP, and records the exact CLI path in the MCP
+environment. Re-running the setup after a Codex Desktop update safely refreshes
+that path only when the existing registration still owns this exact server.
+Unrelated registrations remain a conflict. This prevents a removed or older
+CLI from silently weakening or breaking the execution contract.
 
 Restart Codex after the first registration. Then verify:
 
@@ -49,8 +51,12 @@ python "$env:USERPROFILE\.codex\bin\codex_local_multi_gpt_setup.py" doctor
 ```
 
 The execution contract is fixed to `gpt-5.6-luna` with reasoning effort
-`max`. The MCP refuses other model or effort overrides before creating a child.
-It is advisory only: it is not release approval or deterministic verification.
+`max`. Before a job is persisted, the MCP runs a no-model-call configuration
+canary with those exact values. It fails closed with
+`LUNA_MAX_UNSUPPORTED_BY_CODEX_CLI` if the registered CLI cannot accept them,
+and every stage still receives the same explicit model and effort arguments.
+The MCP refuses other overrides before the canary or child creation. It is
+advisory only: it is not release approval or deterministic verification.
 
 ## Upstream provenance
 

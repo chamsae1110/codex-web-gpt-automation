@@ -71,8 +71,10 @@ def test_apply_preserves_existing_config_and_policy_and_is_idempotent(tmp_path: 
     assert "%LOCALAPPDATA%\\Codex\\Sources" in global_policy
     assert "Default ordinary web work to `gpt-5.6` with `extra-high`" in global_policy
     assert "Treat Pro as quota-limited and explicit-only" in global_policy
-    assert "New explicit Pro runs use the `pro-devspace` route" in global_policy
-    assert "Preserve persisted `pro-devspace-readonly` runs" in global_policy
+    assert "Every new explicit Pro run uses the `pro-devspace-readonly` route" in global_policy
+    assert "Preserve persisted legacy `pro-devspace` write" in global_policy
+    assert "GPT-5.6 Luna" in global_policy and "must be `max`" in global_policy
+    assert "<model>_<reasoning>_<task>" in global_policy
     assert module.doctor(home, source_root=ROOT)["ok"] is True
 
     second = module.apply_setup(home, source_root=ROOT)
@@ -123,7 +125,7 @@ def test_role_contracts_are_narrow_and_parseable() -> None:
     verifier = tomllib.loads(roles["verifier"])
     assert (scout["model"], scout["model_reasoning_effort"], scout["sandbox_mode"]) == (
         "gpt-5.6-luna",
-        "medium",
+        "max",
         "read-only",
     )
     assert implementer["model"] == "gpt-5.6-terra"

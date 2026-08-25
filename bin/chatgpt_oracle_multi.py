@@ -4,6 +4,7 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import os
 import shutil
 import stat
 import subprocess
@@ -21,6 +22,11 @@ SCHEMA = "codex.chatgpt.oracle-multi/v1"
 STRICT_SCHEMA = "codex.chatgpt.oracle-multi/v2"
 RESULT_SCHEMA = "codex.chatgpt.oracle-multi-result/v1"
 STRICT_RESULT_SCHEMA = "codex.chatgpt.oracle-multi-result/v2"
+WRITESET_SCHEMA = "codex.chatgpt.oracle-multi-writeset/v1"
+WRITESET_BEGIN = "[ORACLE_MULTI_WRITESET]"
+WRITESET_END = "[/ORACLE_MULTI_WRITESET]"
+MAX_WRITESET_FILES = 64
+MAX_WRITESET_BYTES = 2 * 1024 * 1024
 LANE_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 BIN = Path(__file__).resolve().parent
 
@@ -98,6 +104,24 @@ def _read_json(path: Path) -> dict[str, Any]:
     value = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(value, dict):
         raise MultiError("manifest must be a JSON object")
+    return value
+
+
+def _json_no_duplicates(text: str) -> dict[str, Any]:
+    def pairs(values: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in values:
+            if key in result:
+                raise MultiError(f"duplicate JSON key in writeset: {key}")
+            result[key] = value
+        return result
+
+    try:
+        value = json.loads(text, object_pairs_hook=pairs)
+    except json.JSONDecodeError as exc:
+        raise MultiError("writeset is not strict JSON") from exc
+    if not isinstance(value, dict):
+        raise MultiError("writeset must be a JSON object")
     return value
 
 
@@ -216,6 +240,19 @@ def load_manifest(path: Path) -> dict[str, Any]:
     except ValueError as exc:
         raise MultiError(str(exc)) from exc
     model = str(value.get("model") or "gpt-5.6").strip()
+    explicit_source_thread_id = str(value.get("source_thread_id") or "").strip().casefold() or None
+    runtime_source_thread_id = STATE.current_source_thread_id()
+    if (
+        explicit_source_thread_id is not None
+        and runtime_source_thread_id is not None
+        and explicit_source_thread_id != runtime_source_thread_id
+    ):
+        raise MultiError(
+            "SOURCE_THREAD_ID_MISMATCH: Multi manifest belongs to a different Codex task"
+        )
+    source_thread_id = explicit_source_thread_id or runtime_source_thread_id
+    if source_thread_id is not None and STATE.SOURCE_THREAD_ID_RE.fullmatch(source_thread_id) is None:
+        raise MultiError("source_thread_id must be one Codex task UUID")
     if strict:
         if model != "gpt-5.6":
             raise MultiError("strict Multi v2 permits only the regular gpt-5.6 model")
@@ -239,6 +276,7 @@ def load_manifest(path: Path) -> dict[str, Any]:
         "max_concurrency": concurrency,
         "app_name": app_name,
         "model": model,
+        "source_thread_id": source_thread_id,
         "copy_profile": Path(
             str(value.get("copy_profile") or (Path.home() / ".oracle" / "browser-profile"))
         ).expanduser().resolve(),
@@ -254,13 +292,18 @@ def _write_json(path: Path, value: dict[str, Any]) -> None:
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-def _effective_lane_mission(config: dict[str, Any], lane: dict[str, Any]) -> Path:
+def _effective_lane_mission(
+    config: dict[str, Any], lane: dict[str, Any], parent_id: str | None = None
+) -> Path:
     if not config.get("strict") or lane.get("access") != "worktree-write":
         return lane["mission_path"]
     target = lane["project_root"] / ".codex-ultra-missions" / f"{lane['id']}.md"
     target.parent.mkdir(parents=True, exist_ok=True)
     owned = "\n".join(f"- {path}" for path in lane["owned_paths"])
     source = lane["mission_path"].read_text(encoding="utf-8").rstrip()
+    if not parent_id:
+        raise MultiError("strict lane mission requires parent identity")
+    source_sha256 = hashlib.sha256(lane["mission_path"].read_bytes()).hexdigest()
     target.write_text(
         f"{source}\n\n[WEB_MULTI_STRICT_WORKTREE_WRITE_CONTRACT]\n"
         f"lane_id={lane['id']}\n"
@@ -271,7 +314,20 @@ def _effective_lane_mission(config: dict[str, Any], lane: dict[str, Any]) -> Pat
         "or any unlisted path. Other web agents are writing isolated worktrees concurrently. Keep all writes "
         "inside your scope, run only scope-safe checks, and report exact "
         "changed paths and validation results in the handoff.\n"
-        f"{owned}\n",
+        f"{owned}\n"
+        "\n[HOST_MATERIALIZATION_FALLBACK]\n"
+        "If and only if the registered DevSpace surface does not expose write/edit/bash, do not stop. "
+        "Return a host-materializable writeset in your final answer. Emit exactly one "
+        f"{WRITESET_BEGIN} line, then one strict JSON object, then one {WRITESET_END} line, followed by "
+        "TASK_OUTCOME: EXECUTED as the final nonempty line. The JSON exact keys are schema, parent_id, "
+        "lane_id, source_mission_sha256, files, summary. schema must be "
+        f"{WRITESET_SCHEMA}; parent_id={parent_id}; lane_id={lane['id']}; "
+        f"source_mission_sha256={source_sha256}. files contains 1..{MAX_WRITESET_FILES} entries with exact "
+        "keys path, operation, content. path must be normalized project-relative and inside owned_paths. "
+        "operation is write or delete; write content is the complete UTF-8 file text and delete content is null. "
+        f"Decoded write content across the lane is capped at {MAX_WRITESET_BYTES} bytes. "
+        "Do not return both direct workspace changes and a writeset. The host verifies the clean exact worktree, "
+        "identity, scope, types, limits, and resulting Git delta before applying anything to the canonical checkout.\n",
         encoding="utf-8",
     )
     return target
@@ -281,7 +337,7 @@ def _child_manifest(config: dict[str, Any], lane: dict[str, Any], parent_id: str
     lane_root = config["output_dir"] / "lanes" / lane["id"]
     manifest = lane_root / "oracle.json"
     provenance = lane_root / "child-provenance.json"
-    effective_mission = _effective_lane_mission(config, lane)
+    effective_mission = _effective_lane_mission(config, lane, parent_id)
     _write_json(provenance, {
         "schema": "codex.chatgpt.oracle-multi-child-provenance/v1",
         "parent_id": parent_id,
@@ -295,28 +351,28 @@ def _child_manifest(config: dict[str, Any], lane: dict[str, Any], parent_id: str
         "source_mission_path": str(lane["mission_path"]),
         "source_mission_sha256": hashlib.sha256(lane["mission_path"].read_bytes()).hexdigest(),
         "access": lane.get("access", "read-only"),
+        "source_thread_id": config.get("source_thread_id"),
         "owned_paths": list(lane.get("owned_paths") or []),
     })
-    configured_pro = WORKSPACE_CONFIG.configured_regular_web_mode() == "pro"
-    payload: dict[str, Any] = {
-        "schema": STATE.SCHEMA,
-        "project_root": str(lane.get("project_root") or config["project_root"]),
-        "mission_path": str(effective_mission),
-        "app_name": config["app_name"],
-        "mode": "browser",
-        "model": "gpt-5.6-sol" if configured_pro else config["model"],
-        "model_strategy": "select",
-        "thinking_time": "heavy" if configured_pro else "extra-high",
-        "copy_profile": str(config["copy_profile"]),
-        "research": "off",
-        "archive": "auto",
-        "parallel_parent_id": parent_id,
-        "web_multi_child_provenance_path": str(provenance),
-    }
-    if configured_pro:
-        payload["transport"] = "pro-devspace"
-        payload["task_outcome_contract"] = "v1"
-    _write_json(manifest, payload)
+    _write_json(
+        manifest,
+        {
+            "schema": STATE.SCHEMA,
+            "project_root": str(lane.get("project_root") or config["project_root"]),
+            "mission_path": str(effective_mission),
+            "app_name": config["app_name"],
+            "mode": "browser",
+            "model": config["model"],
+            "model_strategy": "select",
+            "thinking_time": "extra-high",
+            "copy_profile": str(config["copy_profile"]),
+            "research": "off",
+            "archive": "auto",
+            "parallel_parent_id": parent_id,
+            "web_multi_child_provenance_path": str(provenance),
+            "source_thread_id": config.get("source_thread_id"),
+        },
+    )
     return manifest
 
 
@@ -362,7 +418,7 @@ def _strict_canonical_clean(config: dict[str, Any]) -> None:
             continue
         unexpected.append(path)
     if unexpected:
-        raise MultiError("strict Ultra canonical checkout must be clean outside output_dir")
+        raise MultiError("Ultra GPT canonical checkout must be clean outside output_dir")
 
 
 def _strict_preflight(
@@ -518,6 +574,158 @@ def _strict_apply_audited_lanes(config: dict[str, Any], lanes: list[dict[str, An
             raise
 
 
+def _writeset_from_output(
+    config: dict[str, Any],
+    lane: dict[str, Any],
+    parent_id: str,
+    output_path: Path,
+) -> dict[str, Any]:
+    text = output_path.read_text(encoding="utf-8")
+    if text.count(WRITESET_BEGIN) != 1 or text.count(WRITESET_END) != 1:
+        raise MultiError(f"lane {lane['id']} has no unambiguous host writeset")
+    start = text.index(WRITESET_BEGIN) + len(WRITESET_BEGIN)
+    end = text.index(WRITESET_END, start)
+    value = _json_no_duplicates(text[start:end].strip())
+    if set(value) != {
+        "schema", "parent_id", "lane_id", "source_mission_sha256", "files", "summary"
+    }:
+        raise MultiError(f"lane {lane['id']} writeset key set is invalid")
+    source_sha = hashlib.sha256(lane["mission_path"].read_bytes()).hexdigest()
+    if (
+        value.get("schema") != WRITESET_SCHEMA
+        or value.get("parent_id") != parent_id
+        or value.get("lane_id") != lane["id"]
+        or value.get("source_mission_sha256") != source_sha
+        or not isinstance(value.get("summary"), str)
+    ):
+        raise MultiError(f"lane {lane['id']} writeset identity mismatch")
+    files = value.get("files")
+    if not isinstance(files, list) or not 1 <= len(files) <= MAX_WRITESET_FILES:
+        raise MultiError(f"lane {lane['id']} writeset file count is invalid")
+    normalized: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    total_bytes = 0
+    for item in files:
+        if not isinstance(item, dict) or set(item) != {"path", "operation", "content"}:
+            raise MultiError(f"lane {lane['id']} writeset entry key set is invalid")
+        relative = _normalized_relative(item.get("path"))
+        folded = relative.casefold()
+        if folded in seen:
+            raise MultiError(f"lane {lane['id']} writeset repeats a path")
+        seen.add(folded)
+        if not any(_claim_contains(claim, relative) for claim in lane["owned_paths"]):
+            raise MultiError(f"lane {lane['id']} writeset escapes owned_paths: {relative}")
+        operation = item.get("operation")
+        content = item.get("content")
+        if operation == "write" and isinstance(content, str):
+            encoded = content.encode("utf-8")
+            total_bytes += len(encoded)
+            normalized.append({"path": relative, "operation": operation, "content": encoded})
+        elif operation == "delete" and content is None:
+            normalized.append({"path": relative, "operation": operation, "content": None})
+        else:
+            raise MultiError(f"lane {lane['id']} writeset operation/content is invalid")
+    if total_bytes > MAX_WRITESET_BYTES:
+        raise MultiError(f"lane {lane['id']} writeset exceeds byte limit")
+    return {
+        "schema": WRITESET_SCHEMA,
+        "source_output_sha256": hashlib.sha256(output_path.read_bytes()).hexdigest(),
+        "file_count": len(normalized),
+        "total_write_bytes": total_bytes,
+        "files": normalized,
+    }
+
+
+def _assert_materialization_target(root: Path, relative: str) -> Path:
+    target = root / Path(relative)
+    resolved = target.resolve(strict=False)
+    try:
+        resolved.relative_to(root)
+    except ValueError as exc:
+        raise MultiError(f"writeset target escapes worktree: {relative}") from exc
+    current = root
+    for part in Path(relative).parts[:-1]:
+        current = current / part
+        if not current.exists():
+            continue
+        attributes = getattr(current.stat(follow_symlinks=False), "st_file_attributes", 0)
+        if current.is_symlink() or attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400):
+            raise MultiError(f"writeset parent is a reparse or symlink: {relative}")
+        if not current.is_dir():
+            raise MultiError(f"writeset parent is not a directory: {relative}")
+    if target.exists():
+        attributes = getattr(target.stat(follow_symlinks=False), "st_file_attributes", 0)
+        if target.is_symlink() or attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400):
+            raise MultiError(f"writeset target is a reparse or symlink: {relative}")
+        if not target.is_file():
+            raise MultiError(f"writeset target is not a regular file: {relative}")
+    return target
+
+
+def _materialize_strict_lane_writeset(
+    config: dict[str, Any],
+    lane: dict[str, Any],
+    parent_id: str,
+    output_path: Path,
+) -> dict[str, Any]:
+    if _strict_changed_paths(lane["project_root"]):
+        raise MultiError(f"lane {lane['id']} cannot combine direct writes with host materialization")
+    _strict_worktree_clean(lane["project_root"])
+    writeset = _writeset_from_output(config, lane, parent_id, output_path)
+    planned = [
+        (_assert_materialization_target(lane["project_root"], item["path"]), item)
+        for item in writeset["files"]
+    ]
+    with tempfile.TemporaryDirectory(prefix="writeset-", dir=config["output_dir"]) as raw_stage:
+        stage = Path(raw_stage)
+        backups: list[tuple[Path, Path | None]] = []
+        created_dirs: list[Path] = []
+        try:
+            for index, (target, item) in enumerate(planned):
+                backup = None
+                if target.is_file():
+                    backup = stage / "backups" / str(index)
+                    backup.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(target, backup)
+                backups.append((target, backup))
+                if item["operation"] == "delete":
+                    if not target.is_file():
+                        raise MultiError(f"writeset delete target is absent: {item['path']}")
+                    target.unlink()
+                    continue
+                missing: list[Path] = []
+                parent = target.parent
+                while parent != lane["project_root"] and not parent.exists():
+                    missing.append(parent)
+                    parent = parent.parent
+                target.parent.mkdir(parents=True, exist_ok=True)
+                created_dirs.extend(reversed(missing))
+                temporary = target.with_name(f".{target.name}.codex-materialize-{os.getpid()}-{index}")
+                try:
+                    temporary.write_bytes(item["content"])
+                    os.replace(temporary, target)
+                finally:
+                    if temporary.exists():
+                        temporary.unlink()
+        except Exception:
+            for target, backup in reversed(backups):
+                if backup is None:
+                    if target.is_file() and not target.is_symlink():
+                        target.unlink()
+                else:
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(backup, target)
+            for directory in reversed(created_dirs):
+                try:
+                    directory.rmdir()
+                except OSError:
+                    pass
+            raise
+    return {
+        key: value for key, value in writeset.items() if key != "files"
+    }
+
+
 def _run_lane(
     config: dict[str, Any],
     lane: dict[str, Any],
@@ -529,12 +737,16 @@ def _run_lane(
     result = execute(manifest, dry_run=dry_run)
     output = None
     session_locator = None
+    run_state_path = None
+    run_state_sha256 = None
     if not dry_run and result.get("run_dir"):
         run_dir = Path(str(result["run_dir"]))
         source = run_dir / "output.md"
         state_path = run_dir / "state.json"
         if state_path.is_file():
             state = _read_json(state_path)
+            run_state_path = str(state_path.resolve())
+            run_state_sha256 = hashlib.sha256(state_path.read_bytes()).hexdigest()
             oracle = state.get("oracle") if isinstance(state.get("oracle"), dict) else {}
             session_locator = oracle.get("session_locator")
         if source.is_file() and source.read_bytes().strip():
@@ -547,9 +759,21 @@ def _run_lane(
         "run_dir": result.get("run_dir"),
         "output_path": str(output) if output else None,
         "session_locator": session_locator,
+        "receipt": {
+            "run_state_path": run_state_path,
+            "run_state_sha256": run_state_sha256,
+            "output_path": str(output) if output else None,
+            "output_sha256": hashlib.sha256(output.read_bytes()).hexdigest() if output else None,
+        } if config.get("strict") else None,
     }
     if config.get("strict") and lane_result["ok"] and not dry_run:
         try:
+            if not _strict_changed_paths(lane["project_root"]):
+                if output is None:
+                    raise MultiError(f"lane {lane['id']} produced neither direct changes nor durable output")
+                lane_result["host_materialization"] = _materialize_strict_lane_writeset(
+                    config, lane, parent_id, output
+                )
             lane_result["audit"] = _strict_audit_lane(
                 config, lane, config["_strict_baselines"][lane["id"]]
             )
@@ -636,7 +860,9 @@ def reconcile_recovered_lanes(manifest_path: Path) -> dict[str, Any]:
             raise MultiError(f"lane {lane['id']} project identity mismatch")
         if state.get("parallel_parent_id") != parent_id:
             raise MultiError(f"lane {lane['id']} parent identity mismatch")
-        expected_mission_sha = hashlib.sha256(_effective_lane_mission(config, lane).read_bytes()).hexdigest()
+        expected_mission_sha = hashlib.sha256(
+            _effective_lane_mission(config, lane, parent_id).read_bytes()
+        ).hexdigest()
         if mission.get("sha256") != expected_mission_sha:
             raise MultiError(f"lane {lane['id']} mission identity mismatch")
         if state.get("status") != "complete" or state.get("terminal_harvested") is not True:
@@ -747,16 +973,29 @@ def run_multi(
     if config.get("strict") and not dry_run and result_path.exists():
         raise MultiError("STRICT_MULTI_EXISTING_LEDGER_REQUIRES_EXACT_RECOVERY")
     lanes: list[dict[str, Any]] = []
+    waves = [
+        {
+            "index": index // config["max_concurrency"],
+            "lane_ids": [lane["id"] for lane in config["solvers"][index:index + config["max_concurrency"]]],
+        }
+        for index in range(0, len(config["solvers"]), config["max_concurrency"])
+    ]
     # The parent owns normal same-project exclusion. Children use the separate
     # parent-scoped launch mutex and may wait concurrently after submission.
-    lock = nullcontext() if parent_lock_held else STATE.project_submit_mutex(config["project_root"], timeout_seconds=30)
+    lock = nullcontext() if parent_lock_held else STATE.project_submit_mutex(
+        config["project_root"],
+        timeout_seconds=30,
+        source_thread_id=config.get("source_thread_id"),
+    )
     with lock:
         if config.get("strict"):
             ledger = {
                 "schema": STRICT_RESULT_SCHEMA,
                 "status": "preflighting",
                 "parent_id": parent_id,
+                "source_thread_id": config.get("source_thread_id"),
                 "manifest_sha256": config["manifest_sha256"],
+                "waves": waves,
                 "lanes": [{"id": lane["id"], "status": "planned"} for lane in config["solvers"]],
             }
             if not dry_run:
@@ -796,6 +1035,7 @@ def run_multi(
                 "schema": STRICT_RESULT_SCHEMA,
                 "status": "writers_attention_required",
                 "parent_id": parent_id,
+                "source_thread_id": config.get("source_thread_id"),
                 "manifest_sha256": config["manifest_sha256"],
                 "strict_baselines": config.get("_strict_baselines"),
                 "lanes": lanes,
@@ -804,7 +1044,13 @@ def run_multi(
             _write_json(result_path, result)
             return {"ok": False, **result}
         if not successful:
-            result = {"schema": RESULT_SCHEMA, "status": "failed", "parent_id": parent_id, "lanes": lanes}
+            result = {
+                "schema": RESULT_SCHEMA,
+                "status": "failed",
+                "parent_id": parent_id,
+                "source_thread_id": config.get("source_thread_id"),
+                "lanes": lanes,
+            }
             _write_json(result_path, result)
             return {"ok": False, **result}
         if config.get("strict"):
@@ -852,9 +1098,17 @@ def run_multi(
         "schema": STRICT_RESULT_SCHEMA if config.get("strict") else RESULT_SCHEMA,
         "status": status,
         "parent_id": parent_id,
+        "source_thread_id": config.get("source_thread_id"),
         "manifest_sha256": config["manifest_sha256"],
         "strict_baselines": config.get("_strict_baselines") if config.get("strict") else None,
+        "waves": waves if config.get("strict") else None,
         "lanes": lanes,
+        "barrier_status": "all-lanes-terminal" if config.get("strict") and len(successful) == len(lanes) else None,
+        "apply_status": "complete" if config.get("strict") and len(successful) == len(lanes) else None,
+        "merger": {
+            "ok": bool(merger.get("ok")),
+            "run_dir": merger.get("run_dir"),
+        } if config.get("strict") else None,
         "merger_run_dir": merger.get("run_dir"),
         "merger_mission_path": str(merger_mission),
         "merger_mission_sha256": hashlib.sha256(merger_mission.read_bytes()).hexdigest(),

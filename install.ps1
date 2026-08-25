@@ -47,12 +47,35 @@ function Write-JsonDurable([string]$Path,$Value){
 }
 function Test-IsWithinRoot([string]$Root,[string]$Path){$r=[IO.Path]::GetFullPath($Root).TrimEnd([IO.Path]::DirectorySeparatorChar,[IO.Path]::AltDirectorySeparatorChar);$p=[IO.Path]::GetFullPath($Path);$p.StartsWith($r+[IO.Path]::DirectorySeparatorChar,[StringComparison]::OrdinalIgnoreCase)}
 function Get-SafeChild([string]$Root,[string]$Relative){if([string]::IsNullOrWhiteSpace($Relative)-or[IO.Path]::IsPathRooted($Relative)-or$Relative -match '(^|[\\/])\.{1,2}([\\/]|$)'){throw "unsafe relative path: $Relative"};$p=[IO.Path]::GetFullPath((Join-Path $Root $Relative));if(!(Test-IsWithinRoot $Root $p)){throw "path escapes root: $Relative"};$cursor=Split-Path -Parent $p;while((Test-IsWithinRoot $Root $cursor) -and $cursor -ne [IO.Path]::GetFullPath($Root)){if(Test-Path -LiteralPath $cursor){$i=Get-Item -LiteralPath $cursor -Force;if($i.LinkType){throw "symlink/reparse path refused: $cursor"}};$cursor=Split-Path -Parent $cursor};$p}
-function Get-ManifestFiles([string]$Root,$Patterns){$files=@();foreach($pattern in @($Patterns)){if($pattern -match '(^|/)\.{1,2}($|/)' -or [IO.Path]::IsPathRooted($pattern)){throw "unsafe manifest pattern: $pattern"};$base=if($pattern.StartsWith('bin/')){Join-Path $Root 'bin'}elseif($pattern.StartsWith('skills/')){Join-Path $Root 'skills'}elseif($pattern.StartsWith('mcp_servers/')){Join-Path $Root 'mcp_servers'}elseif($pattern.StartsWith('scripts/')){Join-Path $Root 'scripts'}elseif($pattern.StartsWith('contracts/')){Join-Path $Root 'contracts'}elseif($pattern.StartsWith('docs/')){Join-Path $Root 'docs'}elseif($pattern.StartsWith('marketplace/')){Join-Path $Root 'marketplace'}elseif($pattern.StartsWith('tests/fixtures/')){Join-Path $Root 'tests/fixtures'}else{throw "unsupported manifest root: $pattern"};$patternMatches=@();foreach($item in @(Get-ChildItem -LiteralPath $base -File -Recurse -Force)){if($item.LinkType){throw "manifest refuses symlink: $($item.FullName)"};$relative=$item.FullName.Substring($Root.Length).TrimStart([char[]]'\/').Replace('\','/');if($relative -like $pattern){[void](Get-SafeChild $Root $relative);$patternMatches+=$relative}};if(!$patternMatches.Count){throw "manifest pattern matched no files: $pattern"};$files+=$patternMatches};@($files|Sort-Object -Unique)}
+function Get-ManifestFiles([string]$Root,$Patterns){
+  $files=@()
+  foreach($pattern in @($Patterns)){
+    if($pattern -match '(^|/)\.{1,2}($|/)' -or [IO.Path]::IsPathRooted($pattern)){throw "unsafe manifest pattern: $pattern"}
+    # Root-level files are deliberately an exact allowlist.  Do not recurse over
+    # the repository root: that would traverse metadata and unrelated working files.
+    if($pattern -in @('upstream-runtime-policy.json','upstream-runtime-maintainer-automation.json')){
+      $source=Get-SafeChild $Root $pattern
+      if(!(Test-Path -LiteralPath $source) -or (Get-Item -LiteralPath $source -Force).LinkType){throw "manifest root contract invalid: $pattern"}
+      $files+=$pattern
+      continue
+    }
+    $base=if($pattern.StartsWith('bin/')){Join-Path $Root 'bin'}elseif($pattern.StartsWith('skills/')){Join-Path $Root 'skills'}elseif($pattern.StartsWith('mcp_servers/')){Join-Path $Root 'mcp_servers'}elseif($pattern.StartsWith('scripts/')){Join-Path $Root 'scripts'}elseif($pattern.StartsWith('contracts/')){Join-Path $Root 'contracts'}elseif($pattern.StartsWith('docs/')){Join-Path $Root 'docs'}elseif($pattern.StartsWith('marketplace/')){Join-Path $Root 'marketplace'}elseif($pattern.StartsWith('tests/fixtures/')){Join-Path $Root 'tests/fixtures'}else{throw "unsupported manifest root: $pattern"}
+    $patternMatches=@()
+    foreach($item in @(Get-ChildItem -LiteralPath $base -File -Recurse -Force)){
+      if($item.LinkType){throw "manifest refuses symlink: $($item.FullName)"}
+      $relative=$item.FullName.Substring($Root.Length).TrimStart([char[]]'\/').Replace('\','/')
+      if($relative -like $pattern){[void](Get-SafeChild $Root $relative);$patternMatches+=$relative}
+    }
+    if(!$patternMatches.Count){throw "manifest pattern matched no files: $pattern"}
+    $files+=$patternMatches
+  }
+  @($files|Sort-Object -Unique)
+}
 function Resume-PendingInstallTransactions([string]$Root){
   $backupBase=Join-Path $Root 'backups';if(!(Test-Path -LiteralPath $backupBase)){return}
   foreach($journalPath in @(Get-ChildItem -LiteralPath $backupBase -Filter 'install.wal.json' -File -Recurse -Force -ErrorAction SilentlyContinue|Sort-Object FullName)){
     $journal=Get-Content -LiteralPath $journalPath.FullName -Raw|ConvertFrom-Json
-    if($journal.schema -ne 'codexpro.install-wal/v1' -or $journal.status -in @('COMPLETE','ROLLED_BACK_AFTER_CRASH','ROLLED_BACK_AFTER_ERROR')){continue}
+    if($journal.schema -ne 'codexpro.install-wal/v1' -or $journal.status -in @('COMPLETE','ROLLED_BACK_AFTER_CRASH','ROLLED_BACK_AFTER_ERROR','ROLLED_BACK_AFTER_FAILURE')){continue}
     $conflicts=@();$entries=@($journal.files)
     for($index=$entries.Count-1;$index -ge 0;$index--){
       $entry=$entries[$index];$destination=Get-SafeChild $Root ([string]$entry.path)
@@ -81,7 +104,7 @@ if($latestReceipt.Count){try{$priorReceipt=Get-Content -LiteralPath $latestRecei
 if($EnableLocalMultiGpt){$InstallLocalMultiGpt=$true}
 elseif($DisableLocalMultiGpt){$InstallLocalMultiGpt=$false}
 elseif($null -ne $priorLocalMultiGpt){$InstallLocalMultiGpt=[bool]$priorLocalMultiGpt}
-elseif(!$WhatIfPreference -and !$env:CI -and !$env:PYTEST_CURRENT_TEST -and [Environment]::UserInteractive -and -not [Console]::IsInputRedirected){$answer=Read-Host ([string]$Manifest.optional_components.local_multi_gpt.prompt);$InstallLocalMultiGpt=$answer -match '^(?i:y|yes|예|네)$'}
+elseif(!$WhatIfPreference -and !$env:CI -and !$env:PYTEST_CURRENT_TEST -and [Environment]::UserInteractive -and -not [Console]::IsInputRedirected){$localeText="$(if($env:CODEX_ONBOARDING_LANG){$env:CODEX_ONBOARDING_LANG}) $(if($env:LC_ALL){$env:LC_ALL}) $(if($env:LANG){$env:LANG}) $([Globalization.CultureInfo]::CurrentUICulture.Name)";$prompt=if($localeText -match '(?i)(^|[^a-z])(ko|korean)'){$Manifest.optional_components.local_multi_gpt.prompt_ko}else{$Manifest.optional_components.local_multi_gpt.prompt_en};if(-not $prompt){$prompt=$Manifest.optional_components.local_multi_gpt.prompt};$answer=Read-Host ([string]$prompt);$InstallLocalMultiGpt=$answer -match '^(?i:y|yes|예|네)$'}
 else{$InstallLocalMultiGpt=[bool]$Manifest.optional_components.local_multi_gpt.default_install}
 $Patterns=@($Manifest.include);if($InstallLocalMultiGpt){$Patterns+=@($Manifest.optional_components.local_multi_gpt.include)}
 $Files=@(Get-ManifestFiles $RepoRoot $Patterns)

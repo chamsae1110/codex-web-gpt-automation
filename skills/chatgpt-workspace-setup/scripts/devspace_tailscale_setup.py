@@ -26,7 +26,7 @@ from typing import Any, Callable, Sequence
 
 DEFAULT_PORT = 7676
 APP_NAME = "codex"
-DEVSPACE_PACKAGE = "@waishnav/devspace@1.0.4"
+DEVSPACE_PACKAGE = "@waishnav/devspace@1.0.7"
 DEVSPACE_TOOL_MODE = "full"
 DEVSPACE_OAUTH_SCOPES = "devspace,offline_access"
 SECRET_PATTERN = re.compile(r"(?i)(password|token|secret|authorization)\s*([:=])\s*[^\s,;]+")
@@ -415,7 +415,7 @@ def refresh_after_app_registration(
 ) -> dict[str, Any]:
     """Recycle the managed server after manual ChatGPT OAuth registration.
 
-    DevSpace 1.0.4 can leave a newly approved ChatGPT connector unable to
+    DevSpace 1.0.7 can leave a newly approved ChatGPT connector unable to
     create its first tool session until the server is recycled.  This command
     is deliberately explicit: it never opens ChatGPT settings and it preserves
     the existing config, Owner credential, OAuth database, roots, and Funnel

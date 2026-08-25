@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import tempfile
 import threading
@@ -46,6 +47,9 @@ WAIT_OBJECT_0 = 0
 WAIT_ABANDONED = 0x80
 WAIT_TIMEOUT = 0x102
 CREATE_NO_WINDOW = 0x08000000
+ATOMIC_REPLACE_MAX_ATTEMPTS = 5
+ATOMIC_REPLACE_WINDOWS_TRANSIENT_ERRORS = {5, 32}
+ATOMIC_REPLACE_BACKOFF_SECONDS = (0.01, 0.025, 0.05, 0.1)
 BLOCKED_OPTIONS = {
     "-f", "--file", "--files", "--path", "--paths", "--include", "-p",
     "--prompt", "--message", "--write-output", "--slug", "-e", "--engine",
@@ -65,7 +69,7 @@ SAFE_ORACLE_VALUE_OPTIONS = {
     "--heartbeat",
     "--timeout",
     "--zombie-timeout",
-    # Oracle 0.17.1 is compatibility-patched so this is one browser observation
+    # The promoted Oracle and rollback LKG are patched so this is one browser observation
     # window, including fallback capture.  Reaching it is not terminal evidence:
     # the harness keeps the exact session binding and continues live recovery.
     "--browser-timeout",
@@ -98,6 +102,53 @@ ORACLE_NO_SESSION_RE = re.compile(
 ORACLE_PROMPT_NOT_OBSERVED_MARKER = (
     "Prompt did not appear in conversation before timeout (send may have failed)"
 )
+ORACLE_PROMPT_TEXTAREA_ABSENT_MARKER = "Prompt textarea did not appear before timeout"
+ORACLE_FOLLOWUP_UNARCHIVE_MENU_ABSENT_MARKER = (
+    "FOLLOWUP_ARCHIVED_PARENT_UNARCHIVE_FAILED: unarchive-menu-not-found"
+)
+ORACLE_FOLLOWUP_PRE_COMPOSER_STAGES = frozenset({"resume-conversation"})
+
+
+def _process_may_be_alive(pid: int) -> bool:
+    """Fail closed unless the exact PID is proven to have exited."""
+    if pid <= 0:
+        return True
+    if os.name == "nt":
+        process_query_limited_information = 0x1000
+        still_active = 259
+        error_invalid_parameter = 87
+        try:
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+            if not handle:
+                return ctypes.get_last_error() != error_invalid_parameter
+            try:
+                exit_code = ctypes.c_ulong()
+                if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                    return True
+                return int(exit_code.value) == still_active
+            finally:
+                kernel32.CloseHandle(handle)
+        except Exception:
+            return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except (PermissionError, OSError):
+        return True
+    return True
+LEGACY_V1184_FOLLOWUP_MANAGED_HASHES = {
+    "bin/chatgpt_oracle_compat.py": "f41d3fb50b911f882a8e23e71cb02a5e9e81ee5ebe16f548ee48e7f815da0ee1",
+    "bin/chatgpt_oracle_run.py": "957cd75a52cbe9258a994e66b557987cda4617de561307acaff5632a66fdfdf7",
+    "bin/chatgpt_oracle_state.py": "9e045291ce69e2fdff0f9fa4ea78592bb4bcae463448c174f6dc93d10fa32835",
+    "bin/oracle-compat/0.17.1/archiveConversation.unarchive-followup.patch": (
+        "f693e24dc8cf6483da5d50b2f403157c862a402086a66d9cd04c2257461119bb"
+    ),
+    "bin/oracle-compat/0.17.1/browserIndex.unarchive-followup.patch": (
+        "bf7a6ac55dab047087c71069d8608d222ad2d09d72350ebda3bb785dd8cad58e"
+    ),
+}
 ORACLE_ATTACHMENTS_UPLOAD_TIMEOUT_MARKER = (
     "Attachments did not finish uploading before timeout."
 )
@@ -114,9 +165,22 @@ ORACLE_MODEL_SELECTOR_BUTTON_PRE_SUBMIT_ERROR = (
     "selected in the browser, retry with --browser-model-strategy current; otherwise retry "
     "with --browser-model-strategy ignore to skip model selection."
 )
-ORACLE_STANDALONE_PRO_NO_SUBMISSION_VERSIONS = {"0.17.1"}
+ORACLE_STANDALONE_PRO_NO_SUBMISSION_VERSIONS = {"0.17.1", "0.18.0"}
+ORACLE_CURRENT_VERSION = "0.18.0"
+ORACLE_LKG_VERSION = "0.17.1"
+ORACLE_COMPATIBLE_VERSIONS = {ORACLE_CURRENT_VERSION, ORACLE_LKG_VERSION}
 USER_CONFIRMED_NO_SUBMISSION = "user-confirmed-no-submission"
+DEVSPACE_SERVICE_RESTART_REQUIRED_ERROR = (
+    "version resolution failed: DEVSPACE_SERVICE_RESTART_REQUIRED: "
+    "DevSpace was safely patched before submission and must be restarted once"
+)
 USER_CONFIRMED_EXECUTION_ENDED = "user-confirmed-task-ended"
+USER_AUTHORIZED_FRESH_AFTER_RECURSIVE_SELF_OBSERVATION = (
+    "user-authorized-fresh-run-after-recursive-self-observation"
+)
+RECURSIVE_SELF_OBSERVATION_SETTLEMENT_SCHEMA = (
+    "codex.chatgpt.oracle-recursive-self-observation-settlement/v1"
+)
 ORACLE_RECOVERY_STATE_RE = re.compile(r"(?im)^\s*State:\s*[a-z][a-z0-9_-]*\s*$")
 ORACLE_PROFILE_COPY_EBUSY_RE = re.compile(
     r"(?im)^(?:ERROR:\s*|User error \(browser-automation\):\s*)?"
@@ -140,6 +204,10 @@ ORACLE_MODEL_SWITCHER_PRE_SUBMIT_RE = re.compile(
     r".*?No cookies were applied;",
     re.IGNORECASE | re.DOTALL,
 )
+ORACLE_MODEL_OPTION_MISSING_PRE_SUBMIT_RE = re.compile(
+    r'^Unable to find model option matching "(?P<desired>[^"\r\n]{1,160})" '
+    r'in the model switcher\. Available: (?P<available>[^\r\n]{1,1000})\.$'
+)
 ORACLE_THINKING_TIME_PRE_SUBMIT_RE = re.compile(
     r"Thinking time: (?:selection unverified \(requested |unknown outcome selecting )"
     r"(?P<requested>[^);]+)\)?; refusing to submit without confirmed (?P<required>[^.]+)\.",
@@ -148,8 +216,8 @@ ORACLE_THINKING_TIME_PRE_SUBMIT_RE = re.compile(
 # Upstream Oracle copies a signed-in browser profile with rsync.  On POSIX
 # hosts without rsync the copy fails after launch, so feasibility is decided
 # while loading the manifest instead of crashing mid-launch.  The pinned
-# Oracle 0.17.1 natively uses Node's recursive copy on Windows, so `nt` needs
-# no external dependency.
+# The validated Oracle current/LKG releases use Node's recursive copy on
+# Windows, so `nt` needs no external dependency.
 # Checking PATH there would drop per-run profile isolation and block every
 # parallel Web Multi lane, which is the exact failure this guard must avoid.
 PROFILE_COPY_DEPENDENCY = "rsync"
@@ -167,7 +235,7 @@ def is_devspace_transport(transport: str) -> bool:
 
 
 def is_pro_readonly_transport(transport: str) -> bool:
-    """Return whether a persisted run uses the legacy read-only transport."""
+    """Return whether a run uses the current read-only Pro transport."""
     return str(transport or "").strip().casefold() == "pro-devspace-readonly"
 
 
@@ -192,6 +260,7 @@ APP_RE = re.compile(r"^[^\r\n]+$")
 MODEL_RE = re.compile(r"^[a-zA-Z0-9._ -]+$")
 PARENT_ID_RE = re.compile(r"^[a-f0-9]{32,64}$")
 RUN_ID_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{7,95}$")
+SOURCE_THREAD_ID_RE = re.compile(r"^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$", re.IGNORECASE)
 WEB_MULTI_CHILD_RUN_ID_RE = re.compile(r"^\d{8}T\d{6}Z-[a-f0-9]{12}$")
 CHATGPT_CONVERSATION_URL_RE = re.compile(r"https://chatgpt\.com/c/[A-Za-z0-9_-]+", re.IGNORECASE)
 _THREAD_MUTEXES: dict[str, threading.Lock] = {}
@@ -239,6 +308,7 @@ class OracleConfig:
     requested_run_id: str | None
     web_multi_child_provenance_path: Path | None
     web_multi_child_provenance_sha256: str | None
+    source_thread_id: str | None
 
 
 @dataclass(frozen=True)
@@ -306,7 +376,7 @@ def oracle_state_root() -> Path:
 
 def default_oracle_command(platform_name: str | None = None) -> tuple[str, ...]:
     platform = os.name if platform_name is None else platform_name
-    return ("npx.cmd" if platform == "nt" else "npx", "-y", "@steipete/oracle@0.17.1")
+    return ("npx.cmd" if platform == "nt" else "npx", "-y", f"@steipete/oracle@{ORACLE_CURRENT_VERSION}")
 
 
 def validate_oracle_command(values: Any) -> tuple[str, ...]:
@@ -316,15 +386,14 @@ def validate_oracle_command(values: Any) -> tuple[str, ...]:
     executable = Path(command[0]).name.casefold()
     if executable in {"oracle", "oracle.cmd", "oracle.exe"} and len(command) == 1:
         return command
-    if executable in {"npx", "npx.cmd", "npx.exe"} and command[1:] in {
-        ("-y", "@steipete/oracle@0.17.1"),
-        ("--yes", "@steipete/oracle@0.17.1"),
-        ("@steipete/oracle@0.17.1",),
-    }:
-        return command
+    if executable in {"npx", "npx.cmd", "npx.exe"} and command[1:]:
+        package = command[-1]
+        version = package.rsplit("@", 1)[-1] if package.startswith("@steipete/oracle@") else ""
+        if version in ORACLE_COMPATIBLE_VERSIONS and command[1:-1] in {(), ("-y",), ("--yes",)}:
+            return command
     raise OracleStateError(
         "ORACLE_COMMAND_FORBIDDEN",
-        "oracle_command must resolve directly to Oracle or npx @steipete/oracle@0.17.1",
+        f"oracle_command must resolve directly to Oracle or pinned current/LKG Oracle {sorted(ORACLE_COMPATIBLE_VERSIONS)}",
         {"command": command_for_display(command)},
     )
 
@@ -359,7 +428,12 @@ def validate_oracle_args(values: Any) -> tuple[str, ...]:
     return tuple(values)
 
 
-def load_manifest(path: Path, *, platform_name: str | None = None) -> OracleConfig:
+def load_manifest(
+    path: Path,
+    *,
+    platform_name: str | None = None,
+    bind_runtime_task: bool = False,
+) -> OracleConfig:
     manifest_path = absolute_path(path, label="manifest_path", must_exist=True)
     try:
         payload = json.loads(read_utf8_strict(manifest_path))
@@ -379,7 +453,7 @@ def load_manifest(path: Path, *, platform_name: str | None = None) -> OracleConf
     if transport not in {"devspace", *PRO_TRANSPORTS}:
         raise OracleStateError(
             "TRANSPORT_INVALID",
-            "transport must be devspace, pro-devspace, pro-attachment-only, or legacy pro-devspace-readonly",
+            "transport must be devspace, pro-devspace-readonly, pro-attachment-only, or historical pro-devspace",
         )
     app_name_raw = str(payload.get("app_name") or "").strip().lstrip("@").strip()
     if is_devspace_transport(transport):
@@ -518,6 +592,14 @@ def load_manifest(path: Path, *, platform_name: str | None = None) -> OracleConf
     archive = str(payload.get("archive") or "auto").strip().casefold()
     if archive not in {"auto", "always", "never"}:
         raise OracleStateError("ARCHIVE_INVALID", "archive must be auto, always, or never")
+    # Read-only Pro advice commonly continues through the task-bound followup
+    # command.  Oracle's one-shot `auto` policy archives a successful parent,
+    # making the composer unavailable to the next round.  Normalize the
+    # default/auto case to `never`; an explicit `always` remains a deliberate
+    # single-turn choice and archived historical parents retain their exact
+    # state for bounded compatibility recovery.
+    if is_pro_readonly_transport(transport) and archive == "auto":
+        archive = "never"
     task_outcome_contract = str(payload.get("task_outcome_contract") or "legacy").strip().casefold()
     if task_outcome_contract not in {"legacy", "v1"}:
         raise OracleStateError(
@@ -544,6 +626,30 @@ def load_manifest(path: Path, *, platform_name: str | None = None) -> OracleConf
     provenance_raw = payload.get("web_multi_child_provenance_path")
     provenance_path = exact_regular_file(provenance_raw, label="web_multi_child_provenance_path") if provenance_raw else None
     provenance_sha256 = sha256_file(provenance_path) if provenance_path else None
+    explicit_thread_id = str(payload.get("source_thread_id") or "").strip().casefold()
+    environment_thread_id = str(os.environ.get("CODEX_THREAD_ID") or "").strip().casefold()
+    if explicit_thread_id and SOURCE_THREAD_ID_RE.fullmatch(explicit_thread_id) is None:
+        raise OracleStateError("SOURCE_THREAD_ID_INVALID", "source_thread_id must be one Codex task UUID")
+    if environment_thread_id and SOURCE_THREAD_ID_RE.fullmatch(environment_thread_id) is None:
+        raise OracleStateError("SOURCE_THREAD_ID_INVALID", "CODEX_THREAD_ID must be one Codex task UUID when set")
+    if (
+        bind_runtime_task
+        and explicit_thread_id
+        and environment_thread_id
+        and explicit_thread_id != environment_thread_id
+    ):
+        raise OracleStateError(
+            "SOURCE_THREAD_ID_MISMATCH",
+            "manifest source_thread_id does not match the current Codex task",
+            {"manifest_source_thread_id": explicit_thread_id, "runtime_source_thread_id": environment_thread_id},
+        )
+    # Legacy manifests have no task owner.  Never infer one from a project path,
+    # process, or a later rollout scan: that would let one task adopt another.
+    # Binding happens only for a fresh launch.  Recovery reads the persisted
+    # state instead, so a later shell can never adopt a historical unbound run.
+    source_thread_id = explicit_thread_id or (
+        environment_thread_id if bind_runtime_task and environment_thread_id else None
+    )
     return OracleConfig(
         project_root,
         mission_path,
@@ -574,10 +680,56 @@ def load_manifest(path: Path, *, platform_name: str | None = None) -> OracleConf
         requested_run_id,
         provenance_path,
         provenance_sha256,
+        source_thread_id,
     )
 
 
-def composer_prompt(config: OracleConfig, mission_path: Path | None = None) -> str:
+def oracle_slug(project_root: Path, run_id: str) -> str:
+    project_words = (re.findall(r"[a-z0-9]+", project_root.name.casefold()) or ["project"])[:3]
+    project_token = "-".join(word[:10] for word in project_words)
+    run_token = run_id.rsplit("-", 1)[-1][:10]
+    return f"oracle-{project_token}-{run_token}"
+
+
+def self_observation_guard(run_id: str, slug: str) -> str:
+    if not run_id or not slug:
+        return ""
+    return (
+        " Do not inspect, read, wait for, poll, invoke, recover, or report on the Oracle controller "
+        f"run {run_id} or slug {slug}, including its state.json, output.md, transcript.md, recovery, "
+        "observer, or process status. Do not launch a nested Oracle run. Perform the requested mission "
+        "directly; if a required project resource is unavailable, report that concrete blocker once."
+    )
+
+
+def connector_identity_guard(app_name: str) -> str:
+    """Bind the run to one exact registered app.
+
+    Several ChatGPT plugins can expose identically named workspace tools such as
+    ``open_workspace`` and ``read``.  An ``@app`` mention alone does not select
+    one of them, so a session could silently open a different plugin's connector,
+    fail with an internal error, and burn the whole run on tool self-diagnosis.
+    """
+    name = str(app_name or "").strip()
+    if not name:
+        return ""
+    return (
+        f" Use only the {name} app's workspace tools. If more than one connector exposes a workspace tool of the "
+        f"same name, select the one provided by {name} and never substitute another plugin's connector. "
+        f"Before reading the mission, state in one line which app provided the workspace tool you called and the "
+        "workspace id it returned. If the first workspace call fails, do not investigate your own tool wiring, "
+        "search the web, or try another connector; retry the same exact root once with the same app, then report "
+        "that concrete blocker and stop."
+    )
+
+
+def composer_prompt(
+    config: OracleConfig,
+    mission_path: Path | None = None,
+    *,
+    run_id: str = "",
+    slug: str = "",
+) -> str:
     if is_attachment_transport(config.transport):
         identity_material = "\0".join((
             str(config.project_root).casefold(),
@@ -586,7 +738,8 @@ def composer_prompt(config: OracleConfig, mission_path: Path | None = None) -> s
         ))
         identity = hashlib.sha256(identity_material.encode("utf-8")).hexdigest()[:24]
         return (
-            "Read the attached prompt/instructions and all attached files, then complete the task. "
+            "Read the attached prompt/instructions and all attached files, then provide read-only analysis only. "
+            "Do not create, edit, delete, or rename files; do not run commands or change settings, accounts, or external state. "
             f"Task identity: oracle-pro-{identity}."
         )
     effective_path = config.mission_path if mission_path is None else mission_path
@@ -602,6 +755,8 @@ def composer_prompt(config: OracleConfig, mission_path: Path | None = None) -> s
             "Put every citation, footnote, and Markdown reference definition before the outcome marker. "
             "End the final response with exactly one of TASK_OUTCOME: EXECUTED, TASK_OUTCOME: NOT_EXECUTED, or "
             "TASK_OUTCOME: BLOCKED as the final nonempty line; append nothing after it."
+            + connector_identity_guard(config.app_name)
+            + self_observation_guard(run_id, slug)
         )
     if is_pro_readonly_transport(config.transport):
         return (
@@ -613,6 +768,8 @@ def composer_prompt(config: OracleConfig, mission_path: Path | None = None) -> s
             "Put every citation, footnote, and Markdown reference definition before the outcome marker. "
             "End the final response with exactly one of TASK_OUTCOME: EXECUTED, TASK_OUTCOME: NOT_EXECUTED, or "
             "TASK_OUTCOME: BLOCKED as the final nonempty line; append nothing after it."
+            + connector_identity_guard(config.app_name)
+            + self_observation_guard(run_id, slug)
         )
     # Keep the Windows npx.cmd prompt in one argument line. A literal newline
     # truncates the prompt after the app mention before Oracle receives it.
@@ -628,18 +785,17 @@ def composer_prompt(config: OracleConfig, mission_path: Path | None = None) -> s
             if config.task_outcome_contract == "v1"
             else ""
         )
+        + connector_identity_guard(config.app_name)
+        + self_observation_guard(run_id, slug)
     )
 
 
 def create_layout(config: OracleConfig, *, run_id: str | None = None) -> RunLayout:
     actual = run_id or f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{uuid.uuid4().hex[:12]}"
-    project_words = (re.findall(r"[a-z0-9]+", config.project_root.name.casefold()) or ["project"])[:3]
-    project_token = "-".join(word[:10] for word in project_words)
     # Oracle accepts 3-5 words and normalizes every word to its first ten
     # characters. Generate that exact locator up front so recovery never
     # stores an alias that Oracle cannot resolve later.
-    run_token = actual.rsplit("-", 1)[-1][:10]
-    slug = f"oracle-{project_token}-{run_token}"
+    slug = oracle_slug(config.project_root, actual)
     run_dir = config.run_root / actual
     return RunLayout(
         actual,
@@ -654,7 +810,17 @@ def create_layout(config: OracleConfig, *, run_id: str | None = None) -> RunLayo
     )
 
 
-def state_payload(config: OracleConfig, layout: RunLayout, *, status: str, resolved_version: str, exit_code: int | None = None) -> dict[str, Any]:
+def state_payload(
+    config: OracleConfig,
+    layout: RunLayout,
+    *,
+    status: str,
+    resolved_version: str,
+    exit_code: int | None = None,
+    cdp_port: int | None = None,
+) -> dict[str, Any]:
+    owner_thread_id = config.source_thread_id
+    owner_kind = "bound" if owner_thread_id else "legacy-unbound"
     return {
         "schema": STATE_SCHEMA, "run_id": layout.run_id, "project_root": str(config.project_root),
         "mode": config.mode, "transport": config.transport, "app_name": config.app_name,
@@ -672,6 +838,20 @@ def state_payload(config: OracleConfig, layout: RunLayout, *, status: str, resol
             {"path": str(config.web_multi_child_provenance_path), "sha256": config.web_multi_child_provenance_sha256}
             if config.web_multi_child_provenance_path else None
         ),
+        "originating_task": {
+            "schema": "codex.chatgpt.oracle-task-owner/v1",
+            "source_thread_id": owner_thread_id,
+            "binding": owner_kind,
+        },
+        "ownership": {
+            "schema": "codex.chatgpt.oracle-ownership/v1",
+            "source_thread_id": owner_thread_id,
+            "binding": owner_kind,
+            "project_root_sha256": hashlib.sha256(str(config.project_root).casefold().encode("utf-8")).hexdigest(),
+            "run_id": layout.run_id,
+            "mission_sha256": config.mission_sha256,
+            "slug": layout.slug,
+        },
         "transport_status": "prepared",
         "task_outcome_contract": config.task_outcome_contract,
         "task_outcome": "not_applicable" if is_attachment_transport(config.transport) else "pending",
@@ -706,12 +886,599 @@ def state_payload(config: OracleConfig, layout: RunLayout, *, status: str, resol
             "stderr": str(layout.stderr_path),
             "browser_temp": str(layout.browser_temp_path),
         },
+        "browser_identity": {
+            "schema": "codex.chatgpt.oracle-browser-identity/v1",
+            "expected_cdp_port": cdp_port,
+            "receipt_path": None,
+            "receipt_sha256": None,
+        },
         "status": status,
         "exit_code": exit_code,
         "session_authority": "pre_submit",
         "terminal_harvested": False,
         "artifact_sha256": None,
     }
+
+
+def source_thread_id_from_state(state: dict[str, Any]) -> str | None:
+    """Return only a persisted task owner; never infer legacy ownership."""
+    owner = state.get("originating_task") if isinstance(state.get("originating_task"), dict) else {}
+    value = str(owner.get("source_thread_id") or "").strip().casefold()
+    return value if SOURCE_THREAD_ID_RE.fullmatch(value) is not None else None
+
+
+def current_source_thread_id() -> str | None:
+    value = str(os.environ.get("CODEX_THREAD_ID") or "").strip().casefold()
+    return value if SOURCE_THREAD_ID_RE.fullmatch(value) is not None else None
+
+
+def reserve_loopback_cdp_port() -> int:
+    """Choose one currently-free loopback port for one isolated Oracle browser."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        port = int(listener.getsockname()[1])
+    if not 1024 <= port <= 65535:
+        raise OracleStateError("CDP_PORT_RESERVATION_FAILED", "could not reserve a valid loopback CDP port")
+    return port
+
+
+def ownership_receipt_path(run_dir: Path) -> Path:
+    return run_dir / "ownership-receipt.json"
+
+
+def browser_identity_receipt_path(run_dir: Path) -> Path:
+    return run_dir / "browser-identity-receipt.json"
+
+
+def followup_binding_receipt_path(run_dir: Path) -> Path:
+    return run_dir / "followup-binding.json"
+
+
+def _write_append_only_json(path: Path, payload: dict[str, Any]) -> str:
+    encoded = (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    try:
+        with path.open("xb") as handle:
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except FileExistsError:
+        existing = path.read_bytes()
+        if existing != encoded:
+            raise OracleStateError("OWNERSHIP_RECEIPT_CONFLICT", "append-only ownership receipt already differs")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def persist_ownership_receipt(state_path: Path, *, oracle_process_pid: int | None) -> dict[str, Any]:
+    """Persist the task/project/run/mission/slug tuple before a prompt can send."""
+    state = load_state(state_path)
+    ownership = state.get("ownership") if isinstance(state.get("ownership"), dict) else {}
+    browser = state.get("browser_identity") if isinstance(state.get("browser_identity"), dict) else {}
+    receipt = {
+        "schema": "codex.chatgpt.oracle-ownership-receipt/v1",
+        "source_thread_id": source_thread_id_from_state(state),
+        "binding": str((state.get("originating_task") or {}).get("binding") or "legacy-unbound"),
+        "project_root": str(state.get("project_root") or ""),
+        "project_root_sha256": ownership.get("project_root_sha256"),
+        "run_id": state.get("run_id"),
+        "mission_sha256": (state.get("mission") or {}).get("sha256"),
+        "slug": (state.get("oracle") or {}).get("slug"),
+        "oracle_process_pid": oracle_process_pid,
+        "expected_cdp_port": browser.get("expected_cdp_port"),
+        "browser_temp": (state.get("artifacts") or {}).get("browser_temp"),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    path = ownership_receipt_path(state_path.parent.resolve())
+    digest = _write_append_only_json(path, receipt)
+    return {"path": str(path), "sha256": digest, "payload": receipt}
+
+
+def persist_followup_binding(state_path: Path, binding: dict[str, Any]) -> dict[str, Any]:
+    """Seal the parent/round/child tuple before a follow-up browser can launch."""
+    state = load_state(state_path)
+    child = binding.get("child") if isinstance(binding.get("child"), dict) else {}
+    if (
+        binding.get("schema") != "codex.chatgpt.oracle-followup-binding/v1"
+        or binding.get("source_thread_id") != source_thread_id_from_state(state)
+        or child.get("run_id") != state.get("run_id")
+        or child.get("slug") != (state.get("oracle") or {}).get("slug")
+        or child.get("mission_sha256") != (state.get("mission") or {}).get("sha256")
+        or child.get("expected_cdp_port") != (state.get("browser_identity") or {}).get("expected_cdp_port")
+    ):
+        raise OracleStateError("FOLLOWUP_BINDING_INVALID", "follow-up binding does not match the exact child state")
+    path = followup_binding_receipt_path(state_path.parent.resolve())
+    digest = _write_append_only_json(path, binding)
+    payload = load_state(state_path)
+    payload["followup_binding"] = {
+        "schema": "codex.chatgpt.oracle-followup-binding-reference/v1",
+        "path": str(path),
+        "sha256": digest,
+    }
+    write_json_atomic(state_path, payload)
+    return {"path": str(path), "sha256": digest, "payload": binding}
+
+
+def _validate_followup_reservation_for_child(
+    state_path: Path,
+    reservation_path: Path,
+    *,
+    expected_sha256: str | None = None,
+) -> dict[str, Any] | None:
+    state = load_state(state_path)
+    loaded = _strict_json_object(reservation_path)
+    if loaded is None:
+        return None
+    reservation, raw = loaded
+    actual_sha256 = hashlib.sha256(raw).hexdigest()
+    if expected_sha256 and actual_sha256 != expected_sha256:
+        return None
+    source_thread_id = source_thread_id_from_state(state)
+    child = reservation.get("child") if isinstance(reservation.get("child"), dict) else {}
+    parent = reservation.get("parent") if isinstance(reservation.get("parent"), dict) else {}
+    round_key = str(reservation.get("round_key") or "")
+    run_dir = state_path.parent.resolve()
+    parent_dir = reservation_path.parent.parent.resolve()
+    parent_state_path = parent_dir / "state.json"
+    if (
+        reservation.get("schema") != "codex.chatgpt.oracle-followup-round/v1"
+        or reservation.get("source_thread_id") != source_thread_id
+        or not round_key
+        or reservation_path.resolve() != (parent_dir / "followup-rounds" / f"{round_key}.json").resolve()
+        or child.get("run_id") != state.get("run_id")
+        or child.get("slug") != (state.get("oracle") or {}).get("slug")
+        or child.get("mission_sha256") != (state.get("mission") or {}).get("sha256")
+        or child.get("expected_cdp_port") != (state.get("browser_identity") or {}).get("expected_cdp_port")
+        or Path(str(child.get("run_dir") or "")).resolve() != run_dir
+        or parent.get("run_id") != parent_dir.name
+        or reservation.get("followup_argv") != ["--followup", parent.get("slug")]
+        or CHATGPT_CONVERSATION_URL_RE.fullmatch(str(parent.get("conversation_url") or "")) is None
+    ):
+        return None
+    try:
+        parent_state = load_state(parent_state_path)
+    except OracleStateError:
+        return None
+    parent_owner = proven_ownership_receipt(parent_state_path)
+    parent_browser = proven_browser_identity_receipt(parent_state_path)
+    parent_profile = parent_state.get("profile") if isinstance(parent_state.get("profile"), dict) else {}
+    parent_artifacts = parent.get("artifacts") if isinstance(parent.get("artifacts"), dict) else {}
+    if (
+        source_thread_id_from_state(parent_state) != source_thread_id
+        or parent_state.get("run_id") != parent.get("run_id")
+        or (parent_state.get("oracle") or {}).get("slug") != parent.get("slug")
+        or str((parent_state.get("oracle") or {}).get("conversation_url") or "") != parent.get("conversation_url")
+        or parent_state.get("status") != "complete"
+        or parent_state.get("session_authority") != "terminal"
+        or parent_state.get("terminal_harvested") is not True
+        or parent_state.get("task_outcome") != "executed"
+        or parent_state.get("transport") != "pro-devspace-readonly"
+        or parent_profile.get("model") != "gpt-5.6-sol"
+        or parent_profile.get("model_strategy") != "select"
+        or parent_profile.get("thinking_time") != "heavy"
+        or parent_owner is None
+        or parent_browser is None
+        or parent.get("ownership_receipt_sha256") != parent_owner.get("sha256")
+        or parent.get("browser_identity_receipt_sha256") != parent_browser.get("sha256")
+        or str((parent_browser.get("payload") or {}).get("conversation_url") or "") != parent.get("conversation_url")
+    ):
+        return None
+    parent_mission = parent_state.get("mission") if isinstance(parent_state.get("mission"), dict) else {}
+    state_artifacts = parent_state.get("artifacts") if isinstance(parent_state.get("artifacts"), dict) else {}
+    artifact_paths = {
+        "output": state_artifacts.get("output"),
+        "transcript": state_artifacts.get("transcript"),
+        "mission": parent_mission.get("transport_path"),
+        "project_mission": parent_mission.get("path"),
+    }
+    for name, value in artifact_paths.items():
+        try:
+            candidate = exact_regular_file(value, label=f"followup_parent_{name}")
+        except OracleStateError:
+            return None
+        if sha256_file(candidate) != parent_artifacts.get(name):
+            return None
+    return {
+        "path": str(reservation_path.resolve()),
+        "sha256": actual_sha256,
+        "payload": reservation,
+    }
+
+
+def proven_followup_binding(state_path: Path) -> dict[str, Any] | None:
+    state = load_state(state_path)
+    reference = state.get("followup_binding")
+    expected_path = followup_binding_receipt_path(state_path.parent.resolve())
+    if not isinstance(reference, dict) or expected_path.is_symlink():
+        return None
+    try:
+        raw = expected_path.read_bytes()
+        def reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+            result: dict[str, Any] = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError("duplicate follow-up binding key")
+                result[key] = value
+            return result
+        binding = json.loads(raw.decode("utf-8", errors="strict"), object_pairs_hook=reject_duplicates)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
+        return None
+    actual = hashlib.sha256(raw).hexdigest()
+    child = binding.get("child") if isinstance(binding, dict) and isinstance(binding.get("child"), dict) else {}
+    if (
+        reference.get("schema") != "codex.chatgpt.oracle-followup-binding-reference/v1"
+        or Path(str(reference.get("path") or "")).resolve() != expected_path
+        or reference.get("sha256") != actual
+        or binding.get("schema") != "codex.chatgpt.oracle-followup-binding/v1"
+        or binding.get("source_thread_id") != source_thread_id_from_state(state)
+        or child.get("run_id") != state.get("run_id")
+        or child.get("slug") != (state.get("oracle") or {}).get("slug")
+        or child.get("mission_sha256") != (state.get("mission") or {}).get("sha256")
+        or child.get("expected_cdp_port") != (state.get("browser_identity") or {}).get("expected_cdp_port")
+    ):
+        return None
+    reservation_path = Path(str(binding.get("reservation_path") or ""))
+    reservation = _validate_followup_reservation_for_child(
+        state_path, reservation_path, expected_sha256=str(binding.get("reservation_sha256") or "")
+    )
+    parent = binding.get("parent") if isinstance(binding.get("parent"), dict) else {}
+    if (
+        reservation is None
+        or binding.get("round_key") != reservation["payload"].get("round_key")
+        or binding.get("conversation_url") != (reservation["payload"].get("parent") or {}).get("conversation_url")
+        or parent != reservation["payload"].get("parent")
+        or child != reservation["payload"].get("child")
+    ):
+        return None
+    return {"path": str(expected_path), "sha256": actual, "payload": binding, "reservation": reservation}
+
+
+def proven_ownership_receipt(state_path: Path) -> dict[str, Any] | None:
+    """Validate the immutable fresh-run ownership tuple without inference.
+
+    This intentionally does not consult process lists, project scans, or the
+    current environment.  A follow-up/recovery must use the exact persisted
+    task/project/run/mission/slug tuple that was sealed before browser launch.
+    """
+    state = load_state(state_path)
+    path = ownership_receipt_path(state_path.parent.resolve())
+    try:
+        raw = path.read_bytes()
+        receipt = json.loads(raw.decode("utf-8", errors="strict"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(receipt, dict) or receipt.get("schema") != "codex.chatgpt.oracle-ownership-receipt/v1":
+        return None
+    ownership = state.get("ownership") if isinstance(state.get("ownership"), dict) else {}
+    browser = state.get("browser_identity") if isinstance(state.get("browser_identity"), dict) else {}
+    expected = {
+        "source_thread_id": source_thread_id_from_state(state),
+        "binding": str((state.get("originating_task") or {}).get("binding") or "legacy-unbound"),
+        "project_root": str(state.get("project_root") or ""),
+        "project_root_sha256": ownership.get("project_root_sha256"),
+        "run_id": state.get("run_id"),
+        "mission_sha256": (state.get("mission") or {}).get("sha256"),
+        "slug": (state.get("oracle") or {}).get("slug"),
+        "expected_cdp_port": browser.get("expected_cdp_port"),
+        "browser_temp": (state.get("artifacts") or {}).get("browser_temp"),
+    }
+    if any(receipt.get(key) != value for key, value in expected.items()):
+        return None
+    return {"path": str(path), "sha256": hashlib.sha256(raw).hexdigest(), "payload": receipt}
+
+
+def proven_browser_identity_receipt(state_path: Path) -> dict[str, Any] | None:
+    state = load_state(state_path)
+    path = browser_identity_receipt_path(state_path.parent.resolve())
+    try:
+        if path.is_symlink():
+            return None
+        exact_path = exact_regular_file(path, label="browser_identity_receipt")
+        raw = exact_path.read_bytes()
+
+        def reject_receipt_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+            result: dict[str, Any] = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError(f"duplicate browser identity receipt key: {key}")
+                result[key] = value
+            return result
+
+        receipt = json.loads(
+            raw.decode("utf-8", errors="strict"),
+            object_pairs_hook=reject_receipt_duplicates,
+        )
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError, OracleStateError):
+        return None
+    if not isinstance(receipt, dict) or receipt.get("schema") not in {
+        "codex.chatgpt.oracle-browser-identity-receipt/v1",
+        "codex.chatgpt.oracle-browser-identity-receipt/v2",
+    }:
+        return None
+    schema = str(receipt.get("schema") or "")
+    actual = hashlib.sha256(raw).hexdigest()
+    identity = state.get("browser_identity") if isinstance(state.get("browser_identity"), dict) else {}
+    ownership = state.get("ownership") if isinstance(state.get("ownership"), dict) else {}
+    if (
+        identity.get("receipt_sha256") != actual
+        or receipt.get("run_id") != state.get("run_id")
+        or receipt.get("slug") != (state.get("oracle") or {}).get("slug")
+        or receipt.get("mission_sha256") != (state.get("mission") or {}).get("sha256")
+        or receipt.get("project_root_sha256") != ownership.get("project_root_sha256")
+        or receipt.get("source_thread_id") != source_thread_id_from_state(state)
+    ):
+        return None
+    if schema.endswith("/v1"):
+        if receipt.get("cdp_port") != identity.get("expected_cdp_port"):
+            return None
+    else:
+        reference = state.get("saved_terminal_output_settlement")
+        artifacts = state.get("artifacts") if isinstance(state.get("artifacts"), dict) else {}
+        if (
+            receipt.get("authority") != "saved-terminal-output-reconciliation"
+            or receipt.get("expected_cdp_port") != identity.get("expected_cdp_port")
+            or not isinstance(reference, dict)
+            or reference.get("schema") != "codex.chatgpt.oracle-settlement-reference/v1"
+            or state.get("status") != "complete"
+            or state.get("session_authority") != "terminal"
+            or state.get("transport_status") != "complete"
+            or state.get("terminal_harvested") is not True
+        ):
+            return None
+        settlement_path = state_path.parent.resolve() / "settlements" / "saved-terminal-output.json"
+        try:
+            exact_settlement = exact_regular_file(reference.get("path"), label="saved_terminal_output_settlement")
+            if exact_settlement.resolve() != settlement_path.resolve() or exact_settlement.is_symlink():
+                return None
+            settlement_raw = exact_settlement.read_bytes()
+
+            def reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+                result: dict[str, Any] = {}
+                for key, value in pairs:
+                    if key in result:
+                        raise ValueError(f"duplicate JSON key: {key}")
+                    result[key] = value
+                return result
+
+            settlement = json.loads(
+                settlement_raw.decode("utf-8", errors="strict"),
+                object_pairs_hook=reject_duplicates,
+            )
+            output_path = exact_regular_file(artifacts.get("output"), label="saved_terminal_output")
+            stdout_path = exact_regular_file(artifacts.get("stdout"), label="saved_terminal_output_stdout")
+            transcript_path = exact_regular_file(
+                artifacts.get("transcript"), label="saved_terminal_output_transcript"
+            )
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError, OracleStateError):
+            return None
+        settlement_sha256 = hashlib.sha256(settlement_raw).hexdigest()
+        current_artifact_hashes = {
+            "output_sha256": sha256_file(output_path),
+            "stdout_sha256": sha256_file(stdout_path),
+            "transcript_sha256": sha256_file(transcript_path),
+        }
+        if (
+            not isinstance(settlement, dict)
+            or settlement.get("schema") != "codex.chatgpt.oracle-saved-terminal-output/v1"
+            or reference.get("sha256") != settlement_sha256
+            or receipt.get("saved_terminal_output_settlement_sha256") != settlement_sha256
+            or receipt.get("saved_terminal_output_settlement_path") != str(settlement_path)
+            or settlement.get("source_thread_id") != source_thread_id_from_state(state)
+            or settlement.get("run_id") != state.get("run_id")
+            or settlement.get("slug") != (state.get("oracle") or {}).get("slug")
+            or settlement.get("mission_sha256") != (state.get("mission") or {}).get("sha256")
+            or any(settlement.get(key) != value for key, value in current_artifact_hashes.items())
+            or any(receipt.get(key) != value for key, value in current_artifact_hashes.items())
+        ):
+            return None
+        current_ownership = proven_ownership_receipt(state_path)
+        current_binding = proven_followup_binding(state_path)
+        if (
+            current_ownership is None
+            or current_binding is None
+            or settlement.get("ownership_receipt_sha256") != current_ownership.get("sha256")
+            or settlement.get("followup_binding_sha256") != current_binding.get("sha256")
+        ):
+            return None
+    slug = str((state.get("oracle") or {}).get("slug") or "")
+    session_root = Path(os.environ.get("ORACLE_SESSION_ROOT") or (Path.home() / ".oracle" / "sessions")).resolve()
+    try:
+        raw_session_dir = session_root / slug
+        raw_meta_path = raw_session_dir / "meta.json"
+        if schema.endswith("/v2") and (raw_session_dir.is_symlink() or raw_meta_path.is_symlink()):
+            return None
+        meta_path = exact_regular_file(raw_meta_path, label="oracle_browser_identity_meta")
+        if schema.endswith("/v2") and meta_path.resolve().parent != raw_session_dir.resolve():
+            return None
+        meta_bytes = meta_path.read_bytes()
+        if schema.endswith("/v2"):
+            def reject_meta_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+                result: dict[str, Any] = {}
+                for key, value in pairs:
+                    if key in result:
+                        raise ValueError(f"duplicate Oracle meta key: {key}")
+                    result[key] = value
+                return result
+
+            meta = json.loads(
+                meta_bytes.decode("utf-8", errors="strict"),
+                object_pairs_hook=reject_meta_duplicates,
+            )
+        else:
+            meta = json.loads(meta_bytes.decode("utf-8", errors="strict"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError, OracleStateError):
+        return None
+    browser = meta.get("browser") if isinstance(meta.get("browser"), dict) else {}
+    runtime = browser.get("runtime") if isinstance(browser.get("runtime"), dict) else {}
+    observed = {
+        "chrome_pid": runtime.get("chromePid"),
+        "browser_parent_pid": runtime.get("controllerPid"),
+        "profile_path": str(Path(str(runtime.get("userDataDir") or "")).expanduser().resolve()),
+        "cdp_port": runtime.get("chromePort"),
+        "target_id": runtime.get("chromeTargetId"),
+        "conversation_url": runtime.get("tabUrl"),
+    }
+    observed_identity_sha256 = hashlib.sha256(
+        json.dumps(observed, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    recorded_meta_sha256 = str(receipt.get("oracle_meta_sha256") or "")
+    recorded_identity_sha256 = str(receipt.get("oracle_runtime_identity_sha256") or "")
+    # Oracle legitimately appends prompt/archive/completion fields after this
+    # receipt is sealed.  Keep the original whole-file hash as capture-time
+    # provenance, but authorize only from the immutable runtime identity tuple.
+    # Existing v1 receipts lack the canonical tuple hash, so exact field
+    # equality remains their bounded compatibility proof.
+    if (
+        re.fullmatch(r"[a-f0-9]{64}", recorded_meta_sha256) is None
+        or any(receipt.get(key) != value for key, value in observed.items())
+        or (recorded_identity_sha256 and recorded_identity_sha256 != observed_identity_sha256)
+    ):
+        return None
+    if schema.endswith("/v2"):
+        if (
+            receipt.get("observed_cdp_port") != observed["cdp_port"]
+            or receipt.get("cdp_port") != observed["cdp_port"]
+            or receipt.get("expected_cdp_port") == receipt.get("observed_cdp_port")
+            or receipt.get("oracle_meta_sha256") != hashlib.sha256(meta_bytes).hexdigest()
+            or settlement.get("oracle_meta_sha256") != receipt.get("oracle_meta_sha256")
+        ):
+            return None
+    return {"path": str(path), "sha256": actual, "payload": receipt}
+
+
+def persist_saved_output_browser_identity_receipt(
+    state_path: Path,
+    *,
+    payload: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Persist one v2 identity derived from an exact saved-output settlement."""
+    state = load_state(state_path)
+    directory = state_path.parent.resolve()
+    existing = proven_browser_identity_receipt(state_path)
+    if existing is not None:
+        return existing
+    receipt_path = browser_identity_receipt_path(directory)
+    if receipt_path.exists() or payload.get("schema") != "codex.chatgpt.oracle-browser-identity-receipt/v2":
+        return None
+    identity = state.get("browser_identity") if isinstance(state.get("browser_identity"), dict) else {}
+    ownership = state.get("ownership") if isinstance(state.get("ownership"), dict) else {}
+    expected = {
+        "source_thread_id": source_thread_id_from_state(state),
+        "project_root_sha256": ownership.get("project_root_sha256"),
+        "run_id": state.get("run_id"),
+        "mission_sha256": (state.get("mission") or {}).get("sha256"),
+        "slug": (state.get("oracle") or {}).get("slug"),
+        "expected_cdp_port": identity.get("expected_cdp_port"),
+    }
+    if any(payload.get(key) != value for key, value in expected.items()):
+        return None
+    digest = _write_append_only_json(receipt_path, payload)
+    state["browser_identity"] = {
+        **identity,
+        "receipt_path": str(receipt_path),
+        "receipt_sha256": digest,
+        "observed_cdp_port": payload.get("observed_cdp_port"),
+        "authority": "saved-terminal-output-reconciliation",
+    }
+    oracle = state.get("oracle") if isinstance(state.get("oracle"), dict) else {}
+    state["oracle"] = {**oracle, "conversation_url": payload.get("conversation_url")}
+    write_json_atomic(state_path, state)
+    return proven_browser_identity_receipt(state_path)
+
+
+def capture_browser_identity_receipt(state_path: Path) -> dict[str, Any] | None:
+    """Record exactly one Oracle-reported Chrome identity after prompt binding.
+
+    It never enumerates arbitrary CDP targets.  The Oracle metadata must agree
+    with this run's dynamic port and browser-temp path before it is persisted.
+    """
+    state = load_state(state_path)
+    directory = state_path.parent.resolve()
+    oracle = state.get("oracle") if isinstance(state.get("oracle"), dict) else {}
+    slug = str(oracle.get("slug") or "")
+    session_root = Path(os.environ.get("ORACLE_SESSION_ROOT") or (Path.home() / ".oracle" / "sessions")).resolve()
+    try:
+        meta_bytes = (session_root / slug / "meta.json").read_bytes()
+        meta = json.loads(meta_bytes.decode("utf-8", errors="strict"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    browser = meta.get("browser") if isinstance(meta.get("browser"), dict) else {}
+    runtime = browser.get("runtime") if isinstance(browser.get("runtime"), dict) else {}
+    identity = state.get("browser_identity") if isinstance(state.get("browser_identity"), dict) else {}
+    try:
+        chrome_pid = int(runtime.get("chromePid"))
+        parent_pid = int(runtime.get("controllerPid"))
+        cdp_port = int(runtime.get("chromePort"))
+    except (TypeError, ValueError):
+        return None
+    profile = Path(str(runtime.get("userDataDir") or "")).expanduser()
+    browser_temp = Path(str((state.get("artifacts") or {}).get("browser_temp") or "")).expanduser()
+    target_id = str(runtime.get("chromeTargetId") or "").strip()
+    url = str(runtime.get("tabUrl") or "").strip()
+    expected_cdp_port = identity.get("expected_cdp_port")
+    if cdp_port != expected_cdp_port:
+        mismatch = {
+            "schema": "codex.chatgpt.oracle-browser-port-mismatch/v1",
+            "expected_cdp_port": expected_cdp_port,
+            "observed_cdp_port": cdp_port,
+            "oracle_meta_path": str(session_root / slug / "meta.json"),
+        }
+        if identity.get("port_mismatch") != mismatch:
+            state["browser_identity"] = {**identity, "port_mismatch": mismatch}
+            write_json_atomic(state_path, state)
+        return None
+    existing = proven_browser_identity_receipt(state_path)
+    if existing is not None:
+        return existing
+    if browser_identity_receipt_path(directory).exists():
+        return None
+    if (
+        chrome_pid <= 0 or parent_pid <= 0
+        or not target_id or CHATGPT_CONVERSATION_URL_RE.fullmatch(url) is None
+        or not str(browser_temp) or not is_within(browser_temp.resolve(), profile.resolve())
+    ):
+        return None
+    ownership = state.get("ownership") if isinstance(state.get("ownership"), dict) else {}
+    receipt = {
+        "schema": "codex.chatgpt.oracle-browser-identity-receipt/v1",
+        "source_thread_id": source_thread_id_from_state(state),
+        "project_root_sha256": ownership.get("project_root_sha256"),
+        "run_id": state.get("run_id"),
+        "mission_sha256": (state.get("mission") or {}).get("sha256"),
+        "slug": slug,
+        "chrome_pid": chrome_pid,
+        "browser_parent_pid": parent_pid,
+        "profile_path": str(profile.resolve()),
+        "cdp_port": cdp_port,
+        "target_id": target_id,
+        "conversation_url": url,
+        "oracle_meta_sha256": hashlib.sha256(meta_bytes).hexdigest(),
+        "oracle_runtime_identity_sha256": hashlib.sha256(
+            json.dumps(
+                {
+                    "chrome_pid": chrome_pid,
+                    "browser_parent_pid": parent_pid,
+                    "profile_path": str(profile.resolve()),
+                    "cdp_port": cdp_port,
+                    "target_id": target_id,
+                    "conversation_url": url,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    receipt_path = browser_identity_receipt_path(directory)
+    digest = _write_append_only_json(receipt_path, receipt)
+    state["browser_identity"] = {
+        **identity,
+        "receipt_path": str(receipt_path),
+        "receipt_sha256": digest,
+    }
+    state["oracle"] = {**oracle, "conversation_url": url}
+    write_json_atomic(state_path, state)
+    return {"path": str(receipt_path), "sha256": digest, "payload": receipt}
 
 
 def host_uptime_ms(*, platform_name: str | None = None) -> int:
@@ -803,7 +1570,30 @@ def write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f"{path.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}")
     temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    os.replace(temporary, path)
+    try:
+        for attempt in range(ATOMIC_REPLACE_MAX_ATTEMPTS):
+            try:
+                os.replace(temporary, path)
+                return
+            except PermissionError as exc:
+                # Windows can briefly deny ReplaceFile semantics while another
+                # observer has the destination open.  Retry only the two known
+                # sharing/access races; all other failures remain fail-closed.
+                if (
+                    getattr(exc, "winerror", None)
+                    not in ATOMIC_REPLACE_WINDOWS_TRANSIENT_ERRORS
+                    or attempt + 1 >= ATOMIC_REPLACE_MAX_ATTEMPTS
+                ):
+                    raise
+                time.sleep(ATOMIC_REPLACE_BACKOFF_SECONDS[attempt])
+    finally:
+        # A successful replace consumes the temporary path.  On a permanent
+        # failure, remove only the uniquely owned temporary file and preserve
+        # the original exception.
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def load_state(path: Path) -> dict[str, Any]:
@@ -828,6 +1618,7 @@ def update_state(
     transport_status: str | None = None,
     task_outcome: str | None = None,
     task_outcome_reason: str | None = None,
+    terminal_watchdog: dict[str, Any] | None = None,
     host_watchdog: dict[str, Any] | None = None,
     browser_observer: dict[str, Any] | None = None,
     status_audit: dict[str, Any] | None = None,
@@ -877,6 +1668,8 @@ def update_state(
         payload["task_outcome"] = task_outcome
     if task_outcome_reason is not None:
         payload["task_outcome_reason"] = task_outcome_reason
+    if terminal_watchdog is not None:
+        payload["terminal_watchdog"] = terminal_watchdog
     if host_watchdog is not None:
         payload["host_watchdog"] = host_watchdog
     if browser_observer is not None:
@@ -904,6 +1697,95 @@ def output_is_nonempty(path: Path) -> bool:
         return bool(path.read_bytes().strip())
     except OSError:
         return False
+
+
+def recursive_self_observation_evidence(
+    state: dict[str, Any], output_text: str
+) -> dict[str, str] | None:
+    """Recognize only a terminal answer that recursively reports its own live run."""
+    run_id = str(state.get("run_id") or "").strip()
+    oracle = state.get("oracle") if isinstance(state.get("oracle"), dict) else {}
+    slug = str(oracle.get("slug") or "").strip()
+    text = str(output_text or "")
+    folded = text.casefold()
+    if (
+        not run_id
+        or not slug
+        or run_id.casefold() not in folded
+        or slug.casefold() not in folded
+        or state.get("terminal_harvested") is not True
+        or str(state.get("session_authority") or "") != "terminal"
+        or str(state.get("task_outcome") or "") != "blocked"
+    ):
+        return None
+    required_groups = (
+        ("running", "status=running", "status: running"),
+        ("task_outcome: pending", "task_outcome=pending", "task outcome: pending"),
+        ("output.md` 미생성", "output.md 미생성", "output absent", "output.md absent", "output 없음"),
+        ("continue-observing-same-exact-session",),
+    )
+    if any(not any(needle in folded for needle in group) for group in required_groups):
+        return None
+    return {
+        "run_id": run_id,
+        "slug": slug,
+        "signature": "post-submit-recursive-self-observation",
+    }
+
+
+def proven_recursive_self_observation_fresh_run_authority(
+    state_path: Path,
+) -> dict[str, Any] | None:
+    """Revalidate the append-only authority receipt without changing historical run state."""
+    directory = state_path.parent.resolve(strict=True)
+    receipt_path = directory / "settlements" / "recursive-self-observation-fresh-run.json"
+    if not receipt_path.is_file() or receipt_path.is_symlink():
+        return None
+    def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        value: dict[str, Any] = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError(f"duplicate settlement key: {key}")
+            value[key] = item
+        return value
+    try:
+        receipt_bytes = receipt_path.read_bytes()
+        receipt = json.loads(
+            receipt_bytes.decode("utf-8", errors="strict"),
+            object_pairs_hook=reject_duplicate_keys,
+        )
+        state = load_state(state_path)
+        artifacts = state.get("artifacts") if isinstance(state.get("artifacts"), dict) else {}
+        output_path = Path(str(artifacts.get("output") or directory / "output.md")).resolve(strict=True)
+        transcript_path = Path(
+            str(artifacts.get("transcript") or directory / "transcript.md")
+        ).resolve(strict=True)
+        output_text = output_path.read_text(encoding="utf-8", errors="strict")
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, OracleStateError, ValueError):
+        return None
+    oracle = state.get("oracle") if isinstance(state.get("oracle"), dict) else {}
+    if (
+        not isinstance(receipt, dict)
+        or receipt.get("schema") != RECURSIVE_SELF_OBSERVATION_SETTLEMENT_SCHEMA
+        or receipt.get("confirmation")
+        != USER_AUTHORIZED_FRESH_AFTER_RECURSIVE_SELF_OBSERVATION
+        or not str(receipt.get("reason") or "").strip()
+        or receipt.get("run_id") != state.get("run_id")
+        or receipt.get("project_root") != state.get("project_root")
+        or receipt.get("slug") != oracle.get("slug")
+        or receipt.get("signature") != "post-submit-recursive-self-observation"
+        or output_path != (directory / "output.md").resolve()
+        or transcript_path != (directory / "transcript.md").resolve()
+        or receipt_path.resolve(strict=True).parent.parent != directory
+        or receipt.get("state_sha256") != sha256_file(state_path)
+        or receipt.get("output_sha256") != sha256_file(output_path)
+        or receipt.get("transcript_sha256") != sha256_file(transcript_path)
+        or recursive_self_observation_evidence(state, output_text) is None
+        or receipt.get("auto_retry") is not False
+        or receipt.get("submission_action") != "none"
+    ):
+        return None
+    return {**receipt, "path": str(receipt_path), "sha256": hashlib.sha256(receipt_bytes).hexdigest()}
 
 
 def _state_has_conversation_url(state: dict[str, Any]) -> bool:
@@ -1330,6 +2212,23 @@ def _settlement_logs_have_conversation_url(state_path: Path) -> bool:
                 return True
     except (OSError, UnicodeDecodeError):
         return True
+    oracle = state.get("oracle") if isinstance(state.get("oracle"), dict) else {}
+    locator = str(oracle.get("session_locator") or oracle.get("slug") or "").strip()
+    if locator:
+        session_root = Path(
+            os.environ.get("ORACLE_SESSION_ROOT") or (Path.home() / ".oracle" / "sessions")
+        ).resolve()
+        meta_path = session_root / locator / "meta.json"
+        if meta_path.is_symlink() or meta_path.parent.is_symlink():
+            return True
+        if meta_path.exists():
+            try:
+                if CHATGPT_CONVERSATION_URL_RE.search(
+                    meta_path.read_text(encoding="utf-8", errors="strict")
+                ):
+                    return True
+            except (OSError, UnicodeDecodeError):
+                return True
     return False
 
 
@@ -1572,11 +2471,15 @@ def _standalone_pro_attachment_no_submission_evidence(
     }
 
 
-def _standalone_pro_no_submission_evidence(state_path: Path) -> dict[str, Any] | None:
+def _standalone_pro_no_submission_evidence(
+    state_path: Path,
+    *,
+    require_recovery_evidence: bool = True,
+) -> dict[str, Any] | None:
     """Return bounded evidence for user adjudication of one qualified Pro run.
 
     Prompt-observation timeouts remain eligible through their exact transcript.
-    A model-selector-button failure additionally requires Oracle 0.17.1's exact
+    A legacy model-selector-button failure additionally requires Oracle 0.17.1's exact
     session ledger to prove the browser never left the ChatGPT home composer and
     ``promptSubmitted`` stayed false.
     """
@@ -1774,33 +2677,67 @@ def _standalone_pro_no_submission_evidence(state_path: Path) -> dict[str, Any] |
     mission = state.get("mission") if isinstance(state.get("mission"), dict) else {}
     source_path = Path(str(mission.get("path") or ""))
     transport_path = Path(str(mission.get("transport_path") or ""))
+    source_path_is_symlink = source_path.is_symlink()
+    transport_path_is_symlink = transport_path.is_symlink()
     try:
         project_root = Path(str(state.get("project_root") or "")).resolve(strict=True)
-        source_path = source_path.resolve(strict=True)
+        source_path = source_path.resolve()
         transport_path = transport_path.resolve(strict=True)
         if (
             not project_root.is_dir()
-            or not source_path.is_file()
-            or source_path.is_symlink()
-            or transport_path.is_symlink()
+            or source_path_is_symlink
+            or transport_path_is_symlink
             or not is_within(project_root, source_path)
             or transport_path != (run_dir / "mission.md").resolve()
         ):
             return None
-        source_bytes = source_path.read_bytes()
         transport_bytes = transport_path.read_bytes()
     except OSError:
         return None
     mission_sha256 = str(mission.get("sha256") or "")
-    source_sha256 = hashlib.sha256(source_bytes).hexdigest()
     transport_sha256 = hashlib.sha256(transport_bytes).hexdigest()
     if (
         not re.fullmatch(r"[a-f0-9]{64}", mission_sha256)
-        or source_sha256 != mission_sha256
         or transport_sha256 != mission_sha256
-        or source_bytes != transport_bytes
     ):
         return None
+    try:
+        source_bytes = source_path.read_bytes()
+    except OSError:
+        source_bytes = None
+    source_matches_run = (
+        source_bytes is not None
+        and hashlib.sha256(source_bytes).hexdigest() == mission_sha256
+        and source_bytes == transport_bytes
+    )
+    ownership = proven_ownership_receipt(state_path)
+    source_bound_by_ownership = (
+        not source_matches_run
+        and ownership is not None
+        and source_thread_id_from_state(state) is not None
+        and ownership.get("payload", {}).get("mission_sha256") == mission_sha256
+    )
+    if source_bound_by_ownership:
+        oracle = state.get("oracle") if isinstance(state.get("oracle"), dict) else {}
+        locator = str(oracle.get("session_locator") or oracle.get("slug") or "").strip()
+        session_root = Path(
+            os.environ.get("ORACLE_SESSION_ROOT") or (Path.home() / ".oracle" / "sessions")
+        ).resolve()
+        meta_path = session_root / locator / "meta.json"
+        try:
+            if meta_path.is_symlink() or meta_path.parent.is_symlink():
+                return None
+            meta = json.loads(meta_path.read_text(encoding="utf-8", errors="strict"))
+            options = meta.get("options") if isinstance(meta.get("options"), dict) else {}
+            submitted_prompt = str(options.get("prompt") or "")
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            return None
+        expected_source_binding = f"read-only mission file: {source_path}."
+        if expected_source_binding not in submitted_prompt:
+            return None
+    if not source_matches_run and not source_bound_by_ownership:
+        return None
+    source_sha256 = mission_sha256
     recovery_records: list[dict[str, str]] = []
     for recovery_stdout in sorted(run_dir.glob("recovery-*-stdout.log"), key=lambda item: item.name):
         recovery_stderr = recovery_stdout.with_name(recovery_stdout.name.replace("-stdout.log", "-stderr.log"))
@@ -1826,7 +2763,7 @@ def _standalone_pro_no_submission_evidence(state_path: Path) -> dict[str, Any] |
             "stderr_name": recovery_stderr.name,
             "stderr_sha256": hashlib.sha256(recovery_stderr_bytes).hexdigest(),
         })
-    if not recovery_records:
+    if require_recovery_evidence and not recovery_records:
         return None
     return {
         "settlement_eligibility": "oracle-standalone-qualified-pro/v1",
@@ -1845,16 +2782,695 @@ def _standalone_pro_no_submission_evidence(state_path: Path) -> dict[str, Any] |
         "recovery_evidence": recovery_records,
         "output_absent": True,
         "conversation_url_absent": True,
+        "_pre_submit_failure_kind": (
+            "model-selector-button-missing" if selector_marker_valid else "prompt-not-observed"
+        ),
+        "_source_mission_binding": (
+            "ownership-receipt" if source_bound_by_ownership else "current-source-bytes"
+        ),
         **selector_meta_evidence,
         "_source_mission_path": str(source_path),
         "_transport_mission_path": str(transport_path),
     }
 
 
+def bounded_task_owned_prompt_timeout_harvest_evidence(
+    state_path: Path,
+) -> dict[str, Any] | None:
+    """Authorize one prompt-free harvest when browser binding never completed.
+
+    A task-bound run normally needs the immutable browser identity receipt before
+    any recovery.  Oracle can fail while committing the prompt, however, before
+    a conversation URL exists and therefore before that receipt can be sealed.
+    This predicate breaks only that evidence deadlock: it validates the exact
+    task/run ownership receipt and Oracle's completed, zero-turn commit probe.
+    It never settles ownership and is used only to permit ``session --harvest``.
+    """
+    followup = _followup_no_submission_evidence(state_path, require_recovery_evidence=False)
+    if (
+        followup is not None
+        and followup.get("failure_kind") != "archived-parent-unarchive-menu-absent"
+    ):
+        return followup
+    direct_model_option = _direct_devspace_no_submission_evidence(
+        state_path,
+        require_persisted_recovery=False,
+        require_recovery_evidence=False,
+    )
+    if (
+        direct_model_option is not None
+        and direct_model_option.get("pre_submit_marker")
+        == "oracle-model-option-missing/v1"
+        and direct_model_option.get("recovery_evidence") == []
+    ):
+        return {
+            **direct_model_option,
+            "schema": "codex.chatgpt.oracle-bounded-model-option-harvest/v1",
+            "_bounded_harvest_kind": "direct-devspace-model-option-missing",
+        }
+    evidence = _standalone_pro_no_submission_evidence(
+        state_path,
+        require_recovery_evidence=False,
+    )
+    if (
+        evidence is None
+        or evidence.get("_pre_submit_failure_kind") != "prompt-not-observed"
+        or evidence.get("recovery_evidence") != []
+    ):
+        return None
+    state = load_state(state_path)
+    run_dir = state_path.parent.resolve()
+    owner = proven_ownership_receipt(state_path)
+    source_thread_id = source_thread_id_from_state(state)
+    identity = state.get("browser_identity") if isinstance(state.get("browser_identity"), dict) else {}
+    receipt_path = browser_identity_receipt_path(run_dir)
+    if (
+        owner is None
+        or not source_thread_id
+        or Path(str(owner.get("path") or "")).is_symlink()
+        or identity.get("receipt_path") not in {None, ""}
+        or identity.get("receipt_sha256") not in {None, ""}
+        or receipt_path.exists()
+        or receipt_path.is_symlink()
+        or proven_browser_identity_receipt(state_path) is not None
+    ):
+        return None
+
+    oracle = state.get("oracle") if isinstance(state.get("oracle"), dict) else {}
+    locator = str(oracle.get("session_locator") or oracle.get("slug") or "").strip()
+    session_root = Path(
+        os.environ.get("ORACLE_SESSION_ROOT") or (Path.home() / ".oracle" / "sessions")
+    ).resolve()
+    meta_path = session_root / locator / "meta.json"
+    if not locator or meta_path.is_symlink() or meta_path.parent.is_symlink():
+        return None
+    try:
+        meta_bytes = meta_path.read_bytes()
+        meta = json.loads(meta_bytes.decode("utf-8", errors="strict"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    if not isinstance(meta, dict) or CHATGPT_CONVERSATION_URL_RE.search(
+        meta_bytes.decode("utf-8", errors="strict")
+    ):
+        return None
+
+    browser = meta.get("browser") if isinstance(meta.get("browser"), dict) else {}
+    config = browser.get("config") if isinstance(browser.get("config"), dict) else {}
+    runtime = browser.get("runtime") if isinstance(browser.get("runtime"), dict) else {}
+    archive = browser.get("archive")
+    error = meta.get("error") if isinstance(meta.get("error"), dict) else {}
+    details = error.get("details") if isinstance(error.get("details"), dict) else {}
+    probe = details.get("commitProbe") if isinstance(details.get("commitProbe"), dict) else {}
+    options = meta.get("options") if isinstance(meta.get("options"), dict) else {}
+    option_browser = (
+        options.get("browserConfig") if isinstance(options.get("browserConfig"), dict) else {}
+    )
+    profile = state.get("profile") if isinstance(state.get("profile"), dict) else {}
+    artifacts = state.get("artifacts") if isinstance(state.get("artifacts"), dict) else {}
+    try:
+        chrome_pid = int(runtime.get("chromePid"))
+        controller_pid = int(runtime.get("controllerPid"))
+        cdp_port = int(runtime.get("chromePort"))
+        prompt_length = int(details.get("promptLength"))
+        editor_length = int(probe.get("editorLength"))
+        meta_cwd = Path(str(meta.get("cwd") or "")).resolve()
+        meta_output = Path(str(options.get("writeOutputPath") or "")).resolve()
+        state_output = Path(str(artifacts.get("output") or "")).resolve()
+        browser_temp = Path(str(artifacts.get("browser_temp") or "")).resolve()
+        runtime_profile = Path(str(runtime.get("userDataDir") or "")).resolve()
+        state_profile = Path(str(profile.get("copy_profile") or "")).resolve()
+        config_profile = Path(str(config.get("copyProfileSource") or "")).resolve()
+        option_profile = Path(str(option_browser.get("copyProfileSource") or "")).resolve()
+    except (OSError, TypeError, ValueError):
+        return None
+    expected_false_probe = (
+        "userMatched",
+        "prefixMatched",
+        "lastMatched",
+        "hasNewTurn",
+        "stopVisible",
+        "assistantVisible",
+        "composerCleared",
+        "inConversation",
+    )
+    if (
+        meta.get("id") != locator
+        or meta.get("status") != "error"
+        or meta.get("model") != "gpt-5.6-sol"
+        or meta.get("mode") != "browser"
+        or not str(meta.get("completedAt") or "").strip()
+        or meta_cwd != Path(str(state.get("project_root") or "")).resolve()
+        or meta_output != state_output
+        or chrome_pid <= 0
+        or controller_pid <= 0
+        or cdp_port != identity.get("expected_cdp_port")
+        or config.get("debugPort") != cdp_port
+        or option_browser.get("debugPort") != cdp_port
+        or not str(runtime.get("chromeTargetId") or "").strip()
+        or browser_temp != (run_dir / "browser-temp").resolve()
+        or not browser_temp.is_dir()
+        or browser_temp.is_symlink()
+        or not runtime_profile.is_dir()
+        or runtime_profile.is_symlink()
+        or not is_within(browser_temp, runtime_profile)
+        or not str(profile.get("copy_profile") or "").strip()
+        or config_profile != state_profile
+        or option_profile != state_profile
+        or config.get("desiredModel") != "GPT-5.6 Sol"
+        or config.get("modelStrategy") != "select"
+        or config.get("thinkingTime") != "heavy"
+        or options.get("model") != "gpt-5.6-sol"
+        or options.get("slug") != locator
+        or option_browser.get("desiredModel") != "GPT-5.6 Sol"
+        or option_browser.get("modelStrategy") != "select"
+        or option_browser.get("thinkingTime") != "heavy"
+        or runtime.get("promptSubmitted") is not True
+        or runtime.get("tabUrl") != "https://chatgpt.com/"
+        or runtime.get("conversationId") not in {None, ""}
+        or archive not in (None, "")
+        or error.get("category") != "browser-automation"
+        or error.get("message") != ORACLE_PROMPT_NOT_OBSERVED_MARKER
+        or str(meta.get("errorMessage") or "") != ORACLE_PROMPT_NOT_OBSERVED_MARKER
+        or details.get("stage") != "submit-prompt"
+        or details.get("code") != "prompt-commit-timeout"
+        or probe.get("baseline") != 0
+        or probe.get("turnsCount") != 0
+        or any(probe.get(key) is not False for key in expected_false_probe)
+        or prompt_length <= 0
+        or editor_length != prompt_length
+        or probe.get("lastTurnLength") != 0
+    ):
+        return None
+    return {
+        "schema": "codex.chatgpt.oracle-bounded-prompt-timeout-harvest/v1",
+        "source_thread_id": source_thread_id,
+        "run_id": state.get("run_id"),
+        "slug": locator,
+        "mission_sha256": (state.get("mission") or {}).get("sha256"),
+        "ownership_receipt_sha256": owner.get("sha256"),
+        "oracle_meta_path": str(meta_path),
+        "oracle_meta_sha256": hashlib.sha256(meta_bytes).hexdigest(),
+        "expected_cdp_port": cdp_port,
+        "browser_profile": str(runtime_profile),
+        "browser_target_id": str(runtime.get("chromeTargetId")),
+        "prompt_submitted_claim": True,
+        "commit_probe_turns": 0,
+        "conversation_url_absent": True,
+        "output_absent": True,
+    }
+
+
+def followup_archived_parent_settle_without_harvest_evidence(
+    state_path: Path,
+) -> dict[str, Any] | None:
+    """Identify an exact before-composer failure that must go straight to settle.
+
+    An archived-parent restore failure already has task/run/mission/archive and
+    no-click evidence.  Reopening the parent conversation cannot prove anything
+    about the child, so recovery must not be offered as a prerequisite.  The
+    normal explicit user-confirmed settlement gate remains mandatory.
+    """
+    evidence = _followup_no_submission_evidence(
+        state_path,
+        require_recovery_evidence=False,
+    )
+    if (
+        evidence is None
+        or evidence.get("failure_kind") != "archived-parent-unarchive-menu-absent"
+    ):
+        return None
+    return evidence
+
+
+def _strict_json_object(path: Path) -> tuple[dict[str, Any], bytes] | None:
+    try:
+        if path.is_symlink() or not path.is_file():
+            return None
+        raw = path.read_bytes()
+        def reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+            value: dict[str, Any] = {}
+            for key, item in pairs:
+                if key in value:
+                    raise ValueError("duplicate JSON key")
+                value[key] = item
+            return value
+        parsed = json.loads(raw.decode("utf-8", errors="strict"), object_pairs_hook=reject_duplicates)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
+        return None
+    return (parsed, raw) if isinstance(parsed, dict) else None
+
+
+def _legacy_followup_reservation_for_child(state_path: Path) -> dict[str, Any] | None:
+    """Find one exact v1.18.1-v1.18.3 reservation by immutable child identity.
+
+    This compatibility path never chooses a latest project run. It accepts only
+    one unique same-task reservation whose child tuple exactly names this run.
+    """
+    state = load_state(state_path)
+    run_dir = state_path.parent.resolve()
+    run_root = run_dir.parent
+    source_thread_id = source_thread_id_from_state(state)
+    child_slug = str((state.get("oracle") or {}).get("slug") or "")
+    child_mission = str((state.get("mission") or {}).get("sha256") or "")
+    expected_port = (state.get("browser_identity") or {}).get("expected_cdp_port")
+    candidates: list[dict[str, Any]] = []
+    try:
+        parent_dirs = [path for path in run_root.iterdir() if path.is_dir() and not path.is_symlink()]
+    except OSError:
+        return None
+    for parent_dir in parent_dirs:
+        rounds = parent_dir / "followup-rounds"
+        if not rounds.is_dir() or rounds.is_symlink():
+            continue
+        for reservation_path in rounds.glob("*.json"):
+            if reservation_path.name.endswith(".result.json"):
+                continue
+            loaded = _strict_json_object(reservation_path)
+            if loaded is None:
+                continue
+            reservation, raw = loaded
+            child = reservation.get("child") if isinstance(reservation.get("child"), dict) else {}
+            parent = reservation.get("parent") if isinstance(reservation.get("parent"), dict) else {}
+            if (
+                reservation.get("schema") != "codex.chatgpt.oracle-followup-round/v1"
+                or reservation.get("source_thread_id") != source_thread_id
+                or child.get("run_id") != state.get("run_id")
+                or child.get("slug") != child_slug
+                or child.get("mission_sha256") != child_mission
+                or child.get("expected_cdp_port") != expected_port
+                or Path(str(child.get("run_dir") or "")).resolve() != run_dir
+                or parent.get("run_id") != parent_dir.name
+            ):
+                continue
+            validated = _validate_followup_reservation_for_child(state_path, reservation_path)
+            if validated is None:
+                continue
+            candidates.append({
+                **validated,
+                "binding_mode": "legacy-unique-child-tuple/v1",
+            })
+    return candidates[0] if len(candidates) == 1 else None
+
+
+def _proven_legacy_v1184_followup_install_receipt(
+    installed_before_at: str,
+    *,
+    receipt_root: Path | None = None,
+) -> dict[str, str] | None:
+    try:
+        cutoff = datetime.fromisoformat(installed_before_at.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if cutoff.tzinfo is None:
+        return None
+    cutoff = cutoff.astimezone(timezone.utc)
+    root = (receipt_root or (Path.home() / ".codex" / "receipts")).resolve()
+    if not root.is_dir() or root.is_symlink():
+        return None
+    candidates: list[tuple[datetime, Path, dict[str, Any], bytes]] = []
+    for path in root.glob("codexpro-automation-*.json"):
+        if not path.is_file() or path.is_symlink():
+            continue
+        loaded = _strict_json_object(path)
+        if loaded is None:
+            continue
+        receipt, raw = loaded
+        if receipt.get("schema") != "codexpro.install-receipt/v3":
+            continue
+        try:
+            installed = datetime.fromisoformat(
+                str(receipt.get("installed_at") or "").replace("Z", "+00:00")
+            )
+        except ValueError:
+            continue
+        if installed.tzinfo is None:
+            continue
+        installed = installed.astimezone(timezone.utc)
+        if installed <= cutoff:
+            candidates.append((installed, path.resolve(), receipt, raw))
+    if not candidates:
+        return None
+    installed, path, receipt, raw = max(candidates, key=lambda item: item[0])
+    if receipt.get("manifest_version") != "1.18.4":
+        return None
+    files = receipt.get("files")
+    if not isinstance(files, list):
+        return None
+    installed_hashes = {
+        str(item.get("path") or ""): str(item.get("installed_sha256") or "").casefold()
+        for item in files
+        if isinstance(item, dict)
+    }
+    if any(installed_hashes.get(name) != expected for name, expected in LEGACY_V1184_FOLLOWUP_MANAGED_HASHES.items()):
+        return None
+    return {
+        "path": str(path),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "installed_at": installed.isoformat(),
+        "manifest_version": "1.18.4",
+    }
+
+
+def _followup_no_submission_evidence(
+    state_path: Path,
+    *,
+    require_recovery_evidence: bool,
+) -> dict[str, Any] | None:
+    state = load_state(state_path)
+    run_dir = state_path.parent.resolve()
+    profile = state.get("profile") if isinstance(state.get("profile"), dict) else {}
+    persisted_binding = state.get("followup_binding")
+    binding = proven_followup_binding(state_path)
+    if binding is None and persisted_binding is None:
+        binding = _legacy_followup_reservation_for_child(state_path)
+    owner = proven_ownership_receipt(state_path)
+    browser_identity = state.get("browser_identity") if isinstance(state.get("browser_identity"), dict) else {}
+    browser_receipt = browser_identity_receipt_path(run_dir)
+    if (
+        state.get("status") not in {"attention_required", "failed"}
+        or state.get("session_authority") not in {"submitted_unknown", "pre_submit"}
+        or state.get("transport") != "pro-devspace-readonly"
+        or state.get("mode") != "browser"
+        or state.get("transport_status") not in {"failed", "not_submitted_user_confirmed"}
+        or profile.get("model") != "gpt-5.6-sol"
+        or profile.get("model_strategy") != "select"
+        or profile.get("thinking_time") != "heavy"
+        or state.get("task_outcome") != "pending"
+        or state.get("terminal_harvested") is True
+        or state.get("parallel_parent_id") is not None
+        or state.get("web_multi_child_provenance") is not None
+        or state.get("attachments") not in (None, [])
+        or state.get("run_id") != run_dir.name
+        or state.get("exit_code") == 0
+        or binding is None
+        or owner is None
+        or browser_identity.get("receipt_path") not in {None, ""}
+        or browser_identity.get("receipt_sha256") not in {None, ""}
+        or browser_receipt.exists()
+        or browser_receipt.is_symlink()
+        or proven_browser_identity_receipt(state_path) is not None
+        or _state_has_conversation_url(state)
+    ):
+        return None
+    artifacts = state.get("artifacts") if isinstance(state.get("artifacts"), dict) else {}
+    output = Path(str(artifacts.get("output") or ""))
+    records = {name: _artifact_bytes(state, name) for name in ("stdout", "stderr", "transcript")}
+    if (
+        output.resolve() != (run_dir / "output.md").resolve()
+        or output.is_symlink()
+        or output_is_nonempty(output)
+        or any(value is None for value in records.values())
+    ):
+        return None
+    stdout_path, stdout_bytes = records["stdout"]  # type: ignore[misc]
+    stderr_path, stderr_bytes = records["stderr"]  # type: ignore[misc]
+    transcript_path, transcript_bytes = records["transcript"]  # type: ignore[misc]
+    try:
+        ordered_lines = [line.strip() for line in stdout_bytes.decode("utf-8", errors="strict").splitlines() if line.strip()]
+        lines = set(ordered_lines)
+    except UnicodeDecodeError:
+        return None
+    locator = str((state.get("oracle") or {}).get("slug") or "")
+    session_root = Path(os.environ.get("ORACLE_SESSION_ROOT") or (Path.home() / ".oracle" / "sessions")).resolve()
+    meta_path = session_root / locator / "meta.json"
+    loaded_meta = _strict_json_object(meta_path)
+    if loaded_meta is None:
+        return None
+    meta, meta_raw = loaded_meta
+    browser = meta.get("browser") if isinstance(meta.get("browser"), dict) else {}
+    runtime = browser.get("runtime")
+    error = meta.get("error") if isinstance(meta.get("error"), dict) else {}
+    details = error.get("details") if isinstance(error.get("details"), dict) else {}
+    config = browser.get("config") if isinstance(browser.get("config"), dict) else {}
+    options = meta.get("options") if isinstance(meta.get("options"), dict) else {}
+    option_browser = options.get("browserConfig") if isinstance(options.get("browserConfig"), dict) else {}
+    meta_urls = CHATGPT_CONVERSATION_URL_RE.findall(meta_raw.decode("utf-8", errors="strict"))
+    structured_pre_composer = (
+        details.get("stage") in ORACLE_FOLLOWUP_PRE_COMPOSER_STAGES
+        and set(details) == {"stage", "priorTurns", "settled"}
+        and isinstance(details.get("priorTurns"), int)
+        and not isinstance(details.get("priorTurns"), bool)
+        and details.get("priorTurns") > 0
+        and details.get("settled") is False
+        and runtime in (None, {})
+        and bool(str(error.get("message") or "").strip())
+    )
+    failure_signatures = {
+        "textarea-absent": {
+            f"ERROR: {ORACLE_PROMPT_TEXTAREA_ABSENT_MARKER}",
+            f"User error (browser-automation): {ORACLE_PROMPT_TEXTAREA_ABSENT_MARKER}",
+        },
+        "archived-parent-unarchive-menu-absent": {
+            f"ERROR: {ORACLE_FOLLOWUP_UNARCHIVE_MENU_ABSENT_MARKER}",
+            f"User error (browser-automation): {ORACLE_FOLLOWUP_UNARCHIVE_MENU_ABSENT_MARKER}",
+        },
+    }
+    if structured_pre_composer:
+        structured_message = str(error["message"])
+        failure_signatures["structured-pre-composer"] = {
+            f"ERROR: {structured_message}",
+            f"User error (browser-automation): {structured_message}",
+        }
+    matched_failures = [
+        (kind, expected)
+        for kind, expected in failure_signatures.items()
+        if expected.issubset(lines)
+    ]
+    if len(matched_failures) != 1:
+        return None
+    failure_kind, expected_lines = matched_failures[0]
+    if (
+        stdout_path.resolve() != (run_dir / "stdout.log").resolve()
+        or stderr_path.resolve() != (run_dir / "stderr.log").resolve()
+        or transcript_path.resolve() != (run_dir / "transcript.md").resolve()
+        or any(path.is_symlink() for path in (stdout_path, stderr_path, transcript_path))
+        or
+        not expected_lines.issubset(lines)
+        or any(
+            line not in expected_lines
+            and not line.startswith((
+                "🧿 oracle ", "Session: ", "Mode: ", "Models: ", "Detach: ",
+                "Reattach: oracle session ", "Launching browser mode ",
+                "This run can take up to an hour ", "[browser] Browser control: ",
+                "[browser] Browser guidance: ",
+            ))
+            for line in ordered_lines
+        )
+        or stderr_bytes
+        or transcript_bytes != stdout_bytes
+        or any(CHATGPT_CONVERSATION_URL_RE.search(raw.decode("utf-8", errors="ignore")) for raw in (stdout_bytes, stderr_bytes, transcript_bytes))
+    ):
+        return None
+    recovery_records: list[dict[str, Any]] = []
+    recovery_paths = (run_dir / "recovery-harvest-stdout.log", run_dir / "recovery-harvest-stderr.log")
+    recovery_candidate = run_dir / "recovery-harvest-candidate.md"
+    allowed_recovery_names = {
+        recovery_paths[0].name,
+        recovery_paths[1].name,
+        recovery_candidate.name,
+    }
+    try:
+        recovery_artifacts = [
+            path
+            for path in run_dir.glob("recovery-*")
+            if path.exists() or path.is_symlink()
+        ]
+    except OSError:
+        return None
+    if any(path.name not in allowed_recovery_names for path in recovery_artifacts):
+        return None
+    if recovery_candidate.exists() or recovery_candidate.is_symlink():
+        try:
+            candidate_bytes = recovery_candidate.read_bytes()
+        except OSError:
+            return None
+        if recovery_candidate.is_symlink() or not recovery_candidate.is_file() or candidate_bytes:
+            return None
+    recovery_presence = [path.exists() or path.is_symlink() for path in recovery_paths]
+    if any(recovery_presence):
+        if not all(
+            path.is_file() and not path.is_symlink()
+            for path in recovery_paths
+        ):
+            return None
+        try:
+            raw_out, raw_err = (path.read_bytes() for path in recovery_paths)
+            stdout_text = raw_out.decode("utf-8", errors="strict")
+            stderr_text = raw_err.decode("utf-8", errors="strict")
+        except (OSError, UnicodeDecodeError):
+            return None
+        text = "\n".join((stdout_text, stderr_text))
+        if (
+            CHATGPT_CONVERSATION_URL_RE.search(text)
+            or ORACLE_RECOVERY_STATE_RE.search(text)
+            or ORACLE_NO_LIVE_TAB_MARKER not in text
+            or ORACLE_NO_LIVE_TAB_MARKER not in stdout_text
+            or f'"{locator}"' not in text
+            or f'"{locator}"' not in stdout_text
+            or ORACLE_NO_RECOVERABLE_URL_MARKER not in text
+            or ORACLE_NO_RECOVERABLE_URL_MARKER not in stderr_text
+        ):
+            return None
+        recovery_records.append({
+            "stdout_name": recovery_paths[0].name,
+            "stdout_sha256": hashlib.sha256(raw_out).hexdigest(),
+            "stderr_name": recovery_paths[1].name,
+            "stderr_sha256": hashlib.sha256(raw_err).hexdigest(),
+        })
+    # A missing textarea has no known conversation and therefore still needs
+    # the exact no-tab/no-URL harvest receipt.  An archived-parent menu miss is
+    # different: its bounded before-composer taxonomy is authoritative and a
+    # new recovery attempt is not applicable.  Preserve settlement eligibility
+    # only when an older runner already wrote one exact harmless no-tab/no-URL
+    # pair; any candidate, state marker, URL, extra attempt, or partial pair was
+    # rejected above.
+    if require_recovery_evidence and failure_kind == "textarea-absent" and len(recovery_records) != 1:
+        return None
+    reservation_record = binding.get("reservation") if isinstance(binding.get("reservation"), dict) else binding
+    reservation = reservation_record["payload"]
+    parent_url = str((reservation.get("parent") or {}).get("conversation_url") or "")
+    common_invalid = (
+        meta.get("id") != locator
+        or meta.get("status") != "error"
+        or not str(meta.get("completedAt") or "").strip()
+        or meta.get("mode") != "browser"
+        or str(meta.get("model") or "") != "gpt-5.6-sol"
+        or error.get("category") != "browser-automation"
+        or browser.get("archive") not in (None, "")
+        or config.get("resumeConversationUrl") != parent_url
+        or option_browser.get("resumeConversationUrl") != parent_url
+        or any(url != parent_url for url in meta_urls)
+    )
+    if common_invalid:
+        return None
+    if failure_kind == "textarea-absent":
+        if (
+            error.get("message") != ORACLE_PROMPT_TEXTAREA_ABSENT_MARKER
+            or details.get("stage") != "execute-browser"
+            or runtime not in (None, {})
+        ):
+            return None
+        evidence_profile = "textarea-absent-with-exact-harvest/v1"
+    elif failure_kind == "structured-pre-composer":
+        observer = state.get("browser_observer") if isinstance(state.get("browser_observer"), dict) else {}
+        observer_pid = observer.get("oracle_process_pid")
+        if (
+            not structured_pre_composer
+            or state.get("task_outcome_reason") not in {
+                "followup-conversation-identity-unverified",
+                "user-confirmed-no-submission-after-prompt-timeout",
+            }
+            or observer.get("status") != "process-exited"
+            or not isinstance(observer_pid, int)
+            or isinstance(observer_pid, bool)
+            or observer_pid <= 0
+            or _process_may_be_alive(observer_pid)
+            or error.get("category") != "browser-automation"
+        ):
+            return None
+        evidence_profile = "structured-pre-composer-runtime-unbound/v1"
+    else:
+        parent_archive = (reservation.get("parent") or {}).get("archive_contract")
+        structured_before_composer = (
+            details.get("stage") == "followup-unarchive-before-composer"
+            and details.get("code") == "FOLLOWUP_ARCHIVED_PARENT_UNARCHIVE_FAILED"
+            and details.get("reason") == "unarchive-menu-not-found"
+            and details.get("expectedConversationUrl") == parent_url
+            and details.get("observedConversationUrl") == parent_url
+            and details.get("promptSubmitted") is False
+            and details.get("composerSubmitAttempted") is False
+            and isinstance(details.get("turnCountBefore"), int)
+            and details.get("turnCountAfter") == details.get("turnCountBefore")
+            and runtime in (None, {})
+        )
+        # v1.18.4 emitted this exact error only from the no-candidate branch
+        # before `ensurePromptReady` and before any unarchive click.  Retain one
+        # deliberately narrow compatibility predicate so the already-created
+        # exact child can be settled; all future runs use the structured proof.
+        owner_payload = owner.get("payload") if isinstance(owner.get("payload"), dict) else {}
+        ownership_created_at = str(owner_payload.get("created_at") or "")
+        try:
+            ownership_created = datetime.fromisoformat(ownership_created_at.replace("Z", "+00:00"))
+            meta_completed = datetime.fromisoformat(str(meta.get("completedAt") or "").replace("Z", "+00:00"))
+        except ValueError:
+            ownership_created = None
+            meta_completed = None
+        ownership_time_valid = (
+            ownership_created is not None
+            and meta_completed is not None
+            and ownership_created.tzinfo is not None
+            and meta_completed.tzinfo is not None
+            and ownership_created.astimezone(timezone.utc) <= meta_completed.astimezone(timezone.utc)
+        )
+        legacy_provenance = (
+            _proven_legacy_v1184_followup_install_receipt(ownership_created_at)
+            if ownership_time_valid
+            else None
+        )
+        legacy_v1184_no_click = (
+            details.get("stage") == "execute-browser"
+            and set(details) == {"stage"}
+            and runtime in (None, {})
+            and isinstance(persisted_binding, dict)
+            and legacy_provenance is not None
+        )
+        if (
+            error.get("message") != ORACLE_FOLLOWUP_UNARCHIVE_MENU_ABSENT_MARKER
+            or config.get("resumeArchivedConversation") is not True
+            or option_browser.get("resumeArchivedConversation") is not True
+            or config.get("archiveConversations") != "always"
+            or option_browser.get("archiveConversations") != "always"
+            or not isinstance(parent_archive, dict)
+            or parent_archive.get("was_archived") is not True
+            or parent_archive.get("conversation_url") != parent_url
+            or parent_archive.get("restore_policy") != "exact-unarchive-then-rearchive"
+            or not (structured_before_composer or legacy_v1184_no_click)
+        ):
+            return None
+        evidence_profile = (
+            "archived-parent-unarchive-before-composer/v2"
+            if structured_before_composer
+            else "archived-parent-unarchive-v1.18.4-legacy-no-click/v1"
+        )
+    evidence = {
+        "settlement_eligibility": "oracle-followup-pre-submit-ui/v2",
+        "failure_kind": failure_kind,
+        "evidence_profile": evidence_profile,
+        "project_root": str(state.get("project_root") or ""),
+        "run_id": state.get("run_id"),
+        "transport": state.get("transport"),
+        "mission_sha256": (state.get("mission") or {}).get("sha256"),
+        "oracle_locator": (state.get("oracle") or {}).get("slug"),
+        "stdout_sha256": hashlib.sha256(stdout_bytes).hexdigest(),
+        "stderr_sha256": hashlib.sha256(stderr_bytes).hexdigest(),
+        "harvest_outcome": (
+            "no-live-no-url-no-candidate" if recovery_records else "not-run"
+        ),
+        "recovery_evidence": recovery_records,
+        "output_absent": True,
+        "conversation_url_absent": True,
+        "followup_binding_mode": binding.get("binding_mode", "child-binding-receipt/v1"),
+        "followup_reservation_path": reservation_record.get("path"),
+        "followup_reservation_sha256": reservation_record.get("sha256"),
+        "parent_run_id": (reservation.get("parent") or {}).get("run_id"),
+        "parent_conversation_url": parent_url,
+        "round_key": reservation.get("round_key"),
+        "oracle_meta_sha256": hashlib.sha256(meta_raw).hexdigest(),
+    }
+    if failure_kind == "structured-pre-composer":
+        evidence["pre_composer_stage"] = details["stage"]
+        evidence["prior_turns_observed"] = details["priorTurns"]
+    if failure_kind == "archived-parent-unarchive-menu-absent" and legacy_v1184_no_click:
+        evidence["legacy_install_receipt_path"] = legacy_provenance["path"]
+        evidence["legacy_install_receipt_sha256"] = legacy_provenance["sha256"]
+    return evidence
+
+
 def _direct_devspace_no_submission_evidence(
     state_path: Path,
     *,
     require_persisted_recovery: bool,
+    require_recovery_evidence: bool = True,
 ) -> dict[str, Any] | None:
     """Validate one ordinary DevSpace prompt-observation failure.
 
@@ -1921,15 +3537,61 @@ def _direct_devspace_no_submission_evidence(
         f"ERROR: {ORACLE_PROMPT_NOT_OBSERVED_MARKER}",
         f"User error (browser-automation): {ORACLE_PROMPT_NOT_OBSERVED_MARKER}",
     }
+    prompt_marker_valid = (
+        bool(marker_lines)
+        and marker_lines.issubset(allowed_marker_lines)
+        and stdout_text.count(ORACLE_PROMPT_NOT_OBSERVED_MARKER) == len(marker_lines)
+    )
+    lines = stdout_text.splitlines()
+    model_option_error = ""
+    model_option_match: re.Match[str] | None = None
+    if len(lines) >= 2 and lines[-1].startswith("User error (browser-automation): "):
+        model_option_error = lines[-1].removeprefix("User error (browser-automation): ")
+        if lines[-2] == f"ERROR: {model_option_error}":
+            model_option_match = ORACLE_MODEL_OPTION_MISSING_PRE_SUBMIT_RE.fullmatch(
+                model_option_error
+            )
+    model_option_valid = model_option_match is not None
     if (
         not locator
-        or not marker_lines
-        or not marker_lines.issubset(allowed_marker_lines)
-        or stdout_text.count(ORACLE_PROMPT_NOT_OBSERVED_MARKER) != len(marker_lines)
+        or prompt_marker_valid == model_option_valid
         or f"Session: {locator}" not in stdout_text
         or CHATGPT_CONVERSATION_URL_RE.search(stdout_text)
     ):
         return None
+    desired_model = ""
+    if model_option_match is not None:
+        desired_model = model_option_match.group("desired")
+        expected_head = [
+            f"Session: {locator}",
+            "Mode: browser foreground",
+            "Models: 1",
+            "Detach: no",
+            f"Reattach: oracle session {locator}",
+        ]
+        expected_guidance = [
+            "This run can take up to an hour (usually ~10 minutes).",
+            "[browser] Browser control: launch Chrome in hidden-window mode; may focus/control the browser UI.",
+            "[browser] Browser guidance: On macOS, Oracle launches Chrome off-screen while keeping the page rendered.",
+            "[browser] Browser guidance: For the calmest shared-desktop flow, prefer --browser-attach-running or --remote-chrome.",
+        ]
+        if (
+            len(lines) != 13
+            or re.fullmatch(r".{1,4} oracle 0\.17\.1 .{2,120}", lines[0]) is None
+            or lines[1:6] != expected_head
+            or re.fullmatch(
+                rf"Launching browser mode \(target={re.escape(desired_model)}; "
+                rf"requested={re.escape(str(profile['model']))}\) with ~[1-9][0-9]* tokens\.",
+                lines[6],
+            )
+            is None
+            or lines[7:11] != expected_guidance
+            or lines[-2:] != [
+                f"ERROR: {model_option_error}",
+                f"User error (browser-automation): {model_option_error}",
+            ]
+        ):
+            return None
     mission = state.get("mission") if isinstance(state.get("mission"), dict) else {}
     source_path = Path(str(mission.get("path") or ""))
     transport_path = Path(str(mission.get("transport_path") or ""))
@@ -1968,26 +3630,168 @@ def _direct_devspace_no_submission_evidence(
         run_dir / expected_recovery["stdout_name"],
         run_dir / expected_recovery["stderr_name"],
     ]
-    try:
-        if any(path.is_symlink() for path in recovery_paths):
+    recovery_records: list[dict[str, str]] = []
+    recovery_exists = [path.exists() or path.is_symlink() for path in recovery_paths]
+    if any(recovery_exists):
+        if not all(recovery_exists):
             return None
-        recovery_stdout, recovery_stderr = (path.read_bytes() for path in recovery_paths)
-        recovery_text = b"\n".join((recovery_stdout, recovery_stderr)).decode("utf-8", errors="strict")
-    except (OSError, UnicodeDecodeError):
+        try:
+            if any(path.is_symlink() for path in recovery_paths):
+                return None
+            recovery_stdout, recovery_stderr = (path.read_bytes() for path in recovery_paths)
+            recovery_text = b"\n".join((recovery_stdout, recovery_stderr)).decode(
+                "utf-8", errors="strict"
+            )
+        except (OSError, UnicodeDecodeError):
+            return None
+        if (
+            CHATGPT_CONVERSATION_URL_RE.search(recovery_text)
+            or ORACLE_RECOVERY_STATE_RE.search(recovery_text)
+            or ORACLE_NO_LIVE_TAB_MARKER not in recovery_text
+            or f'"{locator}"' not in recovery_text
+            or ORACLE_NO_RECOVERABLE_URL_MARKER not in recovery_text
+        ):
+            return None
+        recovery_records = [{
+            **expected_recovery,
+            "stdout_sha256": hashlib.sha256(recovery_stdout).hexdigest(),
+            "stderr_sha256": hashlib.sha256(recovery_stderr).hexdigest(),
+        }]
+    elif require_recovery_evidence:
         return None
-    if (
-        CHATGPT_CONVERSATION_URL_RE.search(recovery_text)
-        or ORACLE_RECOVERY_STATE_RE.search(recovery_text)
-        or ORACLE_NO_LIVE_TAB_MARKER not in recovery_text
-        or f'"{locator}"' not in recovery_text
-        or ORACLE_NO_RECOVERABLE_URL_MARKER not in recovery_text
-    ):
-        return None
-    recovery_records = [{
-        **expected_recovery,
-        "stdout_sha256": hashlib.sha256(recovery_stdout).hexdigest(),
-        "stderr_sha256": hashlib.sha256(recovery_stderr).hexdigest(),
-    }]
+    selector_meta_evidence: dict[str, Any] = {}
+    if model_option_match is not None:
+        session_root = Path(
+            os.environ.get("ORACLE_SESSION_ROOT") or (Path.home() / ".oracle" / "sessions")
+        ).resolve()
+        if re.fullmatch(r"oracle-[A-Za-z0-9._-]{1,200}", locator) is None:
+            return None
+        meta_path = session_root / locator / "meta.json"
+        if meta_path.parent.is_symlink() or meta_path.is_symlink():
+            return None
+
+        def reject_meta_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+            parsed: dict[str, Any] = {}
+            for key, value in pairs:
+                if key in parsed:
+                    raise ValueError(f"duplicate Oracle meta key: {key}")
+                parsed[key] = value
+            return parsed
+
+        try:
+            meta_bytes = meta_path.read_bytes()
+            if meta_path.resolve(strict=True).parent.parent != session_root:
+                return None
+            meta_text = meta_bytes.decode("utf-8", errors="strict")
+            meta = json.loads(meta_text, object_pairs_hook=reject_meta_duplicates)
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
+            return None
+        browser = meta.get("browser") if isinstance(meta.get("browser"), dict) else {}
+        config = browser.get("config") if isinstance(browser.get("config"), dict) else {}
+        runtime = browser.get("runtime") if isinstance(browser.get("runtime"), dict) else {}
+        archive = browser.get("archive")
+        error = meta.get("error") if isinstance(meta.get("error"), dict) else {}
+        details = error.get("details") if isinstance(error.get("details"), dict) else {}
+        details_runtime = (
+            details.get("runtime") if isinstance(details.get("runtime"), dict) else {}
+        )
+        options = meta.get("options") if isinstance(meta.get("options"), dict) else {}
+        option_browser = (
+            options.get("browserConfig")
+            if isinstance(options.get("browserConfig"), dict)
+            else {}
+        )
+        identity = (
+            state.get("browser_identity")
+            if isinstance(state.get("browser_identity"), dict)
+            else {}
+        )
+        ownership = proven_ownership_receipt(state_path)
+        source_thread_id = source_thread_id_from_state(state)
+        receipt_path = browser_identity_receipt_path(run_dir)
+        try:
+            copy_profile = Path(str(profile.get("copy_profile") or "")).resolve()
+            config_profile = Path(str(config.get("copyProfileSource") or "")).resolve()
+            option_profile = Path(str(option_browser.get("copyProfileSource") or "")).resolve()
+            meta_cwd = Path(str(meta.get("cwd") or "")).resolve()
+            meta_output = Path(str(options.get("writeOutputPath") or "")).resolve()
+            chrome_pid = int(runtime.get("chromePid"))
+            controller_pid = int(runtime.get("controllerPid"))
+            cdp_port = int(runtime.get("chromePort"))
+            state_browser_temp = Path(str(artifacts.get("browser_temp") or "")).resolve()
+            runtime_profile = Path(str(runtime.get("userDataDir") or "")).resolve()
+        except (OSError, TypeError, ValueError):
+            return None
+        model_id = str(profile.get("model") or "")
+        if (
+            ownership is None
+            or not source_thread_id
+            or identity.get("receipt_path") not in {None, ""}
+            or identity.get("receipt_sha256") not in {None, ""}
+            or receipt_path.exists()
+            or receipt_path.is_symlink()
+            or not str(profile.get("copy_profile") or "").strip()
+            or not copy_profile.is_absolute()
+            or meta.get("id") != locator
+            or meta.get("status") != "error"
+            or meta.get("model") != model_id
+            or meta.get("mode") != "browser"
+            or not str(meta.get("completedAt") or "").strip()
+            or meta_cwd != project_root
+            or meta_output != output.resolve()
+            or chrome_pid <= 0
+            or controller_pid <= 0
+            or cdp_port != identity.get("expected_cdp_port")
+            or config.get("debugPort") != cdp_port
+            or option_browser.get("debugPort") != cdp_port
+            or not str(runtime.get("chromeTargetId") or "").strip()
+            or runtime.get("conversationId") not in {None, ""}
+            or archive not in {None, ""}
+            or state_browser_temp != (run_dir / "browser-temp").resolve()
+            or not state_browser_temp.is_dir()
+            or state_browser_temp.is_symlink()
+            or not runtime_profile.is_dir()
+            or runtime_profile.is_symlink()
+            or not is_within(state_browser_temp, runtime_profile)
+            or config_profile != copy_profile
+            or option_profile != copy_profile
+            or config.get("desiredModel") != desired_model
+            or option_browser.get("desiredModel") != desired_model
+            or config.get("modelStrategy") != profile.get("model_strategy")
+            or option_browser.get("modelStrategy") != profile.get("model_strategy")
+            or config.get("thinkingTime") != profile.get("thinking_time")
+            or option_browser.get("thinkingTime") != profile.get("thinking_time")
+            or config.get("researchMode") != profile.get("research")
+            or option_browser.get("researchMode") != profile.get("research")
+            or options.get("model") != model_id
+            or options.get("models") != [model_id]
+            or options.get("effectiveModelId") != model_id
+            or options.get("slug") != locator
+            or options.get("mode") != "browser"
+            or runtime.get("promptSubmitted") is not False
+            or runtime.get("tabUrl") != "https://chatgpt.com/"
+            or details_runtime.get("promptSubmitted") not in {None, False}
+            or error.get("category") != "browser-automation"
+            or error.get("message") != model_option_error
+            or details.get("stage") != "execute-browser"
+            or str(meta.get("errorMessage") or "") != model_option_error
+            or CHATGPT_CONVERSATION_URL_RE.search(meta_text)
+        ):
+            return None
+        selector_meta_evidence = {
+            "pre_submit_marker": "oracle-model-option-missing/v1",
+            "source_thread_id": source_thread_id,
+            "ownership_receipt_sha256": ownership.get("sha256"),
+            "desired_model": desired_model,
+            "oracle_meta_path": str(meta_path),
+            "oracle_meta_sha256": hashlib.sha256(meta_bytes).hexdigest(),
+            "oracle_meta_stage": "execute-browser",
+            "prompt_submitted": False,
+            "tab_url": "https://chatgpt.com/",
+            "expected_cdp_port": cdp_port,
+            "browser_profile": str(runtime_profile),
+            "browser_target_id": str(runtime.get("chromeTargetId")),
+        }
     evidence = {
         "settlement_eligibility": "oracle-direct-devspace/v1",
         "project_root": str(project_root),
@@ -2006,11 +3810,14 @@ def _direct_devspace_no_submission_evidence(
         "recovery_evidence": recovery_records,
         "output_absent": True,
         "conversation_url_absent": True,
+        **selector_meta_evidence,
         "_source_mission_path": str(source_path),
         "_transport_mission_path": str(transport_path),
     }
     if not require_persisted_recovery:
         return evidence
+    if not recovery_records:
+        return None
     reference = state.get("prompt_not_observed_recovery")
     expected_path = run_dir / "prompt-not-observed-recovery.json"
     if (
@@ -2071,11 +3878,23 @@ def persist_direct_devspace_prompt_not_observed_recovery(state_path: Path) -> di
 
 def _user_confirmable_no_submission_evidence(state_path: Path) -> dict[str, Any] | None:
     """Return exact evidence for supported user-adjudicable Oracle runs."""
+    # A follow-up session necessarily stores its already-existing parent URL in
+    # immutable resume configuration. Its dedicated predicate permits only that
+    # exact parent URL while rejecting any child runtime/conversation binding.
+    followup = _followup_no_submission_evidence(state_path, require_recovery_evidence=True)
+    if followup is not None:
+        return followup
     if _settlement_logs_have_conversation_url(state_path):
         return None
     comprehensive = _comprehensive_no_submission_evidence(state_path)
     if comprehensive is not None:
         return comprehensive
+    pre_submit_host = _pre_submit_host_no_submission_evidence(state_path)
+    if pre_submit_host is not None:
+        return pre_submit_host
+    browser_session_absent = _browser_session_absent_no_submission_evidence(state_path)
+    if browser_session_absent is not None:
+        return browser_session_absent
     direct_devspace = _direct_devspace_no_submission_evidence(
         state_path, require_persisted_recovery=True
     )
@@ -2173,6 +3992,59 @@ def proven_user_confirmed_no_submission(state_path: Path) -> dict[str, Any] | No
             "source_mission_sha256", "transport_mission_path", "transport_mission_sha256",
             "oracle_version",
         )
+        if current.get("pre_submit_marker") == "oracle-model-option-missing/v1":
+            required += (
+                "pre_submit_marker", "desired_model", "oracle_meta_path",
+                "oracle_meta_sha256", "oracle_meta_stage", "prompt_submitted", "tab_url",
+                "source_thread_id", "ownership_receipt_sha256", "expected_cdp_port",
+                "browser_profile", "browser_target_id",
+            )
+    elif current.get("settlement_eligibility") in {
+        "oracle-followup-pre-submit-ui/v1",
+        "oracle-followup-pre-submit-ui/v2",
+    }:
+        required = (
+            "transport", "followup_binding_mode",
+            "followup_reservation_path", "followup_reservation_sha256",
+            "parent_run_id", "parent_conversation_url", "round_key",
+            "oracle_meta_sha256",
+        )
+        recorded_eligibility = recorded.get("settlement_eligibility")
+        current_eligibility = current.get("settlement_eligibility")
+        if recorded_eligibility == current_eligibility:
+            required += ("settlement_eligibility",)
+        else:
+            historical_v1_upgrade = (
+                recorded_eligibility == "oracle-followup-pre-submit-ui/v1"
+                and current_eligibility == "oracle-followup-pre-submit-ui/v2"
+                and current.get("failure_kind") == "textarea-absent"
+                and current.get("evidence_profile")
+                == "textarea-absent-with-exact-harvest/v1"
+                and all(
+                    key not in recorded
+                    for key in ("failure_kind", "evidence_profile", "harvest_outcome")
+                )
+            )
+            if not historical_v1_upgrade:
+                return None
+        if recorded_eligibility == "oracle-followup-pre-submit-ui/v2":
+            required += ("failure_kind", "evidence_profile")
+            if recorded.get("evidence_profile") == "archived-parent-unarchive-v1.18.4-legacy-no-click/v1":
+                required += ("legacy_install_receipt_path", "legacy_install_receipt_sha256")
+            elif recorded.get("evidence_profile") == "structured-pre-composer-runtime-unbound/v1":
+                required += ("pre_composer_stage", "prior_turns_observed")
+        # v1 settlements predate failure/evidence profile labels.  Their exact
+        # artifact hashes and immutable follow-up binding remain authoritative;
+        # a predicate-only v1 -> v2 label upgrade must not resurrect ownership.
+        # New v2 settlements bind the explicit harmless-harvest outcome while
+        # existing v2 receipts that predate this field remain revalidatable.
+        if "harvest_outcome" in recorded:
+            required += ("harvest_outcome",)
+    elif current.get("settlement_eligibility") == "oracle-pre-submit-host/v1":
+        required = (
+            "settlement_eligibility", "transport", "transport_mission_path",
+            "transport_mission_sha256", "transcript_sha256", "host_failure",
+        )
     elif current.get("settlement_eligibility") == "oracle-web-multi-child/v1":
         required = (
             "settlement_eligibility", "parallel_parent_id", "source_mission_path",
@@ -2202,6 +4074,13 @@ def settle_user_confirmed_no_submission(
     Mechanical evidence remains fail-closed: it merely makes the run eligible.
     The exact confirmation token is the authority that resolves non-submission.
     """
+    state_owner = source_thread_id_from_state(load_state(state_path))
+    caller = current_source_thread_id()
+    if state_owner and caller != state_owner:
+        raise OracleStateError(
+            "FOREIGN_TASK_SESSION",
+            "the exact Oracle run belongs to a different Codex task; settlement is forbidden",
+        )
     if confirmation.strip().casefold() != USER_CONFIRMED_NO_SUBMISSION:
         raise OracleStateError(
             "NO_SUBMISSION_CONFIRMATION_REQUIRED",
@@ -2214,12 +4093,18 @@ def settle_user_confirmed_no_submission(
     existing = proven_user_confirmed_no_submission(state_path)
     if existing is not None:
         return payload
-    if str(payload.get("session_authority") or "") != "submitted_unknown":
+    authority = str(payload.get("session_authority") or "")
+    evidence = _user_confirmable_no_submission_evidence(state_path)
+    pre_submit_host_eligible = (
+        authority == "pre_submit"
+        and isinstance(evidence, dict)
+        and evidence.get("settlement_eligibility") == "oracle-pre-submit-host/v1"
+    )
+    if authority != "submitted_unknown" and not pre_submit_host_eligible:
         raise OracleStateError(
             "NO_SUBMISSION_AUTHORITY_INVALID",
-            "only a submitted_unknown run may be adjudicated as not submitted",
+            "only a submitted_unknown run or an exact proven pre-submit host failure may be adjudicated as not submitted",
         )
-    evidence = _user_confirmable_no_submission_evidence(state_path)
     if evidence is None:
         # Legacy prompt-observation failures predate the durable recovery
         # receipt.  Only this explicit, exact user-attestation command may
@@ -2252,9 +4137,18 @@ def settle_user_confirmed_no_submission(
         "transport_status": "not_submitted_user_confirmed",
         "task_outcome": "pending",
         "task_outcome_reason": (
-            "user-confirmed-no-submission-after-model-selector-failure"
-            if evidence.get("pre_submit_marker")
-            == "oracle-model-selector-button-missing/v1"
+            (
+                "user-confirmed-no-submission-after-devspace-restart-required"
+                if evidence.get("host_failure", {}).get("failure_reason")
+                == "devspace-service-restart-required"
+                else "user-confirmed-no-submission-after-oracle-version-resolution-failure"
+            )
+            if evidence.get("settlement_eligibility") == "oracle-pre-submit-host/v1"
+            else "user-confirmed-no-submission-after-model-selector-failure"
+            if evidence.get("pre_submit_marker") in {
+                "oracle-model-selector-button-missing/v1",
+                "oracle-model-option-missing/v1",
+            }
             else "user-confirmed-no-submission-after-prompt-timeout"
         ),
         "user_confirmed_no_submission": {
@@ -2720,6 +4614,59 @@ def proven_pre_submit_host_failure(state_path: Path) -> dict[str, Any] | None:
         return None
     elif not normalized_error.startswith("version resolution failed:"):
         return None
+    elif normalized_error.strip() == DEVSPACE_SERVICE_RESTART_REQUIRED_ERROR:
+        lifecycle_shape = (
+            (state.get("status"), str(state.get("transport_status") or ""))
+            in {
+                ("failed", "prepared"),
+                ("attention_required", "failed_pre_submit"),
+                ("attention_required", "not_submitted_user_confirmed"),
+            }
+        )
+        if (
+            authority != "pre_submit"
+            or not lifecycle_shape
+            or state.get("terminal_harvested") is not False
+            or str(state.get("transport") or "") != "devspace"
+            or str(state.get("mode") or "") != "browser"
+            or str(state.get("task_outcome") or "") != "pending"
+            or stdout_bytes
+        ):
+            return None
+        failure_reason = "devspace-service-restart-required"
+        code = "DEVSPACE_SERVICE_RESTART_PRELAUNCH_FAILED"
+    elif normalized_error.strip() == (
+        "version resolution failed: ORACLE_VERSION_FAILED: "
+        "Oracle version could not be resolved"
+    ):
+        lifecycle_shape = (
+            (state.get("status"), str(state.get("transport_status") or ""))
+            in {
+                ("failed", "prepared"),
+                ("attention_required", "failed_pre_submit"),
+                ("attention_required", "not_submitted_user_confirmed"),
+            }
+        )
+        command = tuple(str(item) for item in (oracle.get("command") or []))
+        try:
+            validated_command = validate_oracle_command(list(command))
+        except OracleStateError:
+            validated_command = ()
+        locator = str(oracle.get("session_locator") or oracle.get("slug") or "").strip()
+        if (
+            authority != "pre_submit"
+            or not lifecycle_shape
+            or state.get("terminal_harvested") is not False
+            or not is_devspace_transport(str(state.get("transport") or ""))
+            or str(state.get("mode") or "") != "browser"
+            or str(state.get("task_outcome") or "") != "pending"
+            or stdout_bytes
+            or validated_command != command
+            or not locator
+        ):
+            return None
+        failure_reason = "oracle-version-command-failed-before-launch"
+        code = "ORACLE_VERSION_RESOLUTION_PRELAUNCH_FAILED"
     elif "Oracle compatibility is validated only for the tested version" in normalized_error:
         failure_reason = "compatibility-version-drift"
         code = "ORACLE_VERSION_RESOLUTION_PRELAUNCH_FAILED"
@@ -2740,6 +4687,174 @@ def proven_pre_submit_host_failure(state_path: Path) -> dict[str, Any] | None:
         "conversation_url_absent": True,
         "resolved_version": "unresolved",
         "failure_reason": failure_reason,
+    }
+
+
+ORACLE_BROWSER_SESSION_ABSENT_RE = re.compile(
+    r"ChatGPT session not detected\.\s*Login button detected on page\.",
+    re.IGNORECASE,
+)
+ORACLE_BROWSER_COOKIES_ABSENT_RE = re.compile(
+    r"No ChatGPT cookies were applied",
+    re.IGNORECASE,
+)
+
+
+def _browser_session_absent_no_submission_evidence(state_path: Path) -> dict[str, Any] | None:
+    """Bind a pre-submit failure caused by an unauthenticated Oracle browser.
+
+    Oracle stops before the composer when its dedicated profile has no ChatGPT
+    session, so no conversation can exist.  Without this eligibility type the
+    project lock survived forever: the run holds ``submitted_unknown`` authority
+    while every other detector rejects it, and no recovery binding can ever be
+    backfilled because the provider was never reached.
+    """
+    state = load_state(state_path)
+    run_dir = state_path.parent
+    run_id = str(state.get("run_id") or "")
+    if (
+        not run_id
+        or run_dir.name != run_id
+        # Settlement rewrites both fields, so revalidation must accept the
+        # settled pair as well.  Otherwise a recorded settlement can never be
+        # reproven and the project lock survives forever.
+        or str(state.get("transport_status") or "") not in {"failed", "not_submitted_user_confirmed"}
+        or str(state.get("session_authority") or "") not in {"submitted_unknown", "pre_submit"}
+        or bool(state.get("terminal_harvested"))
+        or _artifact_bytes(state, "output") is not None
+    ):
+        return None
+    if _settlement_logs_have_conversation_url(state_path):
+        return None
+    stdout_record = _artifact_bytes(state, "stdout")
+    if stdout_record is None:
+        return None
+    stdout_path, stdout_bytes = stdout_record
+    try:
+        stdout_text = stdout_bytes.decode("utf-8", errors="strict")
+    except UnicodeDecodeError:
+        return None
+    if (
+        stdout_path.resolve() != (run_dir / "stdout.log").resolve()
+        or stdout_path.is_symlink()
+        or ORACLE_BROWSER_SESSION_ABSENT_RE.search(stdout_text) is None
+        or ORACLE_BROWSER_COOKIES_ABSENT_RE.search(stdout_text) is None
+        or "chatgpt.com/c/" in stdout_text
+    ):
+        return None
+    mission = state.get("mission") if isinstance(state.get("mission"), dict) else {}
+    transport_path = Path(str(mission.get("transport_path") or ""))
+    mission_sha256 = str(mission.get("sha256") or "").casefold()
+    oracle = state.get("oracle") if isinstance(state.get("oracle"), dict) else {}
+    locator = str(oracle.get("session_locator") or oracle.get("slug") or "").strip()
+    if (
+        not locator
+        or not re.fullmatch(r"[a-f0-9]{64}", mission_sha256)
+        or transport_path.resolve() != (run_dir / "mission.md").resolve()
+        or transport_path.is_symlink()
+    ):
+        return None
+    try:
+        transport_bytes = transport_path.read_bytes()
+        project_root = Path(str(state.get("project_root") or "")).resolve(strict=True)
+    except OSError:
+        return None
+    if (
+        not project_root.is_dir()
+        or hashlib.sha256(transport_bytes).hexdigest() != mission_sha256
+    ):
+        return None
+    recovery: list[dict[str, Any]] = []
+    for recovery_stdout in sorted(run_dir.glob("recovery-*-stdout.log"), key=lambda item: item.name):
+        try:
+            recovery_bytes = recovery_stdout.read_bytes()
+            recovery_text = recovery_bytes.decode("utf-8", errors="strict")
+        except (OSError, UnicodeDecodeError):
+            return None
+        if recovery_stdout.is_symlink() or "chatgpt.com/c/" in recovery_text:
+            return None
+        recovery.append({
+            "stdout_name": recovery_stdout.name,
+            "stdout_sha256": hashlib.sha256(recovery_bytes).hexdigest(),
+        })
+    return {
+        "settlement_eligibility": "oracle-browser-session-absent-pre-submit/v1",
+        "project_root": str(project_root),
+        "run_id": run_id,
+        "transport": str(state.get("transport") or ""),
+        "transport_mission_path": str(transport_path),
+        "transport_mission_sha256": mission_sha256,
+        "mission_sha256": mission_sha256,
+        "oracle_locator": locator,
+        "stdout_sha256": hashlib.sha256(stdout_bytes).hexdigest(),
+        "recovery_evidence": recovery,
+        "output_absent": True,
+        "conversation_url_absent": True,
+        "browser_session_absent": True,
+    }
+
+
+def _pre_submit_host_no_submission_evidence(state_path: Path) -> dict[str, Any] | None:
+    """Bind an exact pre-submit host failure without reading project files."""
+    failure = proven_pre_submit_host_failure(state_path)
+    if (
+        failure is None
+        or failure.get("code") not in {
+            "DEVSPACE_SERVICE_RESTART_PRELAUNCH_FAILED",
+            "ORACLE_VERSION_RESOLUTION_PRELAUNCH_FAILED",
+        }
+    ):
+        return None
+    state = load_state(state_path)
+    run_dir = state_path.parent
+    run_id = str(state.get("run_id") or "")
+    mission = state.get("mission") if isinstance(state.get("mission"), dict) else {}
+    transport_path = Path(str(mission.get("transport_path") or ""))
+    mission_sha256 = str(mission.get("sha256") or "").casefold()
+    oracle = state.get("oracle") if isinstance(state.get("oracle"), dict) else {}
+    locator = str(oracle.get("session_locator") or oracle.get("slug") or "").strip()
+    transcript_record = _artifact_bytes(state, "transcript")
+    if (
+        not run_id
+        or run_dir.name != run_id
+        or not locator
+        or not re.fullmatch(r"[a-f0-9]{64}", mission_sha256)
+        or transport_path.resolve() != (run_dir / "mission.md").resolve()
+        or transport_path.is_symlink()
+        or transcript_record is None
+        or not is_devspace_transport(str(state.get("transport") or ""))
+    ):
+        return None
+    transcript_path, transcript_bytes = transcript_record
+    try:
+        transport_bytes = transport_path.read_bytes()
+        project_root = Path(str(state.get("project_root") or "")).resolve(strict=True)
+    except OSError:
+        return None
+    if (
+        not project_root.is_dir()
+        or transcript_path.resolve() != (run_dir / "transcript.md").resolve()
+        or transcript_path.is_symlink()
+        or hashlib.sha256(transport_bytes).hexdigest() != mission_sha256
+        or hashlib.sha256(transcript_bytes).hexdigest() != failure["stderr_sha256"]
+    ):
+        return None
+    return {
+        "settlement_eligibility": "oracle-pre-submit-host/v1",
+        "project_root": str(project_root),
+        "run_id": run_id,
+        "transport": str(state.get("transport") or ""),
+        "transport_mission_path": str(transport_path),
+        "transport_mission_sha256": mission_sha256,
+        "mission_sha256": mission_sha256,
+        "oracle_locator": locator,
+        "stdout_sha256": failure["stdout_sha256"],
+        "stderr_sha256": failure["stderr_sha256"],
+        "transcript_sha256": hashlib.sha256(transcript_bytes).hexdigest(),
+        "recovery_evidence": [],
+        "output_absent": True,
+        "conversation_url_absent": True,
+        "host_failure": failure,
     }
 
 
@@ -3224,12 +5339,31 @@ MARKDOWN_HTTP_REFERENCE_DEFINITION_RE = re.compile(
     re.IGNORECASE,
 )
 
+_RENDERED_FILE_REFERENCE = r"(?:(?:[\w.-]+/)*[\w.-]+\.[\w.-]+)"
+_RENDERED_DIRECTORY_REFERENCE = r"(?:(?:[\w.-]+/)+)"
+RENDERED_REFERENCE_FOOTER_RE = re.compile(
+    rf"^(?:"
+    rf"{_RENDERED_FILE_REFERENCE}(?:;\s*{_RENDERED_FILE_REFERENCE})*"
+    rf"|{_RENDERED_FILE_REFERENCE}, section \"[^\"\r\n]{{1,200}}\""
+    rf"|{_RENDERED_FILE_REFERENCE}; checksum-verified [\w .-]{{1,200}} "
+    rf"inputs under {_RENDERED_DIRECTORY_REFERENCE}"
+    rf")\.[ \t]↩$"
+)
+
 
 def _only_bounded_reference_definitions(lines: list[str]) -> bool:
     return all(
         not line.strip()
         or MARKDOWN_HTTP_REFERENCE_DEFINITION_RE.fullmatch(line.strip()) is not None
         for line in lines
+    )
+
+
+def _only_bounded_rendered_reference_footers(lines: list[str]) -> bool:
+    nonempty = [line.strip() for line in lines if line.strip()]
+    return len(nonempty) <= 32 and all(
+        len(line) <= 512 and RENDERED_REFERENCE_FOOTER_RE.fullmatch(line) is not None
+        for line in nonempty
     )
 
 
@@ -3254,7 +5388,8 @@ def classify_task_outcome(path: Path, *, contract: str, transport: str) -> str:
     ]
     if len(marker_lines) == 1:
         index, marker = marker_lines[0]
-        if _only_bounded_reference_definitions(lines[index + 1 :]):
+        footer = lines[index + 1 :]
+        if _only_bounded_reference_definitions(footer) or _only_bounded_rendered_reference_footers(footer):
             return marker.group(1).casefold()
     return "unknown" if contract == "v1" else "legacy_unclassified"
 
@@ -3265,6 +5400,7 @@ def unresolved_project_sessions(
     *,
     parallel_parent_id: str | None = None,
     exclude_run_id: str | None = None,
+    source_thread_id: str | None = None,
 ) -> list[dict[str, str]]:
     """Return exact submitted sessions that still own this project.
 
@@ -3276,6 +5412,9 @@ def unresolved_project_sessions(
     root = run_root.expanduser().resolve()
     expected_project = str(project_root.expanduser().resolve()).casefold()
     expected_parent = str(parallel_parent_id or "").strip().casefold()
+    expected_thread = str(source_thread_id or "").strip().casefold() or None
+    if expected_thread is not None and SOURCE_THREAD_ID_RE.fullmatch(expected_thread) is None:
+        raise OracleStateError("SOURCE_THREAD_ID_INVALID", "source_thread_id must be one Codex task UUID")
     active_authorities = {"submitted_unknown", "live", "terminal_observed"}
     owners: list[dict[str, str]] = []
     if not root.is_dir():
@@ -3289,6 +5428,7 @@ def unresolved_project_sessions(
         if run_id == exclude_run_id or str(payload.get("project_root") or "").casefold() != expected_project:
             continue
         authority = str(payload.get("session_authority") or "").strip().casefold()
+        owner_thread = source_thread_id_from_state(payload)
         settlement_artifact = candidate.parent / "user-confirmed-no-submission.json"
         execution_settlement_artifact = candidate.parent / "user-confirmed-execution-ended.json"
         settlement_derived = (
@@ -3329,6 +5469,12 @@ def unresolved_project_sessions(
             authority = "submitted_unknown"
         if authority not in active_authorities:
             continue
+        # A task-scoped caller can only block on its own exact task owner.
+        # Bound foreign tasks and old unbound runs are reported elsewhere but
+        # are never silently adopted as this task's recoverable authority.
+        if expected_thread is not None:
+            if owner_thread != expected_thread:
+                continue
         owner_parent = str(payload.get("parallel_parent_id") or "").strip().casefold()
         if expected_parent and owner_parent == expected_parent and not invalid_settlement:
             continue
@@ -3337,8 +5483,50 @@ def unresolved_project_sessions(
             "session_locator": str((payload.get("oracle") or {}).get("session_locator") or ""),
             "session_authority": authority,
             "state_path": str(candidate),
+            "source_thread_id": owner_thread or "legacy-unbound",
+            "ownership_scope": "same-task" if owner_thread == expected_thread else "legacy-unbound",
         })
     return owners
+
+
+def foreign_project_sessions(
+    run_root: Path,
+    project_root: Path,
+    *,
+    source_thread_id: str,
+    exclude_run_id: str | None = None,
+) -> list[dict[str, str]]:
+    """Describe, but never grant authority over, another task's live sessions."""
+    caller = str(source_thread_id or "").strip().casefold()
+    if SOURCE_THREAD_ID_RE.fullmatch(caller) is None:
+        raise OracleStateError("SOURCE_THREAD_ID_INVALID", "source_thread_id must be one Codex task UUID")
+    root = run_root.expanduser().resolve()
+    expected_project = str(project_root.expanduser().resolve()).casefold()
+    rows: list[dict[str, str]] = []
+    if not root.is_dir():
+        return rows
+    for candidate in sorted(root.glob("*/state.json"), key=lambda item: str(item)):
+        try:
+            payload = load_state(candidate)
+        except (OSError, OracleStateError):
+            continue
+        if str(payload.get("run_id") or "") == exclude_run_id or str(payload.get("project_root") or "").casefold() != expected_project:
+            continue
+        authority = str(payload.get("session_authority") or "").strip().casefold()
+        if authority not in {"submitted_unknown", "live", "terminal_observed"}:
+            continue
+        owner = source_thread_id_from_state(payload)
+        if owner == caller:
+            continue
+        rows.append({
+            "run_id": str(payload.get("run_id") or ""),
+            "session_locator": str((payload.get("oracle") or {}).get("session_locator") or ""),
+            "session_authority": authority,
+            "source_thread_id": owner or "legacy-unbound",
+            "classification": "FOREIGN_TASK_SESSION",
+            "state_path": str(candidate),
+        })
+    return rows
 
 
 def write_transcript(layout: RunLayout) -> None:
@@ -3374,8 +5562,9 @@ def mutex_wait_succeeded(wait_result: int) -> bool:
     return wait_result in {WAIT_OBJECT_0, WAIT_ABANDONED}
 
 
-def submit_mutex_name(project_root: Path) -> str:
-    digest = hashlib.sha256(str(project_root).casefold().encode("utf-8")).hexdigest()[:32]
+def submit_mutex_name(project_root: Path, *, source_thread_id: str | None = None) -> str:
+    scope = str(source_thread_id or "legacy-unbound").strip().casefold()
+    digest = hashlib.sha256(f"{project_root!s}".casefold().encode("utf-8") + b"\0" + scope.encode("utf-8")).hexdigest()[:32]
     return f"Local\\codexpro-oracle-submit-{digest}"
 
 
@@ -3471,8 +5660,9 @@ def project_submit_mutex(
     *,
     timeout_seconds: float,
     platform_name: str | None = None,
+    source_thread_id: str | None = None,
 ) -> AbstractContextManager[Any]:
-    name = submit_mutex_name(project_root)
+    name = submit_mutex_name(project_root, source_thread_id=source_thread_id)
     platform = os.name if platform_name is None else platform_name
     if platform == "nt":
         return WindowsSubmitMutex(name, timeout_seconds)

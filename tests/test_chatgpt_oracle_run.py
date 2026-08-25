@@ -14,6 +14,12 @@ import pytest
 RUNNER_PATH = Path(__file__).resolve().parents[1] / "bin" / "chatgpt_oracle_run.py"
 
 
+@pytest.fixture(autouse=True)
+def isolated_runtime_task(monkeypatch: pytest.MonkeyPatch):
+    """Keep historical runner fixtures unbound unless a test binds one."""
+    monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
+
+
 def load_runner():
     name = "chatgpt_oracle_run_test"
     spec = importlib.util.spec_from_file_location(name, RUNNER_PATH)
@@ -64,7 +70,7 @@ def pro_manifest(tmp_path: Path, **extra) -> Path:
 def pro_readonly_manifest(tmp_path: Path, **extra) -> Path:
     return manifest(
         tmp_path,
-        transport="pro-devspace",
+        transport="pro-devspace-readonly",
         app_name="DevSpace",
         model="gpt-5.6-sol",
         model_strategy="select",
@@ -87,7 +93,7 @@ def version_timeout_runner(command, **kwargs):
     raise subprocess.TimeoutExpired(command, kwargs.get("timeout", 30))
 
 
-def test_version_resolution_allows_a_bounded_slow_valid_oracle_0161() -> None:
+def test_version_resolution_allows_a_bounded_slow_valid_oracle_lkg() -> None:
     runner = load_runner()
     captured = {}
 
@@ -96,7 +102,11 @@ def test_version_resolution_allows_a_bounded_slow_valid_oracle_0161() -> None:
         captured["timeout"] = kwargs["timeout"]
         return subprocess.CompletedProcess(command, 0, stdout="oracle 0.17.1\n", stderr="")
 
-    assert runner.resolve_oracle_version(["npx.cmd", "-y", "@steipete/oracle@0.17.1"], run_factory=slow_valid) == "oracle 0.17.1"
+    assert runner.resolve_oracle_version(
+        ["npx.cmd", "-y", "@steipete/oracle@0.17.1"],
+        run_factory=slow_valid,
+        cache_resolver=lambda command: None,
+    ) == "oracle 0.17.1"
     assert captured == {
         "command": ["npx.cmd", "-y", "@steipete/oracle@0.17.1", "--version"],
         "timeout": runner.ORACLE_VERSION_RESOLUTION_TIMEOUT_SECONDS,
@@ -104,13 +114,42 @@ def test_version_resolution_allows_a_bounded_slow_valid_oracle_0161() -> None:
     assert runner.ORACLE_VERSION_RESOLUTION_TIMEOUT_SECONDS == 90
 
 
+def test_version_resolution_recovers_from_npx_failure_with_exact_cached_package() -> None:
+    runner = load_runner()
+    calls = []
+
+    def failed_npx(*args, **kwargs):
+        calls.append((args, kwargs))
+        return subprocess.CompletedProcess(args[0], 1, stdout="", stderr="network unavailable")
+
+    resolved = runner.resolve_oracle_version(
+        ["npx.cmd", "-y", "@steipete/oracle@0.17.1"],
+        run_factory=failed_npx,
+        cache_resolver=lambda command: "oracle 0.17.1",
+    )
+    assert resolved == "oracle 0.17.1"
+    assert len(calls) == 1
+
+
+def test_version_resolution_recovers_current_oracle_from_exact_cached_package() -> None:
+    runner = load_runner()
+    resolved = runner.resolve_oracle_version(
+        ["npx.cmd", "-y", "@steipete/oracle@0.18.0"],
+        run_factory=lambda command, **kwargs: subprocess.CompletedProcess(
+            command, 1, stdout="", stderr="network unavailable"
+        ),
+        cache_resolver=lambda command: "oracle 0.18.0",
+    )
+    assert resolved == "oracle 0.18.0"
+
+
 def test_default_oracle_command_is_pinned_to_the_hash_validated_version() -> None:
     runner = load_runner()
 
     assert runner.STATE.default_oracle_command(platform_name="nt") == (
-        "npx.cmd", "-y", "@steipete/oracle@0.17.1",
+        "npx.cmd", "-y", "@steipete/oracle@0.18.0",
     )
-    with pytest.raises(runner.STATE.OracleStateError, match="0.17.1"):
+    with pytest.raises(runner.STATE.OracleStateError, match="0.17.1.*0.18.0|0.18.0.*0.17.1"):
         runner.STATE.validate_oracle_command(["npx.cmd", "-y", "@steipete/oracle@0.17.0"])
 
 
@@ -131,6 +170,129 @@ def test_conversation_url_helpers_preserve_exact_binding_and_detect_conflicts(tm
     }
 
 
+def test_new_runs_use_dynamic_cdp_port_instead_of_global_9222(tmp_path: Path) -> None:
+    runner = load_runner()
+    result = execute_run(runner, manifest(tmp_path), dry_run=True)
+    argv = result["argv"]
+    port = int(argv[argv.index("--browser-port") + 1])
+
+    assert 1024 <= port <= 65535
+    assert port != 9222
+
+
+def test_fresh_execution_binds_runtime_task_but_plain_manifest_loading_stays_unbound(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = load_runner()
+    task_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    path = manifest(tmp_path)
+    assert runner.STATE.load_manifest(path).source_thread_id is None
+    monkeypatch.setenv("CODEX_THREAD_ID", task_id)
+    captured: dict = {}
+    result = execute_run(
+        runner,
+        path,
+        run_factory=version_runner,
+        popen_factory=popen_for(1, None, captured, []),
+    )
+    state = runner.STATE.load_state(Path(result["run_dir"]) / "state.json")
+
+    assert state["originating_task"] == {
+        "schema": "codex.chatgpt.oracle-task-owner/v1",
+        "source_thread_id": task_id,
+        "binding": "bound",
+    }
+    assert state["ownership"]["source_thread_id"] == task_id
+    assert int(captured["command"][captured["command"].index("--browser-port") + 1]) != 9222
+
+
+def test_task_outcome_terminal_watchdog_is_exactly_v1_and_scrubs_inherited_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = load_runner()
+    monkeypatch.setenv("ORACLE_TASK_OUTCOME_TERMINAL_CONTRACT", "unexpected-parent-value")
+    monkeypatch.setenv("ORACLE_TERMINAL_MARKER_CONFIRM_CYCLES", "1")
+    monkeypatch.setenv("ORACLE_TERMINAL_MARKER_MIN_STABLE_MS", "1")
+    v1_root = tmp_path / "v1"
+    v1_root.mkdir()
+    v1_capture: dict = {}
+    v1_result = execute_run(
+        runner,
+        manifest(v1_root, task_outcome_contract="v1"),
+        run_factory=version_runner,
+        popen_factory=popen_for(4, None, v1_capture, []),
+    )
+    assert v1_capture["kwargs"]["env"]["ORACLE_TASK_OUTCOME_TERMINAL_CONTRACT"] == "v1"
+    assert "ORACLE_TERMINAL_MARKER_CONFIRM_CYCLES" not in v1_capture["kwargs"]["env"]
+    assert "ORACLE_TERMINAL_MARKER_MIN_STABLE_MS" not in v1_capture["kwargs"]["env"]
+    v1_state = runner.STATE.load_state(Path(v1_result["run_dir"]) / "state.json")
+    assert v1_state["terminal_watchdog"] == {
+        "schema": "codex.chatgpt.oracle-terminal-watchdog/v1",
+        "contract": "v1",
+        "environment_enabled": True,
+    }
+
+    legacy_root = tmp_path / "legacy"
+    legacy_root.mkdir()
+    legacy_capture: dict = {}
+    legacy_result = execute_run(
+        runner,
+        manifest(legacy_root),
+        run_factory=version_runner,
+        popen_factory=popen_for(4, None, legacy_capture, []),
+    )
+    assert "ORACLE_TASK_OUTCOME_TERMINAL_CONTRACT" not in legacy_capture["kwargs"]["env"]
+    assert "ORACLE_TERMINAL_MARKER_CONFIRM_CYCLES" not in legacy_capture["kwargs"]["env"]
+    assert "ORACLE_TERMINAL_MARKER_MIN_STABLE_MS" not in legacy_capture["kwargs"]["env"]
+    legacy_state = runner.STATE.load_state(Path(legacy_result["run_dir"]) / "state.json")
+    assert legacy_state["terminal_watchdog"]["environment_enabled"] is False
+
+
+def test_foreign_task_recovery_is_fail_closed_before_browser_or_oracle_access(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = load_runner()
+    owner = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    caller = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+    monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
+    config = runner.STATE.load_manifest(manifest(tmp_path, source_thread_id=owner))
+    layout = runner.STATE.create_layout(config, run_id="owner-run-12345678")
+    layout.run_dir.mkdir(parents=True)
+    runner.STATE.write_json_atomic(
+        layout.state_path,
+        runner.STATE.state_payload(config, layout, status="running", resolved_version="0.17.1", cdp_port=43101),
+    )
+    monkeypatch.setenv("CODEX_THREAD_ID", caller)
+
+    with pytest.raises(runner.OracleRunError) as exc:
+        runner.recover_run(layout.run_dir, action="harvest", dry_run=True)
+
+    assert exc.value.code == "FOREIGN_TASK_SESSION"
+    assert exc.value.evidence["owner_source_thread_id"] == owner
+    assert exc.value.evidence["caller_source_thread_id"] == caller
+
+
+def test_legacy_unbound_recovery_is_not_adopted_by_the_current_task(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = load_runner()
+    monkeypatch.setenv("CODEX_THREAD_ID", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+    config = runner.STATE.load_manifest(manifest(tmp_path))
+    layout = runner.STATE.create_layout(config, run_id="legacy-run-12345678")
+    layout.run_dir.mkdir(parents=True)
+    runner.STATE.write_json_atomic(
+        layout.state_path,
+        runner.STATE.state_payload(config, layout, status="running", resolved_version="0.17.1", cdp_port=43101),
+    )
+
+    with pytest.raises(runner.OracleRunError) as exc:
+        runner.recover_run(layout.run_dir, action="harvest", dry_run=True)
+
+    assert exc.value.code == "LEGACY_TASK_OWNER_UNBOUND"
+
+
 def execute_run(runner, *args, **kwargs):
     kwargs.setdefault("compat_factory", lambda version: {"ok": True, "version": version})
     kwargs.setdefault(
@@ -148,7 +310,9 @@ class Process:
     def __init__(self, code: int, events: list[str]):
         self.code = code
         self.events = events
-        self.pid = 1234
+        # Stay above ordinary Linux/Windows PID ranges so settlement fixtures
+        # cannot accidentally bind to an unrelated live CI runner process.
+        self.pid = 2_000_000_001
         self.wait_timeout = None
 
     def wait(self, timeout=None):
@@ -181,6 +345,123 @@ def prompt_not_observed_popen(command, **kwargs):
     )
     kwargs["stdout"].flush()
     return Process(1, [])
+
+
+def write_prompt_timeout_oracle_meta(
+    runner,
+    run_dir: Path,
+    session_root: Path,
+    *,
+    mutation: str | None = None,
+) -> Path:
+    state = runner.STATE.load_state(run_dir / "state.json")
+    slug = state["oracle"]["slug"]
+    expected_port = state["browser_identity"]["expected_cdp_port"]
+    browser_temp = Path(state["artifacts"]["browser_temp"]).resolve()
+    runtime_profile = browser_temp / "oracle-browser-prompt-timeout"
+    runtime_profile.mkdir(parents=True, exist_ok=True)
+    copy_profile_raw = str(state["profile"].get("copy_profile") or "").strip()
+    if not copy_profile_raw:
+        copy_profile = (session_root.parent / "browser-profile-seed").resolve()
+        copy_profile.mkdir(parents=True, exist_ok=True)
+        state["profile"]["copy_profile"] = str(copy_profile)
+        runner.STATE.write_json_atomic(run_dir / "state.json", state)
+    else:
+        copy_profile = Path(copy_profile_raw).resolve()
+    prompt = (
+        f"@codex Then read the read-only mission file: "
+        f"{Path(state['mission']['path']).resolve()}. Read the mission fully."
+    )
+    meta = {
+        "id": slug,
+        "status": "error",
+        "model": "gpt-5.6-sol",
+        "mode": "browser",
+        "cwd": str(Path(state["project_root"]).resolve()),
+        "completedAt": "2026-08-23T00:00:00Z",
+        "errorMessage": runner.STATE.ORACLE_PROMPT_NOT_OBSERVED_MARKER,
+        "error": {
+            "category": "browser-automation",
+            "message": runner.STATE.ORACLE_PROMPT_NOT_OBSERVED_MARKER,
+            "details": {
+                "stage": "submit-prompt",
+                "code": "prompt-commit-timeout",
+                "promptLength": len(prompt),
+                "commitProbe": {
+                    "baseline": 0,
+                    "turnsCount": 0,
+                    "userMatched": False,
+                    "prefixMatched": False,
+                    "lastMatched": False,
+                    "hasNewTurn": False,
+                    "stopVisible": False,
+                    "assistantVisible": False,
+                    "composerCleared": False,
+                    "inConversation": False,
+                    "editorLength": len(prompt),
+                    "lastTurnLength": 0,
+                },
+            },
+        },
+        "browser": {
+            "config": {
+                "debugPort": expected_port,
+                "copyProfileSource": str(copy_profile),
+                "desiredModel": "GPT-5.6 Sol",
+                "modelStrategy": "select",
+                "thinkingTime": "heavy",
+            },
+            "runtime": {
+                "chromePid": 41001,
+                "controllerPid": 41002,
+                "chromePort": expected_port,
+                "chromeTargetId": "EXACT_PROMPT_TIMEOUT_TARGET",
+                "tabUrl": "https://chatgpt.com/",
+                "conversationId": None,
+                "promptSubmitted": True,
+                "userDataDir": str(runtime_profile),
+            },
+            "archive": None,
+        },
+        "options": {
+            "prompt": prompt,
+            "model": "gpt-5.6-sol",
+            "slug": slug,
+            "writeOutputPath": str(Path(state["artifacts"]["output"]).resolve()),
+            "browserConfig": {
+                "debugPort": expected_port,
+                "copyProfileSource": str(copy_profile),
+                "desiredModel": "GPT-5.6 Sol",
+                "modelStrategy": "select",
+                "thinkingTime": "heavy",
+            },
+        },
+    }
+    if mutation == "conversation-url":
+        meta["browser"]["runtime"]["tabUrl"] = "https://chatgpt.com/c/foreign"
+        meta["browser"]["runtime"]["conversationId"] = "foreign"
+    elif mutation == "probe-user-match":
+        meta["error"]["details"]["commitProbe"]["userMatched"] = True
+    elif mutation == "prompt-not-submitted":
+        meta["browser"]["runtime"]["promptSubmitted"] = False
+    elif mutation == "turn-observed":
+        meta["error"]["details"]["commitProbe"]["turnsCount"] = 1
+    elif mutation == "assistant-visible":
+        meta["error"]["details"]["commitProbe"]["assistantVisible"] = True
+    elif mutation == "archive-conversation":
+        meta["browser"]["archive"] = {
+            "conversationUrl": "https://chatgpt.com/c/archived-conversation"
+        }
+    elif mutation == "wrong-port":
+        meta["browser"]["runtime"]["chromePort"] = expected_port + 1
+    elif mutation == "outside-profile":
+        meta["browser"]["runtime"]["userDataDir"] = str(session_root / "other-profile")
+    elif mutation == "missing-target":
+        meta["browser"]["runtime"]["chromeTargetId"] = ""
+    meta_path = session_root / slug / "meta.json"
+    meta_path.parent.mkdir(parents=True)
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+    return meta_path
 
 
 def attachment_upload_timeout_popen(command, **kwargs):
@@ -398,6 +679,155 @@ def model_selector_button_pre_submit_popen(
             meta_path = session_root / slug / "meta.json"
             meta_path.parent.mkdir(parents=True, exist_ok=True)
             meta_path.write_text(json.dumps(meta), encoding="utf-8")
+        if variation == "output-present":
+            output_path.write_text("contradictory output", encoding="utf-8")
+        return Process(1, [])
+
+    return popen
+
+
+def model_option_missing_pre_submit_popen(
+    session_root: Path,
+    *,
+    variation: str | None = None,
+):
+    def popen(command, **kwargs):
+        slug = command[command.index("--slug") + 1]
+        output_path = Path(command[command.index("--write-output") + 1]).resolve()
+        browser_port = int(command[command.index("--browser-port") + 1])
+        run_dir = output_path.parent
+        browser_temp = run_dir / "browser-temp"
+        runtime_profile = browser_temp / "oracle-browser-fixture"
+        if variation == "profile-outside-run":
+            runtime_profile = run_dir.parent / "foreign-browser-profile"
+        runtime_profile.mkdir(parents=True, exist_ok=True)
+        expected_profile = (Path.home() / ".oracle" / "browser-profile").resolve()
+        model_id = "gpt-5.5-instant"
+        desired_model = "GPT-5.5 Instant"
+        error_message = (
+            'Unable to find model option matching "GPT-5.5 Instant" in the model switcher. '
+            "Available: Advanced, ModelGPT-5.6 Sol, EffortPro."
+        )
+        emitted_error = (
+            'Unable to find model option matching "GPT-5.6 Sol" in the model switcher. '
+            "Available: Advanced, ModelGPT-5.6 Sol, EffortPro."
+            if variation == "different-error"
+            else error_message
+        )
+        lines = [
+            "? oracle 0.17.1 deterministic fixture",
+            f"Session: {slug}",
+            "Mode: browser foreground",
+            "Models: 1",
+            "Detach: no",
+            f"Reattach: oracle session {slug}",
+            f"Launching browser mode (target={desired_model}; requested={model_id}) with ~246 tokens.",
+            "This run can take up to an hour (usually ~10 minutes).",
+            "[browser] Browser control: launch Chrome in hidden-window mode; may focus/control the browser UI.",
+            "[browser] Browser guidance: On macOS, Oracle launches Chrome off-screen while keeping the page rendered.",
+            "[browser] Browser guidance: For the calmest shared-desktop flow, prefer --browser-attach-running or --remote-chrome.",
+            f"ERROR: {emitted_error}",
+            f"User error (browser-automation): {emitted_error}",
+        ]
+        kwargs["stdout"].write(("\n".join(lines) + "\n").encode("utf-8"))
+        kwargs["stdout"].flush()
+        tab_url = (
+            "https://chatgpt.com/c/existing-conversation"
+            if variation == "conversation-url"
+            else "https://chatgpt.com/"
+        )
+        prompt_submitted = variation == "prompt-submitted"
+        meta_model = "gpt-5.6" if variation == "model-mismatch" else model_id
+        meta = {
+            "id": slug,
+            "createdAt": "2026-08-24T02:33:07.000Z",
+            "startedAt": "2026-08-24T02:33:08.000Z",
+            "completedAt": (
+                "" if variation == "missing-completed-at" else "2026-08-24T02:34:16.027Z"
+            ),
+            "status": "error",
+            "model": meta_model,
+            "cwd": str(Path(kwargs["cwd"]).resolve()),
+            "mode": "browser",
+            "browser": {
+                "config": {
+                    "copyProfileSource": str(expected_profile),
+                    "debugPort": browser_port,
+                    "desiredModel": desired_model,
+                    "modelStrategy": "select",
+                    "thinkingTime": "light",
+                    "researchMode": "deep" if variation == "research-mismatch" else "off",
+                },
+                "runtime": {
+                    "chromePid": 16424,
+                    "chromePort": browser_port + 1 if variation == "port-mismatch" else browser_port,
+                    "chromeHost": "127.0.0.1",
+                    "tabUrl": tab_url,
+                    "promptSubmitted": prompt_submitted,
+                    "controllerPid": 27784,
+                    "chromeTargetId": (
+                        "" if variation == "target-missing" else "fixture-target-model-option"
+                    ),
+                    "conversationId": (
+                        "existing-conversation" if variation == "conversation-id" else None
+                    ),
+                    "userDataDir": str(runtime_profile),
+                },
+            },
+            "options": {
+                "model": model_id,
+                "models": [model_id],
+                "effectiveModelId": model_id,
+                "slug": slug,
+                "mode": "browser",
+                "writeOutputPath": str(output_path),
+                "browserConfig": {
+                    "copyProfileSource": str(expected_profile),
+                    "debugPort": browser_port,
+                    "desiredModel": desired_model,
+                    "modelStrategy": "select",
+                    "thinkingTime": "light",
+                    "researchMode": "off",
+                },
+            },
+            "errorMessage": error_message,
+            "error": {
+                "category": "browser-automation",
+                "message": error_message,
+                "details": {
+                    "stage": "different-stage" if variation == "different-stage" else "execute-browser",
+                },
+            },
+        }
+        if variation != "missing-meta":
+            meta_path = session_root / slug / "meta.json"
+            meta_text = json.dumps(meta)
+            if variation == "duplicate-meta-key":
+                meta_text = meta_text.replace(
+                    '"status": "error"',
+                    '"status": "error", "status": "complete"',
+                    1,
+                )
+            if variation == "meta-parent-symlink":
+                real_dir = session_root.parent / f"{slug}-real"
+                real_dir.mkdir(parents=True, exist_ok=True)
+                (real_dir / "meta.json").write_text(meta_text, encoding="utf-8")
+                session_root.mkdir(parents=True, exist_ok=True)
+                try:
+                    meta_path.parent.symlink_to(real_dir, target_is_directory=True)
+                except OSError as exc:
+                    pytest.skip(f"directory symlink unavailable: {exc}")
+            else:
+                meta_path.parent.mkdir(parents=True, exist_ok=True)
+                if variation == "meta-file-symlink":
+                    real_meta = session_root.parent / f"{slug}-real-meta.json"
+                    real_meta.write_text(meta_text, encoding="utf-8")
+                    try:
+                        meta_path.symlink_to(real_meta)
+                    except OSError as exc:
+                        pytest.skip(f"file symlink unavailable: {exc}")
+                else:
+                    meta_path.write_text(meta_text, encoding="utf-8")
         if variation == "output-present":
             output_path.write_text("contradictory output", encoding="utf-8")
         return Process(1, [])
@@ -740,15 +1170,16 @@ def test_pro_dry_run_uses_oracle_attachments_and_no_app_mention(tmp_path: Path) 
         str((tmp_path / "packet.zip").resolve()),
     ]
     assert prompt.startswith(
-        "Read the attached prompt/instructions and all attached files, then complete the task. "
-        "Task identity: oracle-pro-"
+        "Read the attached prompt/instructions and all attached files, then provide read-only analysis only. "
+        "Do not create, edit, delete, or rename files;"
     )
+    assert "Task identity: oracle-pro-" in prompt
     assert prompt.endswith(".")
     assert "@DevSpace" not in prompt
     assert all(item["sha256"] for item in result["attachments"])
 
 
-def test_pro_devspace_dry_run_uses_write_capable_handoff_without_file_transport(tmp_path: Path) -> None:
+def test_pro_devspace_dry_run_uses_readonly_handoff_without_file_transport(tmp_path: Path) -> None:
     runner = load_runner()
     preflight_calls = []
     captured = {}
@@ -765,17 +1196,44 @@ def test_pro_devspace_dry_run_uses_write_capable_handoff_without_file_transport(
 
     argv = captured["command"]
     prompt = argv[argv.index("--prompt") + 1]
-    assert result["result"]["transport"] == "pro-devspace"
+    assert result["result"]["transport"] == "pro-devspace-readonly"
     assert "--browser-attachments" not in argv
     assert "--file" not in argv
     assert argv[argv.index("--model") + 1] == "gpt-5.6-sol"
     assert argv[argv.index("--browser-thinking-time") + 1] == "heavy"
     assert prompt.startswith(f"@DevSpace First open exactly this project root in checkout mode: {tmp_path}.")
-    assert f"Then read and execute the mission file: {tmp_path / 'mission.md'}." in prompt
+    assert f"Then read the read-only mission file: {tmp_path / 'mission.md'}." in prompt
     assert "Do not open the mission directory, a parent, a child" in prompt
     assert prompt.index(str(tmp_path)) < prompt.index(str(tmp_path / "mission.md"))
-    assert "create, edit, and remove mission-owned files and run commands" in prompt
+    assert "Perform read-only work only; do not modify files" in prompt
     assert preflight_calls == [True]
+
+
+def test_new_writable_pro_manifest_is_rejected_before_layout_or_browser(tmp_path: Path) -> None:
+    runner = load_runner()
+    manifest_path = manifest(
+        tmp_path,
+        transport="pro-devspace",
+        app_name="DevSpace",
+        model="gpt-5.6-sol",
+        model_strategy="select",
+        thinking_time="heavy",
+        research="off",
+        task_outcome_contract="v1",
+    )
+
+    with pytest.raises(runner.OracleRunError) as exc:
+        runner.execute_run(manifest_path, dry_run=True)
+
+    assert exc.value.code == "PRO_WRITABLE_TRANSPORT_FROZEN"
+    assert exc.value.evidence == {
+        "transport": "pro-devspace",
+        "pro_transport": "pro-devspace-readonly",
+        "write_transport": "devspace",
+        "write_model": "gpt-5.6",
+        "write_thinking_time": "extra-high",
+    }
+    assert not (tmp_path.parent / f"{tmp_path.name}-host-state" / "runs").exists()
 
 
 def test_d_coin_missing_exact_root_blocks_before_oracle_or_run_creation(tmp_path: Path) -> None:
@@ -815,10 +1273,10 @@ def test_pro_attachment_limit_is_exactly_one_mib_and_blocks_before_oracle_launch
     runner = load_runner()
     packet = tmp_path / "packet.zip"
     exact_manifest = pro_manifest(tmp_path)
-    packet.write_bytes(b"x" * runner.ORACLE_0161_ATTACHMENT_MAX_BYTES)
+    packet.write_bytes(b"x" * runner.ORACLE_ATTACHMENT_MAX_BYTES)
     assert execute_run(runner, exact_manifest, dry_run=True)["ok"] is True
 
-    packet.write_bytes(b"x" * (runner.ORACLE_0161_ATTACHMENT_MAX_BYTES + 1))
+    packet.write_bytes(b"x" * (runner.ORACLE_ATTACHMENT_MAX_BYTES + 1))
     calls: list[bool] = []
     with pytest.raises(runner.OracleRunError) as exc:
         execute_run(
@@ -976,10 +1434,83 @@ def test_devspace_patch_change_blocks_before_submission_until_restart(
     )
 
     assert result["ok"] is False
-    assert result["result"]["status"] == "failed"
+    assert result["status"] == "pre_submit_failed"
+    assert result["safe_for_fresh_run"] is True
+    assert result["result"]["status"] == "attention_required"
+    assert result["result"]["session_authority"] == "pre_submit"
+    assert result["result"]["pre_submit_failure"]["code"] == (
+        "DEVSPACE_SERVICE_RESTART_PRELAUNCH_FAILED"
+    )
     assert launched == []
     stderr = Path(result["result"]["artifacts"]["stderr"]).read_text(encoding="utf-8")
     assert "DEVSPACE_SERVICE_RESTART_REQUIRED" in stderr
+
+    settled = runner.settle_user_confirmed_no_submission(
+        Path(result["run_dir"]),
+        confirmation=runner.STATE.USER_CONFIRMED_NO_SUBMISSION,
+        reason="exact DevSpace restart preflight failed before Oracle launch",
+    )
+
+    assert settled["safe_for_fresh_run"] is True
+    assert settled["unresolved_owners"] == []
+    assert settled["result"]["task_outcome_reason"] == (
+        "user-confirmed-no-submission-after-devspace-restart-required"
+    )
+    receipt = Path(result["run_dir"]) / "user-confirmed-no-submission.json"
+    recorded = json.loads(receipt.read_text(encoding="utf-8"))
+    assert recorded["settlement_eligibility"] == "oracle-pre-submit-host/v1"
+    assert recorded["host_failure"]["failure_reason"] == "devspace-service-restart-required"
+    assert runner.STATE.proven_user_confirmed_no_submission(
+        Path(result["run_dir"]) / "state.json"
+    ) is not None
+
+
+@pytest.mark.parametrize("mutation", ["similar-error", "output", "conversation-url"])
+def test_devspace_restart_no_submission_settlement_rejects_incomplete_evidence(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    runner = load_runner()
+    result = runner.execute_run(
+        manifest(tmp_path),
+        run_factory=version_runner,
+        compat_factory=lambda version: {"ok": True, "version": version},
+        devspace_compat_factory=lambda: {
+            "ok": True,
+            "changed": ["dist/workspaces.js"],
+            "package_roots": ["package"],
+            "service_restart_required": True,
+        },
+        devspace_qualification_factory=lambda root: {
+            "qualified": True,
+            "project_root": str(root),
+        },
+    )
+    run_dir = Path(result["run_dir"])
+    if mutation == "similar-error":
+        for name in ("stderr.log", "transcript.md"):
+            path = run_dir / name
+            path.write_text(
+                path.read_text(encoding="utf-8").replace("restarted once", "restarted again"),
+                encoding="utf-8",
+            )
+    elif mutation == "output":
+        (run_dir / "output.md").write_text("unexpected provider output", encoding="utf-8")
+    else:
+        state_path = run_dir / "state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["oracle"]["conversation_url"] = "https://chatgpt.com/c/unexpected"
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    with pytest.raises(runner.STATE.OracleStateError) as failure:
+        runner.settle_user_confirmed_no_submission(
+            run_dir,
+            confirmation=runner.STATE.USER_CONFIRMED_NO_SUBMISSION,
+            reason="must remain fail closed",
+        )
+
+    assert failure.value.code == "NO_SUBMISSION_AUTHORITY_INVALID"
+    assert not (run_dir / "user-confirmed-no-submission.json").exists()
 
 
 def test_exact_output_hash_adjudication_marks_legacy_task_not_executed(
@@ -1125,7 +1656,7 @@ def test_status_audit_keeps_same_process_until_it_exits(
             return 7
 
         def poll(self):
-            return None
+            return None if self.wait_count <= 2 else 7
 
         def terminate(self):
             process_actions.append("terminate")
@@ -1410,6 +1941,44 @@ def test_pro_recovery_uses_exact_slug_without_attachments_or_resubmit(tmp_path: 
     assert "--prompt" not in argv
     assert "--file" not in argv
     assert "--browser-attachments" not in argv
+    assert "--no-recover" not in argv
+
+
+def test_historical_writable_pro_state_recovers_exact_slug_without_resubmit(tmp_path: Path) -> None:
+    runner = load_runner()
+    historical_manifest = manifest(
+        tmp_path,
+        transport="pro-devspace",
+        app_name="DevSpace",
+        model="gpt-5.6-sol",
+        model_strategy="select",
+        thinking_time="heavy",
+        research="off",
+        task_outcome_contract="v1",
+        run_id="9" * 32,
+    )
+    config = runner.STATE.load_manifest(historical_manifest)
+    layout = runner.STATE.create_layout(config, run_id=config.requested_run_id)
+    layout.run_dir.mkdir(parents=True)
+    runner.STATE.write_json_atomic(
+        layout.state_path,
+        runner.STATE.state_payload(config, layout, status="attention_required", resolved_version="0.17.1"),
+    )
+
+    prompt = runner.STATE.composer_prompt(config, layout.run_dir / "mission.md")
+    recovery = runner.recover_run(
+        layout.run_dir,
+        action="harvest",
+        dry_run=True,
+        oracle_command=["oracle"],
+    )
+    argv = recovery["argv"]
+
+    assert config.transport == "pro-devspace"
+    assert "You may inspect, create, edit, and remove mission-owned files" in prompt
+    assert argv[argv.index("session") + 1] == layout.slug
+    assert "--prompt" not in argv
+    assert "--file" not in argv
     assert "--no-recover" not in argv
 
 
@@ -2123,6 +2692,100 @@ def test_version_resolution_timeout_is_proven_pre_submit_and_releases_project(tm
     ) == []
 
 
+def test_exact_oracle_version_failure_is_settleable_pre_submit_without_retry(
+    tmp_path: Path,
+) -> None:
+    runner = load_runner()
+
+    def failed_version(*args, **kwargs):
+        raise runner.OracleRunError(
+            "ORACLE_VERSION_FAILED", "Oracle version could not be resolved"
+        )
+
+    result = execute_run(
+        runner,
+        pro_readonly_manifest(
+            tmp_path,
+            run_id="f" * 32,
+            oracle_command=["npx.cmd", "-y", "@steipete/oracle@0.17.1"],
+        ),
+        version_resolver=failed_version,
+        popen_factory=lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("Oracle must not launch after version failure")
+        ),
+    )
+    run_dir = Path(result["run_dir"])
+    state = runner.STATE.load_state(run_dir / "state.json")
+    assert result["status"] == "pre_submit_failed"
+    assert result["safe_for_fresh_run"] is True
+    assert state["pre_submit_failure"]["code"] == "ORACLE_VERSION_RESOLUTION_PRELAUNCH_FAILED"
+    assert state["pre_submit_failure"]["failure_reason"] == (
+        "oracle-version-command-failed-before-launch"
+    )
+
+    settled = runner.settle_user_confirmed_no_submission(
+        run_dir,
+        confirmation=runner.STATE.USER_CONFIRMED_NO_SUBMISSION,
+        reason="exact pinned Oracle version command failed before browser launch",
+    )
+    assert settled["safe_for_fresh_run"] is True
+    assert settled["unresolved_owners"] == []
+    assert settled["result"]["task_outcome_reason"] == (
+        "user-confirmed-no-submission-after-oracle-version-resolution-failure"
+    )
+    receipt = json.loads(
+        (run_dir / "user-confirmed-no-submission.json").read_text(encoding="utf-8")
+    )
+    assert receipt["settlement_eligibility"] == "oracle-pre-submit-host/v1"
+    assert receipt["transport"] == "pro-devspace-readonly"
+
+
+@pytest.mark.parametrize("mutation", ["similar-error", "output", "conversation-url"])
+def test_oracle_version_failure_settlement_rejects_contradictory_evidence(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    runner = load_runner()
+
+    def failed_version(*args, **kwargs):
+        raise runner.OracleRunError(
+            "ORACLE_VERSION_FAILED", "Oracle version could not be resolved"
+        )
+
+    result = execute_run(
+        runner,
+        pro_readonly_manifest(
+            tmp_path,
+            run_id={"similar-error": "a", "output": "b", "conversation-url": "c"}[mutation] * 32,
+            oracle_command=["npx.cmd", "-y", "@steipete/oracle@0.17.1"],
+        ),
+        version_resolver=failed_version,
+    )
+    run_dir = Path(result["run_dir"])
+    if mutation == "similar-error":
+        for name in ("stderr.log", "transcript.md"):
+            path = run_dir / name
+            path.write_text(
+                path.read_text(encoding="utf-8").replace("could not", "might not"),
+                encoding="utf-8",
+            )
+    elif mutation == "output":
+        (run_dir / "output.md").write_text("unexpected output", encoding="utf-8")
+    else:
+        state_path = run_dir / "state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["oracle"]["conversation_url"] = "https://chatgpt.com/c/unexpected"
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    with pytest.raises(runner.STATE.OracleStateError):
+        runner.settle_user_confirmed_no_submission(
+            run_dir,
+            confirmation=runner.STATE.USER_CONFIRMED_NO_SUBMISSION,
+            reason="contradictory evidence must fail closed",
+        )
+    assert not (run_dir / "user-confirmed-no-submission.json").exists()
+
+
 def test_recovery_repairs_legacy_version_timeout_authority_without_oracle_call(tmp_path: Path) -> None:
     runner = load_runner()
     initial = execute_run(
@@ -2396,9 +3059,174 @@ def test_standalone_qualified_pro_prompt_timeout_can_be_user_settled_and_unlocks
     assert settled["result"]["session_authority"] == "pre_submit"
     assert proof is not None
     assert proof["settlement_eligibility"] == "oracle-standalone-qualified-pro/v1"
-    assert proof["transport"] == "pro-devspace"
+    assert proof["transport"] == "pro-devspace-readonly"
     assert proof["oracle_version"] == "0.17.1"
     assert proof["source_mission_sha256"] == proof["transport_mission_sha256"]
+
+
+def test_task_bound_readonly_prompt_timeout_can_harvest_without_browser_receipt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = load_runner()
+    owner = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    session_root = tmp_path / "oracle-sessions"
+    monkeypatch.setenv("CODEX_THREAD_ID", owner)
+    monkeypatch.setenv("ORACLE_SESSION_ROOT", str(session_root))
+    initial = execute_run(
+        runner,
+        pro_readonly_manifest(tmp_path, run_id="c" * 32),
+        run_factory=version_0171_runner,
+        popen_factory=prompt_not_observed_popen,
+    )
+    run_dir = Path(initial["run_dir"])
+    state_path = run_dir / "state.json"
+    write_prompt_timeout_oracle_meta(runner, run_dir, session_root)
+    # The task may legitimately revise the project mission after this run. The
+    # immutable run copy plus ownership receipt still pin the submitted bytes.
+    Path(runner.STATE.load_state(state_path)["mission"]["path"]).write_text(
+        "later project mission revision",
+        encoding="utf-8",
+    )
+
+    evidence = runner.STATE.bounded_task_owned_prompt_timeout_harvest_evidence(state_path)
+    assert evidence is not None
+    assert evidence["source_thread_id"] == owner
+    assert evidence["commit_probe_turns"] == 0
+    assert evidence["conversation_url_absent"] is True
+    assert runner.STATE.proven_browser_identity_receipt(state_path) is None
+    with pytest.raises(runner.OracleRunError) as live_exc:
+        runner.recover_run(run_dir, action="live", dry_run=True, oracle_command=["oracle"])
+    assert live_exc.value.code == "BROWSER_IDENTITY_RECEIPT_REQUIRED"
+
+    dry_run = runner.recover_run(
+        run_dir,
+        action="harvest",
+        dry_run=True,
+        oracle_command=["oracle"],
+    )
+    assert dry_run["browser_identity_mode"] == "bounded-prompt-timeout-harvest"
+    assert "--harvest" in dry_run["argv"]
+    assert "--prompt" not in dry_run["argv"]
+    with pytest.raises(runner.STATE.OracleStateError) as unsettled_exc:
+        runner.settle_user_confirmed_no_submission(
+            run_dir,
+            confirmation=runner.STATE.USER_CONFIRMED_NO_SUBMISSION,
+            reason="recovery evidence does not exist yet",
+        )
+    assert unsettled_exc.value.code == "NO_SUBMISSION_EVIDENCE_INCOMPLETE"
+
+    recovered = runner.recover_run(
+        run_dir,
+        action="harvest",
+        oracle_command=["oracle"],
+        popen_factory=recovery_binding_unavailable_popen,
+    )
+    assert recovered["status"] == "recovery_binding_unavailable"
+    assert runner.STATE.bounded_task_owned_prompt_timeout_harvest_evidence(state_path) is None
+    settled = runner.settle_user_confirmed_no_submission(
+        run_dir,
+        confirmation=runner.STATE.USER_CONFIRMED_NO_SUBMISSION,
+        reason="user inspected the exact ChatGPT history and confirmed no prompt or response",
+    )
+    proof = runner.STATE.proven_user_confirmed_no_submission(state_path)
+    assert settled["safe_for_fresh_run"] is True
+    assert settled["unresolved_owners"] == []
+    assert proof is not None
+    assert proof["settlement_eligibility"] == "oracle-standalone-qualified-pro/v1"
+    recovery_stdout = run_dir / "recovery-harvest-stdout.log"
+    original_recovery_stdout = recovery_stdout.read_text(encoding="utf-8")
+    recovery_stdout.write_text(
+        original_recovery_stdout + "https://chatgpt.com/c/contradiction-after-settlement\n",
+        encoding="utf-8",
+    )
+    assert runner.STATE.proven_user_confirmed_no_submission(state_path) is None
+    recovery_stdout.write_text(original_recovery_stdout, encoding="utf-8")
+    meta_path = session_root / runner.STATE.load_state(state_path)["oracle"]["slug"] / "meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["browser"]["runtime"]["tabUrl"] = "https://chatgpt.com/c/late-contradiction"
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+    assert runner.STATE.proven_user_confirmed_no_submission(state_path) is None
+    owners = runner.STATE.unresolved_project_sessions(
+        run_dir.parent,
+        tmp_path,
+        source_thread_id=owner,
+    )
+    assert [item["run_id"] for item in owners] == ["c" * 32]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "conversation-url", "probe-user-match", "prompt-not-submitted", "turn-observed",
+        "assistant-visible", "archive-conversation", "wrong-port", "outside-profile",
+        "missing-target",
+    ),
+)
+def test_task_bound_prompt_timeout_harvest_exception_rejects_identity_contradictions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    runner = load_runner()
+    owner = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    session_root = tmp_path / "oracle-sessions"
+    monkeypatch.setenv("CODEX_THREAD_ID", owner)
+    monkeypatch.setenv("ORACLE_SESSION_ROOT", str(session_root))
+    initial = execute_run(
+        runner,
+        pro_readonly_manifest(tmp_path, run_id="d" * 32),
+        run_factory=version_0171_runner,
+        popen_factory=prompt_not_observed_popen,
+    )
+    run_dir = Path(initial["run_dir"])
+    write_prompt_timeout_oracle_meta(runner, run_dir, session_root, mutation=mutation)
+
+    assert runner.STATE.bounded_task_owned_prompt_timeout_harvest_evidence(
+        run_dir / "state.json"
+    ) is None
+    with pytest.raises(runner.OracleRunError) as exc:
+        runner.recover_run(run_dir, action="harvest", dry_run=True, oracle_command=["oracle"])
+    assert exc.value.code == "BROWSER_IDENTITY_RECEIPT_REQUIRED"
+
+
+def test_foreign_task_cannot_use_prompt_timeout_harvest_exception(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = load_runner()
+    owner = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    caller = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+    session_root = tmp_path / "oracle-sessions"
+    monkeypatch.setenv("CODEX_THREAD_ID", owner)
+    monkeypatch.setenv("ORACLE_SESSION_ROOT", str(session_root))
+    initial = execute_run(
+        runner,
+        pro_readonly_manifest(tmp_path, run_id="e" * 32),
+        run_factory=version_0171_runner,
+        popen_factory=prompt_not_observed_popen,
+    )
+    run_dir = Path(initial["run_dir"])
+    write_prompt_timeout_oracle_meta(runner, run_dir, session_root)
+    monkeypatch.setenv("CODEX_THREAD_ID", caller)
+    state_path = run_dir / "state.json"
+    before = {
+        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in run_dir.iterdir()
+        if path.is_file()
+    }
+
+    with pytest.raises(runner.OracleRunError) as exc:
+        runner.recover_run(run_dir, action="harvest", dry_run=True, oracle_command=["oracle"])
+    assert exc.value.code == "FOREIGN_TASK_SESSION"
+    after = {
+        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in run_dir.iterdir()
+        if path.is_file()
+    }
+    assert after == before
+    assert not (run_dir / "recovery-harvest-stdout.log").exists()
+    assert runner.STATE.load_state(state_path)["session_authority"] == "submitted_unknown"
 
 
 def test_standalone_pro_attachment_upload_timeout_is_hash_bound_and_user_settled(tmp_path: Path) -> None:
@@ -2714,6 +3542,157 @@ def test_user_confirmation_cannot_replace_missing_recovery_evidence(tmp_path: Pa
     assert exc.value.code == "NO_SUBMISSION_EVIDENCE_INCOMPLETE"
 
 
+def test_direct_devspace_model_option_missing_is_hash_bound_before_user_settlement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = load_runner()
+    monkeypatch.setenv("CODEX_THREAD_ID", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+    isolated_default_oracle_profile(tmp_path, monkeypatch)
+    session_root = tmp_path / "oracle-sessions"
+    monkeypatch.setenv("ORACLE_SESSION_ROOT", str(session_root))
+    failed = execute_run(
+        runner,
+        manifest(
+            tmp_path,
+            model="gpt-5.5-instant",
+            model_strategy="select",
+            thinking_time="light",
+            research="off",
+        ),
+        run_factory=version_0171_runner,
+        popen_factory=model_option_missing_pre_submit_popen(session_root),
+    )
+    run_dir = Path(failed["run_dir"])
+    state_path = run_dir / "state.json"
+    slug = runner.STATE.load_state(state_path)["oracle"]["slug"]
+    evidence = runner.STATE.bounded_task_owned_prompt_timeout_harvest_evidence(state_path)
+    assert evidence is not None
+    assert evidence["schema"] == "codex.chatgpt.oracle-bounded-model-option-harvest/v1"
+    assert evidence["source_thread_id"]
+    with pytest.raises(runner.OracleRunError) as live_exc:
+        runner.recover_run(run_dir, action="live", dry_run=True, oracle_command=["oracle"])
+    assert live_exc.value.code == "BROWSER_IDENTITY_RECEIPT_REQUIRED"
+    dry_run = runner.recover_run(
+        run_dir,
+        action="harvest",
+        dry_run=True,
+        oracle_command=["oracle"],
+    )
+    assert dry_run["browser_identity_mode"] == "bounded-model-option-harvest"
+    assert "--harvest" in dry_run["argv"]
+    assert "--prompt" not in dry_run["argv"]
+    recovered = runner.recover_run(
+        run_dir,
+        action="harvest",
+        oracle_command=["oracle"],
+        popen_factory=recovery_binding_unavailable_popen,
+    )
+    assert recovered["status"] == "recovery_binding_unavailable"
+    assert runner.STATE.bounded_task_owned_prompt_timeout_harvest_evidence(state_path) is None
+
+    settled = runner.settle_user_confirmed_no_submission(
+        run_dir,
+        confirmation=runner.STATE.USER_CONFIRMED_NO_SUBMISSION,
+        reason="user confirmed the unsupported model test never submitted a prompt",
+    )
+    proof = runner.STATE.proven_user_confirmed_no_submission(state_path)
+    receipt = json.loads(
+        (run_dir / "user-confirmed-no-submission.json").read_text(encoding="utf-8")
+    )
+
+    assert settled["ok"] is True
+    assert settled["safe_for_fresh_run"] is True
+    assert settled["result"]["session_authority"] == "pre_submit"
+    assert settled["result"]["task_outcome_reason"] == (
+        "user-confirmed-no-submission-after-model-selector-failure"
+    )
+    assert proof is not None
+    assert proof["pre_submit_marker"] == "oracle-model-option-missing/v1"
+    assert proof["desired_model"] == "GPT-5.5 Instant"
+    assert proof["prompt_submitted"] is False
+    assert proof["tab_url"] == "https://chatgpt.com/"
+    assert receipt["oracle_meta_sha256"] == hashlib.sha256(
+        (session_root / slug / "meta.json").read_bytes()
+    ).hexdigest()
+    assert runner.STATE.unresolved_project_sessions(run_dir.parent, tmp_path) == []
+
+    meta_path = session_root / slug / "meta.json"
+    tampered = json.loads(meta_path.read_text(encoding="utf-8"))
+    tampered["browser"]["runtime"]["promptSubmitted"] = True
+    meta_path.write_text(json.dumps(tampered), encoding="utf-8")
+    assert runner.STATE.proven_user_confirmed_no_submission(state_path) is None
+
+
+@pytest.mark.parametrize(
+    "variation",
+    (
+        "prompt-submitted",
+        "conversation-url",
+        "different-stage",
+        "different-error",
+        "model-mismatch",
+        "research-mismatch",
+        "missing-completed-at",
+        "output-present",
+        "missing-meta",
+        "duplicate-meta-key",
+        "meta-file-symlink",
+        "meta-parent-symlink",
+        "port-mismatch",
+        "target-missing",
+        "conversation-id",
+        "profile-outside-run",
+    ),
+)
+def test_direct_devspace_model_option_missing_keeps_lock_on_incomplete_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    variation: str,
+) -> None:
+    runner = load_runner()
+    monkeypatch.setenv("CODEX_THREAD_ID", "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+    isolated_default_oracle_profile(tmp_path, monkeypatch)
+    session_root = tmp_path / "oracle-sessions"
+    monkeypatch.setenv("ORACLE_SESSION_ROOT", str(session_root))
+    failed = execute_run(
+        runner,
+        manifest(
+            tmp_path,
+            model="gpt-5.5-instant",
+            model_strategy="select",
+            thinking_time="light",
+            research="off",
+        ),
+        run_factory=version_0171_runner,
+        popen_factory=model_option_missing_pre_submit_popen(
+            session_root,
+            variation=variation,
+        ),
+    )
+    run_dir = Path(failed["run_dir"])
+    state_path = run_dir / "state.json"
+    slug = runner.STATE.load_state(state_path)["oracle"]["slug"]
+    (run_dir / "recovery-harvest-stdout.log").write_text(
+        f'No live ChatGPT tab matched session "{slug}". Attempting recovery.\n',
+        encoding="utf-8",
+    )
+    (run_dir / "recovery-harvest-stderr.log").write_text(
+        "Cannot recover conversation: session metadata has no recoverable ChatGPT conversation URL.\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(runner.STATE.OracleStateError) as exc:
+        runner.settle_user_confirmed_no_submission(
+            run_dir,
+            confirmation=runner.STATE.USER_CONFIRMED_NO_SUBMISSION,
+            reason="user confirmation cannot override contradictory model selector evidence",
+        )
+
+    assert exc.value.code == "NO_SUBMISSION_EVIDENCE_INCOMPLETE"
+    assert runner.STATE.load_state(state_path)["session_authority"] == "submitted_unknown"
+
+
 def test_direct_devspace_prompt_not_observed_recovery_is_hash_bound_before_user_settlement(tmp_path: Path) -> None:
     runner = load_runner()
     failed = execute_run(
@@ -2978,7 +3957,7 @@ def test_recovery_captures_output_and_updates_state(tmp_path: Path) -> None:
     runner = load_runner()
     result = execute_run(
         runner,
-        manifest(tmp_path),
+        manifest(tmp_path, task_outcome_contract="v1"),
         run_factory=version_runner,
         popen_factory=popen_for(4, None, {}, []),
     )
@@ -2987,7 +3966,7 @@ def test_recovery_captures_output_and_updates_state(tmp_path: Path) -> None:
     def recovery_popen(command, **kwargs):
         captured_env.update(kwargs["env"])
         output = Path(command[command.index("--write-output") + 1])
-        output.write_text("recovered answer", encoding="utf-8")
+        output.write_text("recovered answer\nTASK_OUTCOME: EXECUTED\n", encoding="utf-8")
         kwargs["stdout"].write(b"State: complete\n")
         kwargs["stdout"].flush()
         return Process(0, [])
@@ -3001,9 +3980,12 @@ def test_recovery_captures_output_and_updates_state(tmp_path: Path) -> None:
     )
     assert recovered["ok"] is True
     assert recovered["status"] == "complete"
-    assert Path(recovered["output_path"]).read_text(encoding="utf-8") == "recovered answer"
+    assert Path(recovered["output_path"]).read_text(encoding="utf-8") == (
+        "recovered answer\nTASK_OUTCOME: EXECUTED\n"
+    )
     assert recovered["result"]["status"] == "complete"
     assert Path(captured_env["TEMP"]).name == "recovery-harvest-browser-temp"
+    assert captured_env["ORACLE_TASK_OUTCOME_TERMINAL_CONTRACT"] == "v1"
     assert not Path(captured_env["TEMP"]).exists()
     transcript = Path(recovered["result"]["artifacts"]["transcript"]).read_text(encoding="utf-8")
     assert "recovered answer" in transcript
@@ -3887,3 +4869,110 @@ def test_exact_recovery_bypasses_live_submit_mutex_and_harvests_same_slug(tmp_pa
     assert recovered["result"]["oracle"]["conversation_url"] == (
         "https://chatgpt.com/c/exact-stale-observer"
     )
+
+
+def test_recursive_self_observation_settlement_is_append_only_and_hash_bound(tmp_path: Path) -> None:
+    runner = load_runner()
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    run_id = "recursive1234"
+    slug = "oracle-project-recursive1"
+    run_dir = tmp_path / "state" / "projects" / "key" / "runs" / run_id
+    run_dir.mkdir(parents=True)
+    output = run_dir / "output.md"
+    transcript = run_dir / "transcript.md"
+    stdout = run_dir / "stdout.log"
+    stderr = run_dir / "stderr.log"
+    exact = (
+        f"run ID: {run_id}\nexact slug: {slug}\nstatus: running\n"
+        "task_outcome: pending\noutput.md absent\n"
+        "continue-observing-same-exact-session\nTASK_OUTCOME: BLOCKED\n"
+    )
+    output.write_text(exact, encoding="utf-8")
+    transcript.write_text(exact, encoding="utf-8")
+    stdout.write_text("", encoding="utf-8")
+    stderr.write_text("", encoding="utf-8")
+    state_path = run_dir / "state.json"
+    runner.STATE.write_json_atomic(state_path, {
+        "schema": "codex.chatgpt.oracle-run-state/v1",
+        "status": "attention_required",
+        "run_id": run_id,
+        "project_root": str(project_root),
+        "session_authority": "terminal",
+        "terminal_harvested": True,
+        "transport_status": "complete",
+        "task_outcome": "blocked",
+        "oracle": {"slug": slug},
+        "artifacts": {
+            "output": str(output), "transcript": str(transcript),
+            "stdout": str(stdout), "stderr": str(stderr),
+        },
+    })
+    hashes = {
+        "expected_state_sha256": runner.STATE.sha256_file(state_path),
+        "expected_output_sha256": runner.STATE.sha256_file(output),
+        "expected_transcript_sha256": runner.STATE.sha256_file(transcript),
+    }
+    before_state = state_path.read_bytes()
+    dry = runner.settle_recursive_self_observation_fresh_run(
+        run_dir,
+        confirmation=runner.STATE.USER_AUTHORIZED_FRESH_AFTER_RECURSIVE_SELF_OBSERVATION,
+        reason="user authorized continued progress after the bounded terminal failure",
+        dry_run=True,
+        **hashes,
+    )
+    assert dry["status"] == "dry-run"
+    assert not Path(dry["settlement_path"]).exists()
+
+    settled = runner.settle_recursive_self_observation_fresh_run(
+        run_dir,
+        confirmation=runner.STATE.USER_AUTHORIZED_FRESH_AFTER_RECURSIVE_SELF_OBSERVATION,
+        reason="user authorized continued progress after the bounded terminal failure",
+        **hashes,
+    )
+    proof = runner.STATE.proven_recursive_self_observation_fresh_run_authority(state_path)
+
+    assert settled["safe_for_fresh_run"] is True
+    assert settled["scope_released"] is True
+    assert settled["auto_retry"] is False
+    assert settled["submission_action"] == "none"
+    assert proof is not None
+    assert state_path.read_bytes() == before_state
+    assert proof["state_sha256"] == hashes["expected_state_sha256"]
+    repeated = runner.settle_recursive_self_observation_fresh_run(
+        run_dir,
+        confirmation=runner.STATE.USER_AUTHORIZED_FRESH_AFTER_RECURSIVE_SELF_OBSERVATION,
+        reason="user authorized continued progress after the bounded terminal failure",
+        **hashes,
+    )
+    assert repeated["settlement"]["sha256"] == proof["sha256"]
+
+
+def test_recursive_self_observation_settlement_rejects_generic_blocked_output(tmp_path: Path) -> None:
+    runner = load_runner()
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    run_dir = tmp_path / "state" / "projects" / "key" / "runs" / "generic1234"
+    run_dir.mkdir(parents=True)
+    output = run_dir / "output.md"
+    transcript = run_dir / "transcript.md"
+    output.write_text("ordinary blocker\nTASK_OUTCOME: BLOCKED\n", encoding="utf-8")
+    transcript.write_text("ordinary blocker\n", encoding="utf-8")
+    state_path = run_dir / "state.json"
+    runner.STATE.write_json_atomic(state_path, {
+        "schema": "codex.chatgpt.oracle-run-state/v1", "status": "attention_required",
+        "run_id": "generic1234", "project_root": str(project_root),
+        "session_authority": "terminal", "terminal_harvested": True,
+        "task_outcome": "blocked", "oracle": {"slug": "oracle-project-generic123"},
+        "artifacts": {"output": str(output), "transcript": str(transcript)},
+    })
+    with pytest.raises(runner.OracleRunError) as exc:
+        runner.settle_recursive_self_observation_fresh_run(
+            run_dir,
+            confirmation=runner.STATE.USER_AUTHORIZED_FRESH_AFTER_RECURSIVE_SELF_OBSERVATION,
+            reason="continue",
+            expected_state_sha256=runner.STATE.sha256_file(state_path),
+            expected_output_sha256=runner.STATE.sha256_file(output),
+            expected_transcript_sha256=runner.STATE.sha256_file(transcript),
+        )
+    assert exc.value.code == "RECURSIVE_SELF_OBSERVATION_EVIDENCE_REQUIRED"

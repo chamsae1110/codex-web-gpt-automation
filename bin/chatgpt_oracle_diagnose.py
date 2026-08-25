@@ -108,6 +108,51 @@ def _output_is_nonempty(path: Path) -> bool:
         return False
 
 
+def _foreign_connector_search_evidence(evidence_text: str) -> bool:
+    """Detect a run that hunted for another plugin's workspace connector.
+
+    Several ChatGPT plugins expose identically named workspace tools, so a
+    session can abandon the registered app, search the plugin directory for a
+    connector that does not exist there, and burn the run on tool
+    self-diagnosis instead of reading the mission.
+    """
+    text = evidence_text.casefold()
+    searched = any(
+        needle in text
+        for needle in ("search plugins", "search_plugins", "searching \"devspace\"", "plugin directory")
+    )
+    empty = any(
+        needle in text
+        for needle in ("{plugins: }", "{plugins:}", "\"plugins\": []", "plugins: []")
+    )
+    missing_workspace = any(
+        needle in text
+        for needle in ("did not return", "workspaceid", "no usable workspace", "작업공간 호출")
+    )
+    return searched and (empty or missing_workspace)
+
+
+def _same_workspace_read_network_failure_evidence(evidence_text: str) -> bool:
+    """Detect a registered-app read failure after workspace open succeeded.
+
+    Endpoint health and a successful ``open_workspace`` response do not prove
+    that the authenticated MCP session can execute a later ``read``.  Keep the
+    signature narrow: durable evidence must name both the successful open and
+    its workspace ID, then report a read plus the connector's network error.
+    """
+    text = evidence_text.casefold()
+    opened = "open_workspace" in text and any(
+        needle in text for needle in ("succeeded", "success", "성공")
+    )
+    workspace_bound = "workspace id" in text or "workspaceid" in text
+    read_attempt = any(
+        needle in text
+        for needle in ("read `agents.md`", "read agents.md", "파일 읽기", "file read")
+    )
+    network_failure = "mcp_network_error" in text and "connection failed" in text
+    return opened and workspace_bound and read_attempt and network_failure
+
+
 def classify_run(
     state: dict[str, Any],
     *,
@@ -148,6 +193,8 @@ def classify_run(
             return {"bucket": PRE_SUBMIT_UI, "signature": "thinking-time-selection-unverified"}
         if code == "ORACLE_CDP_DISCONNECT_PRE_SUBMIT_FAILED":
             return {"bucket": PRE_SUBMIT_UI, "signature": "cdp-disconnected-before-prompt-submit"}
+        if code == "DEVSPACE_SERVICE_RESTART_PRELAUNCH_FAILED":
+            return {"bucket": PRE_SUBMIT_HOST, "signature": "devspace-service-restart-required"}
         if code != "ORACLE_VERSION_RESOLUTION_PRELAUNCH_FAILED":
             return {"bucket": UNCLASSIFIED, "signature": "unrecognized-pre-submit-host-failure"}
         return {
@@ -172,8 +219,14 @@ def classify_run(
         return {"bucket": ACTIVE, "signature": "explicitly-abandoned"}
     if outcome in {"not_executed", "blocked"} and has_output:
         evidence_text = "\n".join((stdout_text, transcript_text, output_text))
-        if "OAuth token request failed" in evidence_text and "503" in evidence_text:
+        if STATE.recursive_self_observation_evidence(state, output_text) is not None:
+            signature = "post-submit-recursive-self-observation"
+        elif "OAuth token request failed" in evidence_text and "503" in evidence_text:
             signature = "registered-app-oauth-token-request-503"
+        elif _same_workspace_read_network_failure_evidence(evidence_text):
+            signature = "registered-app-read-network-failure-after-workspace-open"
+        elif _foreign_connector_search_evidence(evidence_text):
+            signature = "foreign-workspace-connector-substituted"
         else:
             signature = (
                 "durable-output-reports-blocked"

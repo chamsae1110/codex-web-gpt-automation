@@ -8,9 +8,11 @@ All new modes use Oracle:
 
 - regular direct, plan, review, edit, orchestrator, research, comprehensive,
   and Web Multi-GPT use Oracle plus the manually registered DevSpace app;
-- explicitly requested qualified Pro uses Oracle plus the manually registered
-  DevSpace app in an exact-root read/write route; explicit `pro-attachment` is attachment-only
-  only for immutable or external evidence that DevSpace cannot read;
+- explicitly requested new qualified Pro uses Oracle plus the manually registered
+  DevSpace app in an exact-root read-only design, advice, or review route; a
+  regular `GPT-5.6` `extra-high` stage owns mutations and commands; explicit
+  `pro-attachment` remains a separate read-only immutable-evidence route, while
+  persisted legacy `pro-devspace` write records retain their exact authority during recovery;
 - CodexPro and agbrowse may be used only for exact recovery of an already
   persisted legacy run.
 

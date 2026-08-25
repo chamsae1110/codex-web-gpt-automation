@@ -1,0 +1,27 @@
+diff --git a/dist/src/cli/followup.js b/dist/src/cli/followup.js
+index 04e2998..8e645a7 100644
+--- a/dist/src/cli/followup.js
++++ b/dist/src/cli/followup.js
+@@ -57,6 +57,11 @@ export async function resolveBrowserFollowupReference(value, store) {
+     const model = typeof storedModel === "string" && storedModel.startsWith("gpt-")
+         ? storedModel
+         : DEFAULT_MODEL;
++    const parentArchive = metadata.browser?.archive;
++    const parentWasArchived = parentArchive?.archived === true;
++    if (parentWasArchived && parentArchive?.conversationUrl !== resumeConversationUrl) {
++        throw new Error(`Session ${trimmed} archive metadata is not bound to the exact resumed conversation URL.`);
++    }
+     return {
+         sessionId: metadata.id,
+         resumeConversationUrl,
+@@ -65,8 +70,9 @@ export async function resolveBrowserFollowupReference(value, store) {
+             ...parentBrowserConfig,
+             browserTabRef: null,
+             resumeConversationUrl,
++            resumeArchivedConversation: parentWasArchived,
+             researchMode: "off",
+-            archiveConversations: "never",
++            archiveConversations: parentWasArchived ? "always" : "never",
+         },
+     };
+ }

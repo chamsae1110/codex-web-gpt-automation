@@ -31,10 +31,12 @@ contract-validate agbrowse for an old persisted run.
   `release incomplete`, not released.
 
 - Run `python scripts/check_portability.py --root .`, `python scripts/run_v4_contract_tests.py --focused`, `python scripts/run_v3_contract_tests.py`, and `python scripts/run_v4_contract_tests.py --full`.
+- On the maintainer host, run `python scripts/check_upstream_runtime_policy.py` and `python scripts/verify_upstream_runtime_maintainer.py`; registry current/latest must match and the active six-hour heartbeat must match the checked-in non-downstream contract.
 - Confirm `install-manifest.json` and `package.json` inventory every shipped runtime/schema file, the v4 runner, and both v7/v8 quiescent app-trace incident fixtures.
 - Confirm MIT copyright is `2026 ventianima-lab` and third-party notices retain the multi-gpt commit/hash attribution.
 - Do not vendor agbrowse, Codex, CodexPro, browser binaries, or account data.
-- Verify no workflow has `schedule`; CI must use Windows and macOS with mocked/offline lifecycle checks.
+- Only the reporter workflow `upstream-runtime-watch.yml` may have a GitHub Actions `schedule`. It may query official npm metadata and maintain one drift issue, but must never promote, install, restart services, open ChatGPT, or touch a project. The separately registered Codex maintainer heartbeat owns gated promotion and deployment; downstream installs must not register themselves as repository maintainers. Other CI remains event/manual driven.
+- For Oracle/DevSpace promotion, the scheduled Codex maintainer automation owns the drift issue, validation PR, release, maintainer-host lifecycle install, and one safe-window managed restart. It begins validation within 24 hours and targets promotion within 48 hours only when every gate passes. Verify archive integrity, package-tree and patch hashes, current/LKG registry bindings, Oracle no-submission behavior, an explicit DevSpace `open_workspace` followed by a separate mission-file `read` through the same workspace ID and a `read_chunk` complete SHA-256 that matches the local mission bytes, root/large-read/local-public health, and Windows/macOS/Linux exact-commit CI before release. Routine stable patch/minor promotion has standing all-gates approval; breaking, permission/OAuth, patch-conflict, failed-canary, and ambiguous cases require explicit user approval.
 - Treat agbrowse update as an explicit, reviewed agent action. There is no background checker, scheduled updater, candidate slot, or promotion pointer.
 - Exercise `install.ps1`, `doctor.ps1`, `uninstall.ps1`, and `rollback.ps1` with a temporary `CODEX_HOME`; never require Git to bootstrap or verify a release.
 - Before a normal install, verify its read-only dependency preflight completes before any managed file mutation. The returned token binds selected version/integrity, prior dependency identity, and observed unlocked state; the subsequent update must reacquire the lock and reject drift. Before an explicit update, confirm no active or uncertain run state exists. The update receipt must preserve the prior npm version/integrity, executable and contract hashes, then capture and validate the reviewed public-command contract before replacing it.
@@ -45,10 +47,10 @@ contract-validate agbrowse for an old persisted run.
 ## macOS Ultrawork 1.7
 
 - Exercise the portable lifecycle in a temporary `CODEX_HOME`, including update rollback and the original install uninstall.
-- Verify OMO Codex Light only, `features.multi_agent_v2.max_concurrent_threads_per_session = 5`, telemetry opt-out, and direct smoke calls for ultrawork/ulw-loop/start-work/reviewer hooks.
+- Verify OMO Codex Light only, telemetry opt-out, and direct smoke calls for ultrawork/ulw-loop/start-work/reviewer hooks. Native subagents use the supported `[agents]` block with `max_concurrent_threads_per_session = 3`; `multi_agent_v2` stays disabled while it is unstable.
 - Run `python3 scripts/run_harness_canary.py`; use `--real-time` for the release-host 85-minute canary and retain its SHA-256 receipt.
 - Validate all three managed plists with `plutil`; force-restart the supervisor and verify only `com.ventianima.codexpro-automation.*` labels are touched.
-- Require exactly one persisted DevSpace allowed root. Tailscale login, Funnel approval, macOS security approval, ChatGPT Developer Mode registration, and Owner approval remain manual gates.
+- Require the persisted DevSpace allowed roots to match the approved exact-root set with nothing dropped or substituted; multiple roots are supported. Tailscale login, Funnel approval, macOS security approval, ChatGPT Developer Mode registration, and Owner approval remain manual gates.
 
 ## Parallel implementation v3
 

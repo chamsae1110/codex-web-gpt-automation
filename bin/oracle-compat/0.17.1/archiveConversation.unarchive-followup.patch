@@ -1,0 +1,178 @@
+diff --git a/dist/src/browser/actions/archiveConversation.js b/dist/src/browser/actions/archiveConversation.js
+index a34f2aa..52d0eba 100644
+--- a/dist/src/browser/actions/archiveConversation.js
++++ b/dist/src/browser/actions/archiveConversation.js
+@@ -58,6 +58,173 @@ export async function archiveChatGptConversation(Runtime, logger, { mode, conver
+         error,
+     };
+ }
++export async function unarchiveChatGptConversation(Runtime, logger, { expectedConversationUrl, }) {
++    const evaluated = await Runtime.evaluate({
++        expression: buildUnarchiveConversationExpression(expectedConversationUrl),
++        awaitPromise: true,
++        returnByValue: true,
++    });
++    const value = evaluated.result?.value;
++    if (value?.status !== "unarchived" || value?.conversationUrl !== expectedConversationUrl) {
++        const reason = value?.reason ?? value?.error ?? "unarchive-failed";
++        throw new Error(`FOLLOWUP_ARCHIVED_PARENT_UNARCHIVE_FAILED: ${reason}`);
++    }
++    logger("[browser] Restored exact archived ChatGPT conversation for follow-up.");
++    return value;
++}
++export function buildUnarchiveConversationExpressionForTest(expectedConversationUrl) {
++    return buildUnarchiveConversationExpression(expectedConversationUrl);
++}
++function buildUnarchiveConversationExpression(expectedConversationUrl) {
++    const expected = JSON.stringify(expectedConversationUrl);
++    return `(() => {
++    const expectedConversationUrl = ${expected};
++    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
++    const normalize = (value) => String(value ?? '').replace(/\\s+/g, ' ').trim().toLowerCase();
++    const canonical = (value) => {
++      try {
++        const url = new URL(value);
++        if (url.protocol !== 'https:' || url.hostname !== 'chatgpt.com' || !/^\\/c\\/[a-z0-9-]+\\/?$/i.test(url.pathname)) return null;
++        url.search = '';
++        url.hash = '';
++        url.pathname = url.pathname.replace(/\\/$/, '');
++        return url.href;
++      } catch { return null; }
++    };
++    const expectedCanonical = canonical(expectedConversationUrl);
++    const currentCanonical = canonical(location.href);
++    const isVisible = (element) => {
++      if (!element || !(element instanceof HTMLElement)) return false;
++      const rect = element.getBoundingClientRect();
++      const style = getComputedStyle(element);
++      return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
++    };
++    const labelFor = (element) => normalize([
++      element.getAttribute?.('aria-label'), element.getAttribute?.('title'), element.textContent,
++    ].filter(Boolean).join(' '));
++    const click = (element) => {
++      const rect = element.getBoundingClientRect();
++      const init = { bubbles: true, cancelable: true, view: window,
++        clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2, button: 0 };
++      if (typeof PointerEvent === 'function') {
++        element.dispatchEvent(new PointerEvent('pointerdown', { ...init, buttons: 1,
++          pointerId: 1, pointerType: 'mouse', isPrimary: true }));
++      }
++      element.dispatchEvent(new MouseEvent('mousedown', { ...init, buttons: 1 }));
++      if (typeof PointerEvent === 'function') {
++        element.dispatchEvent(new PointerEvent('pointerup', { ...init, buttons: 0,
++          pointerId: 1, pointerType: 'mouse', isPrimary: true }));
++      }
++      element.dispatchEvent(new MouseEvent('mouseup', { ...init, buttons: 0 }));
++      element.dispatchEvent(new MouseEvent('click', { ...init, buttons: 0 }));
++    };
++    const menuButton = () => Array.from(document.querySelectorAll('button,[role="button"]'))
++      .filter((element) => element instanceof HTMLElement && isVisible(element))
++      .map((element) => ({ element, label: labelFor(element), rect: element.getBoundingClientRect() }))
++      .filter(({ label, rect }) => rect.top < 180 && rect.right > window.innerWidth - 420 && (
++        label.includes('more') || label.includes('conversation options') || label.includes('open menu') ||
++        label.includes('więcej') || label.includes('opcje') || label.includes('더 보기') || label.includes('메뉴')
++      )).sort((a, b) => b.rect.right - a.rect.right)[0]?.element ?? null;
++    const actionItems = () => {
++      const menuRoots = Array.from(document.querySelectorAll('[role="menu"],[role="dialog"]'))
++        .filter((element) => element instanceof HTMLElement && isVisible(element));
++      const roots = menuRoots.length ? menuRoots : [document];
++      return roots.flatMap((root) => Array.from(root.querySelectorAll(
++        '[role="menuitem"],[role="option"],button,[role="button"],a,div[tabindex]'
++      ))).filter((element) => element instanceof HTMLElement && isVisible(element));
++    };
++    const isUnarchive = (label) => label.includes('unarchive') || label.includes('restore') ||
++      label.includes('przywróć') || label.includes('przywroc') || label.includes('보관 취소') ||
++      label.includes('보관 해제') || label.includes('복원');
++    const isDirectUnarchive = (label) =>
++      label.includes('unarchive conversation') || label.includes('restore conversation') ||
++      label.includes('przywróć rozmowę') || label.includes('przywroc rozmowe') ||
++      (label.includes('아카이브') && (
++        label.includes('보관 취소') || label.includes('보관 해제') || label.includes('복원')
++      ));
++    const isArchive = (label) => !isUnarchive(label) && (
++      label.includes('archive') || label.includes('archiwizuj') || label.includes('보관')
++    );
++    const unarchiveCandidates = () => actionItems()
++      .filter((element) => isUnarchive(labelFor(element)));
++    const directUnarchiveCandidates = () => actionItems()
++      .filter((element) => isDirectUnarchive(labelFor(element)));
++    const composerReady = () => Array.from(document.querySelectorAll(
++      '#prompt-textarea,textarea,[data-testid*="composer"] [contenteditable="true"],[contenteditable="true"].ProseMirror'
++    )).some((element) => element instanceof HTMLElement && isVisible(element));
++    const waitForUniqueUnarchive = async (timeoutMs, candidatesFor = unarchiveCandidates) => {
++      const deadline = Date.now() + timeoutMs;
++      while (Date.now() < deadline) {
++        const candidates = candidatesFor();
++        if (candidates.length === 1) return candidates[0];
++        if (candidates.length > 1) return 'ambiguous';
++        await sleep(150);
++      }
++      return null;
++    };
++    const waitForDirectRestoreConfirmation = async (timeoutMs) => {
++      const deadline = Date.now() + timeoutMs;
++      while (Date.now() < deadline) {
++        if (canonical(location.href) !== expectedCanonical) return 'url-changed';
++        if (composerReady() && directUnarchiveCandidates().length === 0) return 'confirmed';
++        await sleep(150);
++      }
++      return 'not-confirmed';
++    };
++    return (async () => {
++      if (!expectedCanonical || currentCanonical !== expectedCanonical) {
++        return { status: 'failed', reason: 'exact-conversation-url-mismatch', conversationUrl: location.href };
++      }
++      // Archived conversation pages may render a direct restore control in
++      // the page body instead of placing it in the header overflow menu.
++      const direct = await waitForUniqueUnarchive(1500, directUnarchiveCandidates);
++      if (direct === 'ambiguous') {
++        return { status: 'failed', reason: 'unarchive-direct-ambiguous', conversationUrl: location.href };
++      }
++      if (direct) {
++        click(direct);
++        const confirmation = await waitForDirectRestoreConfirmation(5000);
++        if (confirmation === 'url-changed') {
++          return { status: 'failed', reason: 'conversation-url-changed', conversationUrl: location.href };
++        }
++        if (confirmation !== 'confirmed') {
++          return { status: 'failed', reason: 'unarchive-not-confirmed', conversationUrl: location.href };
++        }
++        return { status: 'unarchived', conversationUrl: expectedConversationUrl, method: 'direct-control' };
++      }
++      const opener = menuButton();
++      if (!opener) return { status: 'failed', reason: 'conversation-menu-not-found', conversationUrl: location.href };
++      click(opener);
++      const candidate = await waitForUniqueUnarchive(3000);
++      if (!candidate || candidate === 'ambiguous') {
++        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
++        return { status: 'failed', reason: candidate ? 'unarchive-menu-ambiguous' : 'unarchive-menu-not-found', conversationUrl: location.href };
++      }
++      click(candidate);
++      await sleep(600);
++      const confirm = unarchiveCandidates();
++      if (confirm.length === 1) {
++        click(confirm[0]);
++        await sleep(600);
++      }
++      if (canonical(location.href) !== expectedCanonical) {
++        return { status: 'failed', reason: 'conversation-url-changed', conversationUrl: location.href };
++      }
++      const verify = menuButton();
++      if (!verify) return { status: 'failed', reason: 'conversation-menu-lost', conversationUrl: location.href };
++      click(verify);
++      await sleep(350);
++      const labels = actionItems().map((element) => labelFor(element));
++      const unarchiveStillPresent = labels.some(isUnarchive);
++      const archiveNowPresent = labels.some(isArchive);
++      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
++      if (unarchiveStillPresent || !archiveNowPresent) {
++        return { status: 'failed', reason: 'unarchive-not-confirmed', conversationUrl: location.href };
++      }
++      return { status: 'unarchived', conversationUrl: expectedConversationUrl };
++    })().catch((error) => ({ status: 'failed', error: error instanceof Error ? error.message : String(error), conversationUrl: location.href }));
++  })()`;
++}
+ export function buildArchiveConversationExpressionForTest() {
+     return buildArchiveConversationExpression();
+ }

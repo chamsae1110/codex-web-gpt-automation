@@ -1,6 +1,6 @@
 {
   "name": "codex-web-gpt-automation",
-  "version": "1.15.4",
+  "version": "1.20.1",
   "private": false,
   "description": "Guarded, recoverable web ChatGPT automation for local Codex projects on Windows and macOS",
   "license": "MIT",
@@ -27,6 +27,7 @@
     "README.md",
     "README.en.md",
     "CONTRIBUTING.md",
+    "docs/INSTALL_AGENT.md",
     "onboard.py",
     "bin/codex_web_gpt_onboarding.py",
     "bin/codex_global_agents_setup.py",
@@ -114,6 +115,11 @@
     "scripts/run_golden_path_smoke.py",
     "scripts/run_harness_canary.py",
     "scripts/check_docs.py",
+    "scripts/check_upstream_runtime_policy.py",
+    "scripts/verify_upstream_runtime_maintainer.py",
+    "scripts/prepare_devspace_107_ci.py",
+    "upstream-runtime-policy.json",
+    "upstream-runtime-maintainer-automation.json",
     "contracts/install/",
     "contracts/gjc-interview-v1.schema.json",
     "marketplace/",
@@ -139,7 +145,7 @@
     "SECURITY.md"
   ],
   "engines": {
-    "node": ">=22.19 <27"
+    "node": ">=24 <27"
   },
   "dependencies": {}
 }

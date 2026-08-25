@@ -1,0 +1,67 @@
+{
+  "schema": "codex.web-gpt.upstream-runtime-policy/v2",
+  "promotion": {
+    "mode": "newest-validated-stable",
+    "npm_latest": "candidate-immediately",
+    "candidate_reporter": "scheduled-read-only-watcher",
+    "promotion_owner": "scheduled-codex-maintainer-automation",
+    "validation_owner": "scheduled-codex-maintainer-automation-plus-required-ci",
+    "installation_owner": "scheduled-codex-maintainer-automation",
+    "restart_owner": "scheduled-codex-maintainer-automation-safe-window",
+    "routine_approval": "standing-after-all-gates",
+    "exception_approval": "explicit-user",
+    "candidate_detection_sla_hours": 6,
+    "validation_start_sla_hours": 24,
+    "promotion_target_sla_hours": 48,
+    "drift_issue_assignee": "ventianima-lab",
+    "promotion_automation_name": "Validate upstream runtime drift",
+    "promotion_automation_schedule": "every-6-hours",
+    "watcher_may_promote": false,
+    "watcher_may_install": false,
+    "watcher_may_restart": false,
+    "maintainer_may_promote_after_gates": true,
+    "maintainer_may_install_after_release": true,
+    "maintainer_may_restart_in_safe_window": true,
+    "drift_issue_title": "Upstream runtime drift",
+    "drift_issue_label": "upstream-runtime",
+    "required_gates": [
+      "published-archive-integrity",
+      "exact-package-tree-and-patch-hashes",
+      "syntax-and-focused-compatibility",
+      "oracle-no-submission-canary",
+      "devspace-open-workspace-same-id-read",
+      "devspace-root-large-read-and-health",
+      "windows-macos-linux-exact-commit-ci",
+      "reviewed-validation-pr",
+      "release-and-local-install-receipt"
+    ]
+  },
+  "runtimes": {
+    "oracle": {
+      "package": "@steipete/oracle",
+      "registry": "https://registry.npmjs.org/%40steipete%2Foracle",
+      "current": {
+        "version": "0.18.0",
+        "integrity": "sha512-o8KFd66zNt36jw5zdtQAV74bgrOlJibbyvnLsVikIWDamesYtez/dIUhQ4zqtD9jkx+7A6vcP9+JgcJt0H5pOw==",
+        "source": "https://www.npmjs.com/package/%40steipete/oracle/v/0.18.0"
+      },
+      "last_known_good": {
+        "version": "0.17.1",
+        "integrity": "sha512-bq4SqMvRtT5Im+R57UPSXTV5p/BFTU24OXgGXqx2ckABWFX9uLDuKeJLoOdfBm7RzllrzjrlSSGgiMsrrvh+9Q=="
+      }
+    },
+    "devspace": {
+      "package": "@waishnav/devspace",
+      "registry": "https://registry.npmjs.org/%40waishnav%2Fdevspace",
+      "current": {
+        "version": "1.0.7",
+        "integrity": "sha512-kP+Wk52qiMRwdqAP+nV4OZ4HU8feivZQ0k6u4ZUkvqxu8j0Rp/AU8H0K4T43G+zmu9WJKlYLTet7vIUeZHU72A==",
+        "source": "https://www.npmjs.com/package/%40waishnav/devspace/v/1.0.7"
+      },
+      "last_known_good": {
+        "version": "1.0.4",
+        "integrity": "sha512-gYaaweaKWTK7Xb4uImpso2mbp87I7TuCmpenOR1jh1rp0nXisId10UHB9HxU5N1Qa5bDmRcIyHe85Bln2zCuzg=="
+      }
+    }
+  }
+}

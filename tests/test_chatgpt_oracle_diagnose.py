@@ -5,6 +5,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 MODULE_PATH = Path(__file__).resolve().parents[1] / "bin" / "chatgpt_oracle_diagnose.py"
 
 
@@ -47,6 +49,7 @@ def write_run(
         "terminal_harvested": terminal_harvested,
         "task_outcome": task_outcome,
         "artifacts": {"output": str(output_path), "stdout": str(stdout_path), "stderr": str(stderr_path)},
+        "oracle": {"slug": f"oracle-project-{run_id[:10]}"},
     }), encoding="utf-8")
     return run_dir
 
@@ -263,6 +266,102 @@ def test_terminal_blocked_oauth_503_is_not_misreported_as_complete(tmp_path: Pat
     assert verdict["anomalies"] == ["terminal-harvested-browser-observer-stale"]
 
 
+def test_terminal_recursive_self_observation_has_bounded_signature(tmp_path: Path) -> None:
+    module = load()
+    state_root = tmp_path / "oracle-state"
+    run_id = "r" * 12
+    slug = f"oracle-project-{run_id[:10]}"
+    output = (
+        f"run ID: {run_id}\nexact slug: {slug}\nstatus: running\n"
+        "task_outcome: pending\noutput.md absent\n"
+        "continue-observing-same-exact-session\nTASK_OUTCOME: BLOCKED\n"
+    )
+    write_run(
+        state_root,
+        run_id,
+        status="attention_required",
+        output=output,
+        session_authority="terminal",
+        terminal_harvested=True,
+        task_outcome="blocked",
+    )
+
+    report = module.diagnose(state_root)
+
+    assert report["unresolved_runs"][0]["signature"] == "post-submit-recursive-self-observation"
+
+
+def test_general_terminal_blocked_or_simple_identity_mention_stays_generic(tmp_path: Path) -> None:
+    module = load()
+    state_root = tmp_path / "oracle-state"
+    run_id = "s" * 12
+    slug = f"oracle-project-{run_id[:10]}"
+    write_run(
+        state_root,
+        run_id,
+        status="attention_required",
+        output=f"run ID: {run_id}\nslug: {slug}\nconcrete project blocker\nTASK_OUTCOME: BLOCKED\n",
+        session_authority="terminal",
+        terminal_harvested=True,
+        task_outcome="blocked",
+    )
+
+    report = module.diagnose(state_root)
+
+    assert report["unresolved_runs"][0]["signature"] == "durable-output-reports-blocked"
+
+
+@pytest.mark.parametrize(
+    "missing_line",
+    [
+        "status: running",
+        "task_outcome: pending",
+        "output.md absent",
+        "continue-observing-same-exact-session",
+    ],
+)
+def test_recursive_signature_requires_every_bounded_self_observation_line(
+    tmp_path: Path, missing_line: str
+) -> None:
+    module = load()
+    state_root = tmp_path / "oracle-state"
+    run_id = "t" * 12
+    slug = f"oracle-project-{run_id[:10]}"
+    lines = [
+        f"run ID: {run_id}", f"exact slug: {slug}", "status: running",
+        "task_outcome: pending", "output.md absent",
+        "continue-observing-same-exact-session", "TASK_OUTCOME: BLOCKED",
+    ]
+    output = "\n".join(line for line in lines if line != missing_line) + "\n"
+    write_run(
+        state_root, run_id, status="attention_required", output=output,
+        session_authority="terminal", terminal_harvested=True, task_outcome="blocked",
+    )
+
+    report = module.diagnose(state_root)
+
+    assert report["unresolved_runs"][0]["signature"] == "durable-output-reports-blocked"
+
+
+def test_recursive_signature_rejects_a_different_slug(tmp_path: Path) -> None:
+    module = load()
+    state_root = tmp_path / "oracle-state"
+    run_id = "u" * 12
+    output = (
+        f"run ID: {run_id}\nexact slug: oracle-project-someoneelse\nstatus: running\n"
+        "task_outcome: pending\noutput.md absent\n"
+        "continue-observing-same-exact-session\nTASK_OUTCOME: BLOCKED\n"
+    )
+    write_run(
+        state_root, run_id, status="attention_required", output=output,
+        session_authority="terminal", terminal_harvested=True, task_outcome="blocked",
+    )
+
+    report = module.diagnose(state_root)
+
+    assert report["unresolved_runs"][0]["signature"] == "durable-output-reports-blocked"
+
+
 def test_live_run_keeps_ownership_and_is_not_reported_as_failure(tmp_path: Path) -> None:
     module = load()
     state_root = tmp_path / "oracle-state"
@@ -402,6 +501,30 @@ def test_version_resolution_prelaunch_failure_is_host_safe_only_with_absence_pro
     }
 
 
+def test_devspace_restart_prelaunch_failure_has_a_bounded_signature() -> None:
+    module = load()
+    verdict = module.classify_run(
+        {
+            "status": "failed",
+            "session_authority": "pre_submit",
+            "terminal_harvested": False,
+            "task_outcome": "pending",
+            "pre_submit_failure": {
+                "code": "DEVSPACE_SERVICE_RESTART_PRELAUNCH_FAILED",
+                "output_absent": True,
+                "conversation_url_absent": True,
+            },
+        },
+        stdout_text="",
+        has_output=False,
+    )
+
+    assert verdict == {
+        "bucket": "pre-submit-host-environment",
+        "signature": "devspace-service-restart-required",
+    }
+
+
 def test_oracle_attachment_size_preflight_is_host_safe_with_no_conversation() -> None:
     module = load()
     verdict = module.classify_run(
@@ -523,3 +646,234 @@ def test_report_is_read_only_for_persisted_runs(tmp_path: Path) -> None:
     }
     assert after == before
     assert (run_dir / "state.json").is_file()
+
+
+@pytest.mark.parametrize(
+    ("evidence_text", "expected"),
+    [
+        (
+            "\n".join((
+                "api_tool Search plugins",
+                '요청하기 {query: "DevSpace"}',
+                "응답 {plugins: }",
+                "Codex/DevSpace 작업공간 호출이 이 세션에서 사용 가능한 "
+                "workspaceId 또는 파일 읽기 결과를 반환하지 않아",
+            )),
+            True,
+        ),
+        (
+            'Search plugins {query: "DevSpace"} -> {plugins: }\n'
+            "did not return a usable workspaceId",
+            True,
+        ),
+        (
+            "Opened the qualified workspace, read AGENTS.md, and was blocked "
+            "by the genuine mission dependency.",
+            False,
+        ),
+        ("DevSpace was mentioned in passing during the mission review.", False),
+        ('Search plugins {query: "DevSpace"} found the registered connector.', False),
+        ("SEARCH PLUGINS {PLUGINS: }", True),
+    ],
+)
+def test_foreign_connector_search_evidence_requires_search_and_failure(
+    evidence_text: str, expected: bool
+) -> None:
+    module = load()
+
+    assert module._foreign_connector_search_evidence(evidence_text) is expected
+
+
+@pytest.mark.parametrize(
+    ("evidence_text", "expected"),
+    [
+        (
+            "codex open_workspace succeeded with workspace id ws_123. "
+            "The separate read `AGENTS.md` failed with mcp_network_error: Connection failed.",
+            True,
+        ),
+        (
+            "codex open_workspace 성공, workspace id ws_123. "
+            "이후 파일 읽기가 mcp_network_error: Connection failed로 실패했습니다.",
+            True,
+        ),
+        ("open_workspace succeeded with workspace id ws_123 and read AGENTS.md succeeded", False),
+        ("read AGENTS.md failed with mcp_network_error: Connection failed", False),
+    ],
+)
+def test_same_workspace_read_network_failure_requires_open_and_read_evidence(
+    evidence_text: str, expected: bool
+) -> None:
+    module = load()
+
+    assert module._same_workspace_read_network_failure_evidence(evidence_text) is expected
+
+
+def test_terminal_blocked_same_workspace_read_network_failure_has_bounded_signature(
+    tmp_path: Path,
+) -> None:
+    module = load()
+    state_root = tmp_path / "oracle-state"
+    write_run(
+        state_root,
+        "r" * 8,
+        status="attention_required",
+        output=(
+            "codex open_workspace succeeded with workspace id ws_350cbc6826.\n"
+            "The separate read `AGENTS.md` failed with mcp_network_error: Connection failed.\n"
+            "TASK_OUTCOME: BLOCKED\n"
+        ),
+        session_authority="terminal",
+        terminal_harvested=True,
+        task_outcome="blocked",
+    )
+
+    verdict = module.diagnose(state_root)["unresolved_runs"][0]
+
+    assert verdict["bucket"] == "terminal-task-not-executed"
+    assert verdict["signature"] == "registered-app-read-network-failure-after-workspace-open"
+
+
+def test_terminal_blocked_foreign_connector_search_has_bounded_signature(tmp_path: Path) -> None:
+    module = load()
+    state_root = tmp_path / "oracle-state"
+    write_run(
+        state_root,
+        "w" * 8,
+        status="attention_required",
+        output=(
+            "api_tool Search plugins\n"
+            '요청하기 {query: "DevSpace"}\n'
+            "응답 {plugins: }\n"
+            "Codex/DevSpace 작업공간 호출이 이 세션에서 사용 가능한 workspaceId 또는 "
+            "파일 읽기 결과를 반환하지 않아\n"
+            "TASK_OUTCOME: BLOCKED\n"
+        ),
+        session_authority="terminal",
+        terminal_harvested=True,
+        task_outcome="blocked",
+    )
+
+    verdict = module.diagnose(state_root)["unresolved_runs"][0]
+
+    assert verdict["bucket"] == "terminal-task-not-executed"
+    assert verdict["signature"] == "foreign-workspace-connector-substituted"
+
+
+def test_terminal_not_executed_foreign_connector_search_has_bounded_signature(
+    tmp_path: Path,
+) -> None:
+    module = load()
+    state_root = tmp_path / "oracle-state"
+    write_run(
+        state_root,
+        "x" * 8,
+        status="attention_required",
+        output=(
+            'Search plugins {query: "DevSpace"} -> {plugins: }\n'
+            "did not return a usable workspaceId\n"
+            "TASK_OUTCOME: NOT_EXECUTED\n"
+        ),
+        session_authority="terminal",
+        terminal_harvested=True,
+        task_outcome="not_executed",
+    )
+
+    verdict = module.diagnose(state_root)["unresolved_runs"][0]
+
+    assert verdict["bucket"] == "terminal-task-not-executed"
+    assert verdict["signature"] == "foreign-workspace-connector-substituted"
+
+
+def test_terminal_blocked_without_foreign_connector_evidence_stays_generic(tmp_path: Path) -> None:
+    module = load()
+    state_root = tmp_path / "oracle-state"
+    write_run(
+        state_root,
+        "y" * 8,
+        status="attention_required",
+        output="Opened the qualified workspace and read AGENTS.md.\nTASK_OUTCOME: BLOCKED\n",
+        session_authority="terminal",
+        terminal_harvested=True,
+        task_outcome="blocked",
+    )
+
+    verdict = module.diagnose(state_root)["unresolved_runs"][0]
+
+    assert verdict["signature"] == "durable-output-reports-blocked"
+
+
+def test_terminal_blocked_detects_foreign_connector_evidence_in_transcript(tmp_path: Path) -> None:
+    module = load()
+    state_root = tmp_path / "oracle-state"
+    run_dir = write_run(
+        state_root,
+        "z" * 8,
+        status="attention_required",
+        output="TASK_OUTCOME: BLOCKED\n",
+        session_authority="terminal",
+        terminal_harvested=True,
+        task_outcome="blocked",
+    )
+    (run_dir / "transcript.md").write_text(
+        'Search plugins {query: "DevSpace"} -> {plugins: }\n'
+        "did not return a usable workspaceId\n",
+        encoding="utf-8",
+    )
+
+    verdict = module.diagnose(state_root)["unresolved_runs"][0]
+
+    assert verdict["bucket"] == "terminal-task-not-executed"
+    assert verdict["signature"] == "foreign-workspace-connector-substituted"
+
+
+def test_oauth_503_outranks_foreign_connector_search_evidence(tmp_path: Path) -> None:
+    module = load()
+    state_root = tmp_path / "oracle-state"
+    write_run(
+        state_root,
+        "q" * 8,
+        status="attention_required",
+        output=(
+            "OAuth token request failed: 503\n"
+            'Search plugins {query: "DevSpace"} -> {plugins: }\n'
+            "did not return a usable workspaceId\n"
+            "TASK_OUTCOME: BLOCKED\n"
+        ),
+        session_authority="terminal",
+        terminal_harvested=True,
+        task_outcome="blocked",
+    )
+
+    verdict = module.diagnose(state_root)["unresolved_runs"][0]
+
+    assert verdict["signature"] == "registered-app-oauth-token-request-503"
+
+
+def test_recursive_self_observation_outranks_foreign_connector_search_evidence(
+    tmp_path: Path,
+) -> None:
+    module = load()
+    state_root = tmp_path / "oracle-state"
+    run_id = "v" * 12
+    slug = f"oracle-project-{run_id[:10]}"
+    write_run(
+        state_root,
+        run_id,
+        status="attention_required",
+        output=(
+            f"run ID: {run_id}\nexact slug: {slug}\nstatus: running\n"
+            "task_outcome: pending\noutput.md absent\n"
+            "continue-observing-same-exact-session\n"
+            'Search plugins {query: "DevSpace"} -> {plugins: }\n'
+            "did not return a usable workspaceId\n"
+            "TASK_OUTCOME: BLOCKED\n"
+        ),
+        session_authority="terminal",
+        terminal_harvested=True,
+        task_outcome="blocked",
+    )
+
+    verdict = module.diagnose(state_root)["unresolved_runs"][0]
+
+    assert verdict["signature"] == "post-submit-recursive-self-observation"

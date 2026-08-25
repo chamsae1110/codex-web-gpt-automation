@@ -193,9 +193,13 @@ def test_multi_rejects_lane_path_traversal(tmp_path: Path) -> None:
         raise AssertionError("unsafe lane id must fail")
 
 
-def test_multi_accepts_parallel_strict_worktrees_and_injects_exact_ownership(tmp_path: Path) -> None:
+def test_multi_accepts_parallel_strict_worktrees_and_injects_exact_ownership(tmp_path: Path, monkeypatch) -> None:
     module = load()
     manifest = make_strict_manifest(tmp_path)
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    payload["source_thread_id"] = "33333333-3333-4333-8333-333333333333"
+    manifest.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("CODEX_THREAD_ID", payload["source_thread_id"])
     config = module.load_manifest(manifest)
 
     child = module._child_manifest(config, config["solvers"][0], "f" * 64)
@@ -205,13 +209,120 @@ def test_multi_accepts_parallel_strict_worktrees_and_injects_exact_ownership(tmp
     provenance = json.loads((child.parent / "child-provenance.json").read_text(encoding="utf-8"))
 
     assert "[WEB_MULTI_STRICT_WORKTREE_WRITE_CONTRACT]" in text
+    assert "[HOST_MATERIALIZATION_FALLBACK]" in text
+    assert "[ORACLE_MULTI_WRITESET]" in text
+    assert "Do not return both direct workspace changes and a writeset." in text
     assert "runtime.txt" in text
     assert provenance["access"] == "worktree-write"
     assert provenance["owned_paths"] == ["runtime.txt"]
     assert provenance["mission_path"] == str(effective)
     assert provenance["canonical_project_root"] == str(config["project_root"])
+    assert provenance["source_thread_id"] == config["source_thread_id"]
+    assert child_value["source_thread_id"] == config["source_thread_id"]
     child_config = module.STATE.load_manifest(child)
     assert module.RUNNER.web_multi_devspace_qualification_target(child_config) == config["project_root"]
+
+
+def test_multi_rejects_foreign_task_before_creating_outputs(tmp_path: Path, monkeypatch) -> None:
+    module = load()
+    manifest = make_manifest(tmp_path, 2)
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    payload["source_thread_id"] = "11111111-1111-4111-8111-111111111111"
+    manifest.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("CODEX_THREAD_ID", "22222222-2222-4222-8222-222222222222")
+
+    with pytest.raises(module.MultiError, match="SOURCE_THREAD_ID_MISMATCH"):
+        module.run_multi(manifest, execute=lambda *_args, **_kwargs: pytest.fail("must not execute"))
+
+    assert not (tmp_path / "out").exists()
+
+
+def test_strict_multi_materializes_bound_writesets_when_web_surface_is_read_only(
+    tmp_path: Path,
+) -> None:
+    module = load()
+    manifest = make_strict_manifest(tmp_path)
+    config = module.load_manifest(manifest)
+
+    def execute(path: Path, *, dry_run: bool):
+        value = json.loads(path.read_text(encoding="utf-8"))
+        lane_id = path.parent.name
+        if dry_run:
+            return {"ok": True, "preview": value}
+        run_dir = path.parent / "fake-run"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        if lane_id in {"runtime", "tests"}:
+            provenance = json.loads(
+                Path(value["web_multi_child_provenance_path"]).read_text(encoding="utf-8")
+            )
+            owned = "runtime.txt" if lane_id == "runtime" else "tests.txt"
+            envelope = {
+                "schema": module.WRITESET_SCHEMA,
+                "parent_id": value["parallel_parent_id"],
+                "lane_id": lane_id,
+                "source_mission_sha256": provenance["source_mission_sha256"],
+                "files": [
+                    {"path": owned, "operation": "write", "content": f"{lane_id} bridged\n"}
+                ],
+                "summary": "synthetic host-materialized implementation",
+            }
+            (run_dir / "output.md").write_text(
+                f"{module.WRITESET_BEGIN}\n"
+                + json.dumps(envelope, ensure_ascii=False)
+                + f"\n{module.WRITESET_END}\nTASK_OUTCOME: EXECUTED\n",
+                encoding="utf-8",
+            )
+        else:
+            (run_dir / "output.md").write_text("merged", encoding="utf-8")
+            provenance = json.loads(
+                Path(value["web_multi_child_provenance_path"]).read_text(encoding="utf-8")
+            )
+            parent = module.load_manifest(Path(provenance["parent_manifest_path"]))
+            parent["next_stage_result_path"].write_text("{}\n", encoding="utf-8")
+        return {"ok": True, "run_dir": str(run_dir)}
+
+    result = module.run_multi(manifest, execute=execute)
+
+    assert result["ok"] is True
+    assert result["status"] == "complete"
+    assert (config["project_root"] / "runtime.txt").read_text(encoding="utf-8") == "runtime bridged\n"
+    assert (config["project_root"] / "tests.txt").read_text(encoding="utf-8") == "tests bridged\n"
+    for lane in result["lanes"]:
+        assert lane["host_materialization"]["schema"] == module.WRITESET_SCHEMA
+        assert lane["host_materialization"]["file_count"] == 1
+
+
+def test_strict_writeset_rejects_scope_escape_and_duplicate_json_keys(tmp_path: Path) -> None:
+    module = load()
+    manifest = make_strict_manifest(tmp_path)
+    config = module.load_manifest(manifest)
+    lane = config["solvers"][0]
+    output = tmp_path / "output.md"
+    parent_id = "f" * 64
+    source_sha = module.hashlib.sha256(lane["mission_path"].read_bytes()).hexdigest()
+    escaped = {
+        "schema": module.WRITESET_SCHEMA,
+        "parent_id": parent_id,
+        "lane_id": lane["id"],
+        "source_mission_sha256": source_sha,
+        "files": [{"path": "rogue.txt", "operation": "write", "content": "bad"}],
+        "summary": "bad",
+    }
+    output.write_text(
+        f"{module.WRITESET_BEGIN}\n{json.dumps(escaped)}\n{module.WRITESET_END}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(module.MultiError, match="escapes owned_paths"):
+        module._writeset_from_output(config, lane, parent_id, output)
+
+    duplicate = json.dumps({**escaped, "files": []})
+    duplicate = duplicate[:-1] + ',"summary":"duplicate"}'
+    output.write_text(
+        f"{module.WRITESET_BEGIN}\n{duplicate}\n{module.WRITESET_END}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(module.MultiError, match="duplicate JSON key"):
+        module._writeset_from_output(config, lane, parent_id, output)
 
 
 @pytest.mark.parametrize("claims", [
@@ -416,7 +527,7 @@ def test_strict_reconcile_audits_all_exact_runs_before_apply_and_merger_resume(t
     for lane in config["solvers"]:
         relative = lane["owned_paths"][0]
         (lane["project_root"] / relative).write_text(f"recovered {lane['id']}\n", encoding="utf-8")
-        effective = module._effective_lane_mission(config, lane)
+        effective = module._effective_lane_mission(config, lane, parent_id)
         run_dir = state_root / "runs" / lane["id"]
         run_dir.mkdir(parents=True)
         output = run_dir / "output.md"

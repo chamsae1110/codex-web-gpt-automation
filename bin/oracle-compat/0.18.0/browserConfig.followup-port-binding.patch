@@ -1,0 +1,16 @@
+diff --git a/dist/src/cli/browserConfig.js b/dist/src/cli/browserConfig.js
+--- a/dist/src/cli/browserConfig.js
++++ b/dist/src/cli/browserConfig.js
+@@ -14,5 +14,12 @@ const DEFAULT_BROWSER_RECHECK_TIMEOUT_MS = 120_000;
+ const DEFAULT_BROWSER_AUTO_REATTACH_TIMEOUT_MS = 120_000;
+ const DEFAULT_CHROME_PROFILE = "Default";
++export function bindFollowupBrowserPort(browserConfig, requestedPort) {
++    if (requestedPort == null)
++        return browserConfig;
++    if (!Number.isInteger(requestedPort) || requestedPort <= 0 || requestedPort > 65535)
++        throw new Error("Follow-up browser port must be an integer between 1 and 65535.");
++    return { ...browserConfig, debugPort: requestedPort };
++}
+ const CURRENT_CHATGPT_PRO_ALIASES = new Set([
+     "gpt-5-pro",
+     "gpt-5.1-pro",

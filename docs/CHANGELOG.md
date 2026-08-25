@@ -1,5 +1,524 @@
 # 기술 변경 기록
 
+## 1.20.1 - Assign and gate upstream runtime promotion
+
+- The six-hour watcher remains strictly read-only, but its stable drift issue
+  now carries the scheduled Codex maintainer promotion/validation owner, 24-hour validation-start and
+  48-hour all-gates promotion targets, exact candidate integrity, a dedicated
+  label, and the complete machine-readable gate checklist. A routine stable
+  patch/minor candidate has standing approval only after every gate passes;
+  breaking, permission/OAuth, patch-conflict, failed-canary, and ambiguous
+  cases still require explicit user approval.
+- Runtime policy schema v2 makes the reporter, promotion owner, test owner,
+  approval split, timing, and closed evidence set mandatory instead of relying
+  on the vague instruction to promote promptly.
+- Reporter permissions and maintainer permissions are now separate fields: the
+  reporter cannot mutate runtime state, while the scheduled maintainer may
+  promote, publish, install, and perform one safe-window restart after all
+  routine gates pass. This closes the previous policy gap where a candidate
+  could be detected without naming who actually deploys it.
+- The watcher resolves only one exact-title drift issue and fails closed on
+  duplicates; it creates a missing label without overwriting existing label
+  metadata.
+- DevSpace promotion and post-repair verification now require a separate
+  mission-file `read` and `read_chunk` through the exact workspace ID returned
+  by `open_workspace`. The gate verifies the server-returned complete SHA-256
+  against the locally bound mission bytes, so matching self-authored workspace
+  ID markers cannot pass. HTTP 401 health, workspace-open success, or bundled
+  instructions alone cannot hide an intermittent `mcp_network_error` read path,
+  and Pro stays blocked until a fresh regular non-Pro canary succeeds.
+- The audit nonce now makes `open_workspace` the first workspace/process/
+  mutation call in the opaque OpenAI session scope, disables every workspace
+  mutation surface including `download_artifact`, and server-numbers the exact
+  three receipt steps. Each tool response returns an unpredictable server receipt
+  ID; the exact terminal Oracle conversation must echo all three IDs, binding the
+  opaque DevSpace scope to that public conversation. The final gate rejects
+  duplicate-key JSON, mixed workspaces/scopes, partial/tail chunks, missing
+  challenge responses, and a receipt digest that does not match the exact mission.
+- The host maintainer heartbeat is now represented by a checked-in exact contract
+  and a verifier that compares the active Codex automation TOML. Downstream
+  installs receive the audit contract but never auto-register the maintainer task.
+- Read-only diagnosis now gives the bounded signature
+  `registered-app-read-network-failure-after-workspace-open` when durable
+  terminal evidence proves that workspace open succeeded but a same-connector
+  file read failed with `mcp_network_error: Connection failed`.
+
+## 1.20.0 - Follow validated upstream stable runtimes
+
+- Oracle `0.18.0` and DevSpace `1.0.7` are now the defaults for new work after
+  published-integrity, exact-patch, syntax, compatibility, and cross-platform
+  validation. Oracle `0.17.1` and DevSpace `1.0.4` remain rollback LKG and exact
+  historical-recovery contracts rather than continuing as stale defaults.
+- A strict machine-readable runtime registry and six-hour read-only GitHub
+  drift watcher compare current versions with official npm `latest`. The
+  watcher maintains one issue and cannot promote, install, restart services,
+  open ChatGPT, or modify a project.
+- Current Oracle keeps task-scoped ownership, no-duplicate/prompt-not-observed
+  fail-closed behavior, dynamic CDP binding, saved-output recovery, and bounded
+  terminal-marker detection while inheriting upstream UI/model/cookie fixes.
+- Current DevSpace keeps the existing allowed-root, OAuth replay, write/delete,
+  large-read, and workspace-context safety canaries while inheriting upstream
+  restart-safe conversation/workspace reuse and actionable workspace errors.
+- The first-install and update wizard can now stop an exact running DevSpace
+  `1.0.4` LKG service while upgrading to `1.0.7`. The stop authority remains
+  limited to the resolved current/LKG `dist/cli.js serve` identity; arbitrary
+  package versions and unrelated listeners still fail closed.
+
+## 1.19.7 - settle direct DevSpace model-option misses safely
+
+- Ordinary `devspace` runs that fail before submission because Oracle 0.17.1
+  cannot find the requested model option can now enter the existing explicit
+  user-confirmed no-submission settlement path instead of retaining a permanent
+  task-scoped project lock.
+- Admission binds the exact 13-line Oracle launcher/error transcript, requested
+  model and browser profile, mission hashes, prompt-free no-tab/no-URL recovery,
+  and strict duplicate-free Oracle metadata proving `execute-browser`,
+  `promptSubmitted=false`, and the ChatGPT root URL. A conversation, output,
+  changed model/profile/research settings, metadata drift, symlink, duplicate
+  key, or foreign transport remains fail-closed.
+- The change integrates the narrow intent of PR #20 onto the current Oracle
+  ownership, follow-up, terminal-watchdog, and saved-output identity code rather
+  than replacing those newer lifecycle guarantees with its older base.
+- Live and durable terminal classifiers now accept up to 32 bounded provider
+  reference-backlink rows that begin with an exact file-like citation and may
+  include rendered section labels, quoted annotations, or semicolon-separated
+  paths before the final `↩`. Ordinary prose, duplicate markers, oversized
+  footers, and rows without a file-like citation remain fail-closed.
+
+## 1.19.6 - preserve follow-up authority after saved-output reconciliation
+
+- A saved-output reconciliation can now seal a separate v2 browser identity
+  receipt when the runner's reserved CDP port differs from Oracle's completed
+  runtime port. The original expected port remains bound to the ownership and
+  follow-up receipts; the observed port is recorded separately and never
+  rewrites historical authority.
+- The owner-only `seal-saved-output-browser-identity` command migrates an
+  already reconciled v1.19.5 run without opening Chrome, attaching CDP, sending
+  a prompt, or changing the conversation. New mismatched-port reconciliations
+  seal the same receipt automatically, and interrupted sealing remains safely
+  repeatable.
+- Follow-up admission revalidates the saved-output settlement, output, stdout,
+  transcript, completed Oracle metadata, conversation, target, run-local
+  profile, immutable ownership/follow-up receipts, and stopped run-owned PIDs.
+  Foreign tasks, symlinks, drift, active processes, matching-port widening, and
+  conflicting receipts continue to fail closed.
+- Portable test processes now use a PID outside normal Windows/Linux ranges so
+  Ubuntu CI cannot mistake an unrelated live runner process for a fixture's
+  Oracle child.
+
+## 1.19.5 - reconcile Oracle-saved terminal output
+
+- Added an owner-only `settle-saved-output` lifecycle command for the narrow
+  crash boundary where Oracle has already saved official terminal output and
+  strict completed session metadata, but the outer runner did not commit the
+  final state transition. It never sends, recovers, retries, or edits a foreign
+  task's run.
+- Reconciliation is hash-bound to the prior state, official output, stdout,
+  Oracle metadata, immutable ownership receipt, and exact follow-up binding.
+  It also requires one canonical saved-output log record, the unchanged parent
+  conversation and isolated profile, a valid terminal outcome/Pro schema,
+  empty stderr, and stopped observer/controller/Chrome processes.
+- The command writes an append-only receipt before marking the exact run
+  `complete / terminal / terminal_harvested`. Existing browser-receipt recovery
+  remains unchanged; path drift, symlinks, live PIDs, foreign ownership,
+  conversation mismatch, and ambiguous output continue to fail closed.
+
+## 1.19.4 - bound follow-up browser and terminal detection
+
+- Oracle follow-up runs now keep the child's newly reserved CDP port instead
+  of silently inheriting the parent conversation's old port. The exact child
+  state, ownership receipt, Chrome runtime, and durable browser identity remain
+  bound to one port; a mismatch is recorded as a non-authoritative diagnostic
+  and never accepted as recovery authority.
+- The v1 terminal watchdog now accepts exactly one `TASK_OUTCOME` marker when
+  ChatGPT renders only a bounded set of reference backlinks after it. Ordinary
+  trailing prose, malformed footers, more than 32 backlinks, duplicate or
+  conflicting markers, visible Stop controls, and active thinking still fail
+  closed. The durable result classifier uses the same bounded grammar, so a
+  watchdog-terminal answer cannot later regress to an unknown task outcome.
+- Each run persists whether the runner actually enabled the child-only v1
+  terminal-watchdog environment. An exact v1 run fails before Oracle launch if
+  that environment contract cannot be enabled; no user- or machine-global
+  environment variable is required.
+
+## 1.19.3 - task-targeted operational reports
+
+- Oracle incident packets now record the exact run owner, the task from which
+  the evidence was evaluated, and a run/slug-bound operational instruction.
+  Unresolved-owner checks use the run owner's task scope instead of an
+  unqualified project-wide view.
+- A foreign evaluator receives only `route-to-owner-task`; it never receives
+  executable recover, harvest, settle, stop, or retry authority. Reports must
+  be rendered separately for each target task instead of broadcasting an
+  owner's next action to sibling tasks sharing the same project root.
+- Exact runs already proven terminal and harvested emit `action=none`, even
+  when the local status remains `attention_required`. Incident v1 packets stay
+  validation-compatible, while new packets use the closed v2 routing fields.
+
+## 1.19.2 - action-bar-independent Oracle completion
+
+- Oracle 0.17.1 can now finish an exact v1 task-outcome run when ChatGPT omits
+  the transient thinking/streaming label and completion action bar. The bounded
+  fallback requires the same conversation and new assistant turn already
+  enforced by Oracle, no Stop control, no active strong-thinking signal, an
+  unchanged full response across two observations for at least five seconds,
+  and exactly one final `TASK_OUTCOME` marker.
+- The fallback is enabled only for the runner's explicit v1 answer contract.
+  Legacy and generic Oracle runs scrub any inherited opt-in variable and retain
+  upstream behavior. Live/harvest recovery inherits the persisted contract
+  without creating a new prompt or conversation.
+- A distinct warning is emitted after five minutes when no thinking status has
+  ever been detected, while the independent terminal watchdog continues. This
+  distinguishes a missing UI label from ordinary visible streaming without
+  treating elapsed time as terminal.
+
+## 1.19.1 - structured follow-up pre-composer settlement
+
+- Follow-up failures are no longer eligible for no-submission settlement only
+  because an error sentence appears in a growing text whitelist. An exact
+  task/run/mission/round binding can now use Oracle's structured
+  `resume-conversation` error, absent browser runtime and identity receipt,
+  matching stdout/transcript, empty stderr, absent output, and exited observer
+  as bounded pre-composer evidence. Explicit owner confirmation and inactive
+  exact processes remain mandatory before releasing the task-scoped lock;
+  stale `process-exited` state is rejected while the recorded PID is alive or
+  its termination cannot be proven.
+- Resumed-conversation hydration receives one bounded second observation window
+  on the same exact conversation. The retry verifies the conversation identity
+  before waiting again and never falls back to a fresh chat or submits a prompt
+  while prior turns remain unsettled.
+- Portable Windows doctor checks now accept the active `python.exe` runtime
+  when the POSIX-style `python3` command name is unavailable.
+
+## 1.19.0 - unify Ultra GPT and closed workflow auditing
+
+- `strict-ultra` is no longer presented as a separate mode. New workflows use
+  `workflow_profile: ultra-gpt` and add an explicit `closed_audit` contract
+  only when machine-verifiable provenance is required.
+- The optional audit reuses the existing Ultra GPT scheduler and adds the
+  bound dependency, authority, advisory Research Governor, identity ledger,
+  local-gate receipt, and final workflow audit without changing ordinary Ultra
+  GPT behavior.
+- Legacy `workflow_profile: strict-ultra` manifests, frozen
+  `codex.chatgpt.strict-ultra-*/v1` artifacts, receipts, and recovery identities
+  remain accepted without rewriting. Dry-run reports the old profile name as a
+  deprecated compatibility alias.
+- README, English README, repository/global policy, Ultra GPT skill, and docs
+  now expose one Ultra GPT mode with an optional closed-audit capability.
+
+## 1.18.6 - follow-up no-submission settlement continuity
+
+- An archived-parent follow-up that failed before the composer now goes
+  directly to explicit user-confirmed no-submission settlement. Recovery and
+  harvest are rejected with
+  `FOLLOWUP_ARCHIVED_PARENT_HARVEST_NOT_APPLICABLE`, because reopening the
+  already-known parent cannot prove a child submission.
+- A v1.18.5 run that already followed the earlier harvest guidance remains
+  settleable only when the exact owned slug produced one strict no-live-tab /
+  no-recoverable-URL log pair, no recovery state, no child conversation URL,
+  no output, no nonempty candidate, and no additional recovery artifacts.
+  Partial, linked, changed, symlinked, or ambiguous evidence still fails closed.
+- Historical official follow-up settlement receipts created under the v1
+  eligibility label are revalidated against today's stricter raw-artifact
+  predicate without rewriting the receipt. Compatibility is limited to the
+  original textarea-absent evidence class; all hashes, task/run/mission/parent,
+  round, recovery, and Oracle metadata bindings must remain exact.
+
+## 1.18.5 - durable read-only Pro follow-up parents
+
+- New `pro-devspace-readonly` manifests normalize the default `archive=auto`
+  to `archive=never`, so a successful parent remains available for the next
+  task-bound round. Explicit `archive=always` remains a deliberate single-turn
+  choice, and historical archived parents keep bounded compatibility restore.
+- Oracle 0.17.1 archived-parent restore now recognizes the direct page restore
+  control as well as menu/dialog controls, uses pointer-compatible clicks and
+  bounded polling, and seals a structured before-composer failure receipt with
+  exact parent URL and unchanged turn counts.
+- The exact `unarchive-menu-not-found` child from v1.18.4 can enter the official
+  user-confirmed no-submission path without reopening the old parent. The gate
+  remains owner/binding/hash bound and additionally requires the latest exact
+  v1.18.4 lifecycle receipt to predate the immutable ownership receipt. It
+  rejects URL drift or any click/submission ambiguity, requires all exact
+  run-owned processes to be stopped, and never releases ownership without
+  explicit user confirmation.
+- Known v1.18.4 Oracle patch hashes migrate through exact reverse patches, so
+  global upgrades remain deterministic even when the pristine npm backup is
+  unavailable.
+
+## 1.18.4 - archived Pro follow-up conversation restoration
+
+- A task-bound read-only Pro follow-up now detects the exact parent's durable
+  archive state. If the bound conversation was archived, Oracle 0.17.1 restores
+  only that exact `chatgpt.com/c/<id>` conversation before composer readiness
+  and re-archives it after the round completes.
+- Local and remote browser resume paths fail closed on URL drift, missing or
+  ambiguous restore controls, or an unverified final archive state. They never
+  create a replacement conversation.
+- Follow-up reservations now seal an append-only child binding before browser
+  launch, including task, parent, round, mission, exact conversation, and CDP
+  identity.
+- A pre-composer `Prompt textarea did not appear` child can use one prompt-free
+  exact harvest and explicit owner confirmation only after its parent/round
+  reservation, error metadata, empty runtime, artifacts, and exact parent URL
+  are revalidated. The consumed round key remains non-reusable.
+
+## 1.18.3 - task-bound Pro 프롬프트 미관찰 교착 수리
+
+- `pro-devspace-readonly` 실행이 프롬프트 commit 확인 전에 실패해 conversation
+  URL 기반 browser identity receipt를 만들지 못한 경우에도, 같은 Codex task가
+  exact slug에 대해 prompt-free `harvest` 한 번을 수행할 수 있게 했습니다.
+- 이 예외는 서명된 task/run/mission ownership receipt, GPT-5.6 Sol Pro 읽기 전용
+  프로필, Oracle 0.17.1의 `submit-prompt/prompt-commit-timeout`, 0개 turn과 모두
+  false인 commit probe, ChatGPT 루트 composer, 출력·대화 URL 부재, exact 동적
+  CDP port·격리 profile·target 결속이 모두 맞을 때만 열립니다. `live`, 새 prompt,
+  외부 task, 일반 Chrome, 모순된 URL·probe·port·profile·target은 계속 거부됩니다.
+- task-bound run의 프로젝트 mission 파일이 실행 뒤 합법적으로 수정돼도, immutable
+  run mission 사본과 ownership receipt가 같은 원래 mission hash를 봉인하면 수확과
+  사용자 확인 정산을 재검증할 수 있습니다. legacy-unbound run은 기존처럼 현재 source
+  bytes 일치를 요구합니다.
+- 수확은 소유권을 자동 해제하지 않습니다. exact no-tab/no-URL recovery 증거가 생성된
+  뒤에도 사용자의 명시적 `user-confirmed-no-submission` 정산이 있어야만 프로젝트 lock이
+  해제됩니다.
+
+## 1.18.2 - 종결 Pro 후속 대화 신원 검증 수정
+
+- Oracle이 실행 종료 과정에서 `meta.json`에 archive와 prompt 상태를 추가해도
+  task-bound `pro-devspace-readonly` 부모의 후속 라운드가 잘못
+  `FOLLOWUP_PARENT_IDENTITY_INVALID`로 거부되지 않게 했습니다.
+- 영수증의 `oracle_meta_sha256`은 캡처 시점 전체 메타데이터의 감사 증거로
+  보존하되, 권한 검증은 task/run/mission/slug와 Chrome PID·부모 PID·격리
+  profile·동적 CDP port·target·conversation URL의 불변 결속을 사용합니다.
+- 종료 후 비신원 메타데이터 변경은 허용하지만, 브라우저 target·profile·port·
+  대화 또는 영수증 자체가 달라지면 계속 실패 폐쇄됩니다. 기존 v1.18.1
+  append-only browser receipt도 같은 불변 튜플로 호환 검증합니다.
+- Windows observer가 동시에 상태를 읽는 짧은 구간에 `state.json` 원자 교체가
+  공유 위반(오류 5/32)을 만나는 경우만 제한적으로 재시도합니다. 지속 오류와
+  그 밖의 파일 오류는 계속 즉시 실패 폐쇄됩니다.
+
+## 1.18.1 - Pro 읽기 전용 정책 복원
+
+- 모든 신규 `GPT-5.6 Sol / Pro` DevSpace 실행을 읽기 전용 설계·자문·검토
+  단계로 제한합니다. Pro는 프로젝트 파일을 생성·수정·삭제하거나 명령을
+  실행하지 않습니다.
+- 쓰기 또는 명령 실행이 필요한 작업은 별도의 일반 `GPT-5.6` 최고 비-Pro
+  사고 단계(`extra-high`)가 exact-root DevSpace에서 수행합니다.
+- 이미 저장된 과거 `pro-devspace` 읽기·쓰기 실행은 exact recovery 시 원래
+  권한 의미를 보존하며, 새 실행만 `pro-devspace-readonly`로 생성됩니다.
+- 명시적 `pro-attachment`는 불변·외부 증거를 위한 별도 읽기 전용 경로로
+  유지하며 DevSpace 실패의 자동 fallback으로 사용하지 않습니다.
+- Oracle 소유권을 프로젝트 폴더가 아니라 Codex task와 exact run에 결속합니다.
+  같은 project root의 서로 다른 task는 별도 mutex, slug, 브라우저 프로필,
+  동적 CDP port와 대화를 소유해 동시에 실행할 수 있고, 같은 task의 미해결
+  실행만 중복 제출을 막습니다. 다른 task의 실행은 `FOREIGN_TASK_SESSION`으로
+  표시하되 recover/harvest/stop하지 않습니다.
+- 제출 직후 conversation URL과 Chrome/controller PID, profile, CDP port,
+  target identity를 append-only browser receipt에 기록해 프로세스 종료 뒤에도
+  어느 task/run의 대화인지 재검증할 수 있게 했습니다.
+- task-bound terminal `pro-devspace-readonly` 대화에는 내부 전용 `followup`
+  명령으로만 후속 라운드를 보낼 수 있습니다. 각 라운드는 같은 ChatGPT
+  conversation을 증명하면서 새 Oracle run/slug와 append-only 예약·결과 영수증에
+  mission/state/output/transcript hash를 남깁니다. raw follow-up 옵션, foreign/legacy
+  owner, 대화 변경, 중복 round는 계속 실패 폐쇄됩니다.
+- 최초 설치 마법사는 기존 DevSpace root를 병합 보존하고 손상 config를 거부하며,
+  Local Multi-GPT 선택을 실제 doctor와 결속하고, Chrome Local Network 변경 전
+  명시적 동의를 요구합니다. ngrok 임시 주소를 차단하고 provider별 재부팅 안내를
+  분리했으며, 설치 질문과 단계 안내를 환경에 따라 한국어/영어로 표시합니다.
+- 최종 설치 gate는 임의 설명이 아니라 exact 일반 비-Pro Oracle run, root/app,
+  GPT-5.6 extra-high, conversation URL, terminal outcome, output/listing SHA를
+  재검증합니다. 한국어와 영어 전체 설치 가이드를 함께 제공합니다.
+
+## 1.18.0 - WebJjonku Oracle 0.18 후속 실행 timeout 호환성
+
+- 일반 comprehensive 자동화는 계속 검증된 Oracle 0.17.1만 허용하고,
+  WebJjonku Linux 배포가 명시적으로 `webjjonku-linux` profile을 선택한 경우에만
+  Oracle 0.18.0의 후속 실행 timeout 전달 패치를 적용합니다.
+- 0.18.0 패치는 pristine·patched SHA-256과 npm integrity를 모두 확인하고,
+  명시한 `--browser-timeout`만 child follow-up에 전달합니다. profile 누락,
+  알 수 없는 버전, 해시 불일치는 브라우저 실행 전에 실패 폐쇄됩니다.
+- 범위 제한 프로필은 버전·설치 루트·archive를 모두 명시해야 하며,
+  Windows junction/reparse point와 archive 경로 탈출을 거부합니다. 공개
+  portability CI는 Windows·macOS·Ubuntu에서 실제 0.18.0 archive를 검증합니다.
+- runtime archive 검증도 CI extractor와 같이 대소문자 충돌 경로를 거부하고,
+  새로 추가한 CI action은 변경 가능한 tag 대신 commit SHA로 고정했습니다.
+
+## 1.17.1 - 미인증 브라우저 pre-submit 정산
+
+- Oracle 전용 브라우저 프로필의 ChatGPT 로그인이 만료되면 컴포저 이전 단계에서
+  종료되어 대화가 생성되지 않습니다. 그런데 이 조합이 `settle-no-submission`의
+  인정 유형에 없어 제출 부재가 실증됐는데도 정산이 거부되고 프로젝트 락이
+  영구히 유지됐습니다. `oracle-browser-session-absent-pre-submit/v1` 유형을
+  추가했습니다.
+- 판별은 좁게 유지합니다. stdout이 세션 미검출과 쿠키 미적용을 함께 기록하고,
+  output이 없고, stdout과 모든 recovery 로그에 `chatgpt.com/c/` 대화 URL이 없고,
+  mission 해시·경로·프로젝트 루트가 일치할 때만 인정합니다. 대화 URL이 있거나
+  harvest가 실제 탭을 찾은 run은 그대로 거부됩니다.
+- 정산이 `transport_status`와 `session_authority`를 다시 쓰기 때문에 기록 시점
+  값만 인정하면 기록된 정산을 재검증할 수 없어 락이 풀리지 않았습니다. 정산 후
+  상태도 함께 인정해 기록·재검증·소유자 판정 세 경로가 같은 결론을 냅니다.
+
+## 1.17.0 - 재개 가능한 최초 설치 마법사와 커넥터 신원 가드
+
+- `onboard.py`에 `start`, `next`, `resume`, `confirm`, `record-final-gate`를
+  추가해 최초 설치를 중단·재개 가능한 상태 기계로 만들었습니다. 상태는
+  `~/.codex/state/codex-web-gpt-automation/onboarding/state.json`에 저장되며
+  암호·token·cookie·OAuth secret을 담지 않도록 저장 시점에 검사합니다.
+- `next`는 완료 단계를 다시 실행하거나 다음 단계로 건너뛰지 않고 현재 단계
+  하나만 반환합니다. 사용자 소유 단계의 `confirm`은 실제 증거로 재검증되며,
+  증거가 없으면 `STAGE_CONFIRMATION_NOT_PROVEN_BY_EVIDENCE`로 거부합니다.
+- 완료 표시를 프로그램 설치 완료, ChatGPT 연결 대기, 앱 등록 완료·검증 대기,
+  전체 설치 및 실제 프로젝트 연결 검증 완료로 분리했습니다. `08_final_gate`는
+  일반 비-Pro Oracle exact-root 읽기 증거를 함께 요구하고, exact allowed root가
+  아닌 경로는 거부합니다.
+- 앱 등록 단계에서 계정별 `플러그인`과 `앱` UI 경로를 모두 안내하고, 생성
+  버튼이 없을 때의 확인 순서를 제공합니다. 요금제는 마지막 가설로만 다룹니다.
+- 저장소 주소만 받은 에이전트를 위해 `docs/INSTALL_AGENT.md` 설치 계약을 추가하고
+  `AGENTS.md`, README, 수명주기 설치 manifest에 연결했습니다.
+- `start`, `next`, `resume`이 JSON 대신 읽기 쉬운 단계 요약을 출력합니다. 셸
+  로케일에 따라 한국어와 영어를 자동 선택하고 `--lang`으로 고정할 수 있으며,
+  기계 판독용 원본은 `--json`으로 얻습니다.
+- 마법사 회귀 테스트가 늘어나 fast gate wall-clock 예산을 60초에서 100초로
+  조정했습니다. 테스트 대상과 실패 판정 기준은 그대로입니다.
+- 단계는 `06b_local_network_access`를 포함한 9개입니다.
+- 진행 중인 유효한 상태에서 `start`를 다시 실행하면
+  `ONBOARDING_ALREADY_STARTED`로 멈추고 `resume`을 안내합니다. 기존 진행 상태를 버릴
+  때만 `start --reset`으로 새 상태를 기록합니다.
+- `--lang`, `--json`은 모든 하위 명령 앞에서 받습니다. `next`와 `resume`은 명령 뒤에서도
+  두 플래그를 받고, `confirm`은 명령 뒤에서 `--lang`만 받습니다.
+- `confirm`은 앞선 단계가 미검증이면 `accepted: false`와
+  `STAGE_OUT_OF_ORDER_EARLIER_STAGE_PENDING`, 막힌 단계 ID를 반환합니다.
+- 여러 ChatGPT 플러그인이 `open_workspace`, `read` 같은 동일한 도구 이름을
+  노출하면 `@앱이름` 멘션만으로는 커넥터가 고정되지 않았습니다. Oracle composer
+  프롬프트에 `connector_identity_guard`를 추가해 등록된 앱의 도구만 사용하고,
+  미션을 읽기 전에 어느 앱의 도구를 호출해 어떤 workspace id를 받았는지 한 줄로
+  밝히도록 요구합니다.
+- 첫 workspace 호출이 실패해도 자체 도구 배선을 조사하거나 웹을 검색하거나 다른
+  커넥터로 대체하지 않고, 같은 루트를 한 번만 재시도한 뒤 구체적 blocker를 보고하고
+  멈추도록 명시합니다.
+- incident classifier에 `foreign-workspace-connector-substituted` 시그니처를
+  추가했습니다. 플러그인 검색 흔적과 빈 결과 또는 workspace 미발급 흔적이 함께
+  있을 때만 분류하며 기존 자기관찰·OAuth 503 시그니처가 우선합니다.
+- `record-final-gate`는 `--root`, `--evidence`, 반복 가능한 `--listing`을 요구합니다.
+  증거 요약이 너무 짧거나 목록이 없으면 `FINAL_GATE_EVIDENCE_INSUFFICIENT`로, 일반
+  비-Pro Oracle 이외의 transport면
+  `FINAL_GATE_TRANSPORT_MUST_BE_REGULAR_NON_PRO_ORACLE`로 거부합니다.
+- 온보딩 상태 구조가 맞지 않으면 `ONBOARDING_STATE_CORRUPT`로 실패 폐쇄합니다.
+
+## 1.16.1 - Strict Ultra 설치 문서 동기화
+
+- `strict-ultra` 전역 skill이 참조하는 `docs/STRICT_ULTRA.md`를 수명주기
+  설치 manifest에 포함하고 설치본 경로를 명확히 했습니다.
+
+## 1.16.0 - Strict Ultra 감사와 안전한 DevSpace 파일 제거
+
+- 기존 Oracle Multi v2 스케줄러를 그대로 사용하는 선택형
+  `strict-ultra` comprehensive 프로필을 추가했습니다. dependency,
+  authority, advisory Research Governor, identity ledger, local gate, 최종
+  workflow audit가 닫힌 JSON keyset과 SHA-256으로 결속됩니다.
+- strict Multi 결과가 실제 wave schedule, all-lanes barrier, audited apply,
+  merger를 최상위 감사 자료로 노출합니다. 5개 lane/동시성 3은 안정적인
+  3+2 wave로 기록됩니다.
+- DevSpace 1.0.4 호환 패치에 일반 파일 전용 `delete_file`과 복구 가능한
+  `trash_file`을 추가했습니다. 절대경로·경로이탈·reparse point·Git 및
+  trash 내부 대상은 실패 폐쇄하며 trash 이동은 바이트 수와 SHA-256을
+  재검증합니다.
+- 신규 계약은 명시적으로 선택한 경우에만 적용되며 기존 standard,
+  ultra-economy, ultra-gpt, legacy 경로는 그대로 유지됩니다.
+
+## 1.15.12 - Luna Max CLI 및 Oracle 버전 해석 복구
+
+- Local Multi-GPT 등록이 Codex Desktop 업데이트로 사라진 구버전 CLI를
+  가리키면, exact server ownership을 확인한 뒤 최신 CLI로 원자 갱신합니다.
+  setup과 runtime 모두 `gpt-5.6-luna` / `max` no-run 구성 canary를 통과해야
+  하며, 지원하지 않는 CLI에서는 child나 job을 만들기 전에 실패 폐쇄합니다.
+- pinned Oracle 0.17.1의 `npx --version`이 일시 실패해도 정확한 로컬 npx
+  캐시 package version을 확인해 브라우저 생성 전 버전 해석을 복구합니다.
+- exact `ORACLE_VERSION_FAILED` pre-submit 상태는 빈 stdout/output, 대화 URL
+  부재, pinned command 및 lifecycle을 모두 검증한 경우에만 공식
+  no-submission 정산 대상이 됩니다. 유사 오류와 모순 증거는 거부합니다.
+
+## 1.15.11 - DevSpace restart pre-submit 공식 정산
+
+- direct Oracle의 exact `DEVSPACE_SERVICE_RESTART_REQUIRED` 오류를 출력·대화
+  URL·Oracle 실행이 모두 없는 bounded pre-submit host failure로 분류합니다.
+- 기존 `settle-no-submission` 명령이 이 exact pre-submit 증거를 mission copy,
+  stderr/transcript 및 locator 해시에 결속한 append-only receipt로 정산합니다.
+  유사 오류, 출력 존재, URL 존재 또는 다른 lifecycle 상태는 계속 거부합니다.
+
+## 1.15.10 - DevSpace 테스트 restart marker 격리
+
+- DevSpace compatibility 테스트의 restart-marker state를 각 테스트의 격리된
+  임시 디렉터리로 강제했습니다. synthetic package patch가
+  `%USERPROFILE%\.codex\state\devspace-compat\1.0.4\restart-required.json`을
+  남겨 이후 실제 Oracle run을 제출 전에 잘못 차단할 수 없습니다.
+
+## 1.15.9 - Oracle 재귀 자기관찰 차단
+
+- regular direct Oracle와 comprehensive stage prompt에 exact run ID/slug를
+  결속한 no-self-observation/no-nested-Oracle guard를 추가했습니다. 웹 단계는
+  자신의 Oracle state/output/transcript/recovery/observer를 읽거나 기다리지
+  않고 요청된 미션을 직접 수행해야 합니다.
+- terminal `BLOCKED`가 exact 자기 run ID와 slug, `running`, `pending`, output
+  부재, `continue-observing-same-exact-session`을 모두 포함할 때만
+  `post-submit-recursive-self-observation`으로 분류합니다. 일반 BLOCKED와 단순
+  식별자 언급은 기존 분류를 유지합니다.
+- comprehensive stage의 해당 결함은 자동 재시도 없이 terminal BLOCKED로
+  종결하여 scope를 해제합니다. fresh run은 exact state/output/transcript 해시와
+  명시적 사용자 권한을 append-only receipt로 결속한 뒤에만 허용됩니다.
+
+## 1.15.8 - Ultra review FAIL 종결 수리
+
+- hash-bound review receipt가 `FAIL`, `ready_for_next=false`, `next_stage=null`,
+  비어 있지 않은 blocker와 유효한 critical finding 결속을 제공하면 workflow를
+  `BLOCKED / REVIEW_FAILED`로 즉시 종결하고 comprehensive scope를 해제합니다.
+- `PASS`와 `PASS_WITH_NOTES`만 계속 `web-multi`로 진행해야 합니다. 불완전하거나
+  모순된 FAIL receipt는 계속 실패 폐쇄되며, 기존 Oracle run·output·receipt는
+  수정하지 않습니다.
+- terminal review 상태에는 receipt SHA-256과 critical finding 집합의 해시·개수만
+  보존하여 다음 workflow가 이전 의미 내용을 상속하지 않고도 정산을 감사할 수
+  있습니다.
+
+## 1.15.7 - DevSpace read bridge 사전검증 수리
+
+- DevSpace의 50KB 초과 단일행 `read_chunk` 사전검증이 전체 MCP 서버
+  모듈 그래프 import에서 멈추던 문제를 수정했습니다. 설치된
+  `server.js`에서 해시 게이트된 정확한 함수 본문만 분리해 최소 Node
+  프로세스에서 검증하므로 Oracle 제출 전 버전 판정이 timeout으로
+  오인 실패하지 않습니다.
+- 정확히 결속된 `pre_submit` bridge-timeout run은 명시적
+  `user-confirmed-pre-submit-workflow-cancel` 권한으로 workflow를
+  `CANCELED`로 정산하고 scope를 해제할 수 있습니다. stdout/output/
+  conversation 흔적이나 다른 오류는 계속 fail-closed이며 Oracle run state는
+  변경하지 않습니다.
+- 동일한 정산 계약은 패치 적용 후 서비스 재시작이 필요하다는
+  정확한 `DEVSPACE_SERVICE_RESTART_REQUIRED` pre-submit 오류도 구분하여
+  결속합니다. 서비스 재시작은 별도 managed setup 절차로 수행하며
+  정산 명령은 서비스나 prompt를 조작하지 않습니다.
+
+## 1.15.6 - comprehensive 사용자 중지 정산
+
+- 사용자가 provider UI에서 응답을 명시적으로 중지하고 workflow 종료를
+  요청한 경우, terminal-harvested Oracle run과 exact workflow/scope/run state의
+  사전 SHA-256을 요구하는 공식 `--cancel-user-stopped` 경로를 추가했습니다.
+- 정산은 Oracle run state를 수정하거나 새 prompt/recovery를 만들지 않습니다.
+  user authority receipt, `CANCELED` workflow, released scope, completion receipt를
+  원자 기록하며 중단 후 재실행은 동일 결속에서만 idempotent하게 마무리합니다.
+- scope는 `canceled`를 terminal 상태로 인정해 새 workflow가 같은 exact scope를
+  청구할 수 있지만, 기존 canceled workflow 자체는 다시 활성화하지 않습니다.
+
+## 1.15.5 - 읽기 전용 웹 표면용 Ultra host bridge
+
+- regular comprehensive planner/reviewer가 DevSpace의 변경 도구를 받지 못해도
+  hash-bound stage envelope를 반환하면 host가 workflow 소유 output, next mission,
+  receipt를 동일 계약으로 materialize합니다.
+- Ultra GPT strict writer는 직접 쓰기 대신 parent/lane/source-mission에 결속된
+  닫힌 writeset을 반환할 수 있습니다. host는 격리 worktree의 선언된
+  `owned_paths`에만 원자 적용하고 file/byte/symlink/reparse/Git delta 경계를
+  검증하며 직접 delta와 writeset 혼용을 거부합니다.
+- DevSpace `read_chunk`를 추가해 50KB를 넘는 단일 UTF-8 행도 24KiB 이하의
+  연속 byte chunk, 전체 파일 SHA-256, EOF 결속으로 shell 없이 완전 복원합니다.
+- write/edit/bash의 MCP 안전 annotation은 완화하거나 읽기 전용으로 위장하지
+  않습니다.
+
 ## 1.15.4 - Oracle 0.17.1 exact-session live recovery 보강
 
 - Oracle 0.17.1의 복구된 Pro 대화 준비 대기를 고정 60초가 아니라 host가 전달한

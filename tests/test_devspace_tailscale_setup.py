@@ -61,7 +61,7 @@ def test_setup_plan_has_no_secrets_and_is_explicit_only(tmp_path: Path, monkeypa
     }
     assert plan["devspace_init"][1:3] == [
         "-lc",
-        "exec npx --yes @waishnav/devspace@1.0.4 init",
+        "exec npx --yes @waishnav/devspace@1.0.7 init",
     ]
 
 
@@ -528,7 +528,7 @@ def test_setup_applies_hash_validated_devspace_compat_before_service_start(
 
     assert calls[1][1:3] == [
         "-lc",
-        "exec npx --yes @waishnav/devspace@1.0.4 init",
+        "exec npx --yes @waishnav/devspace@1.0.7 init",
     ]
     assert "creationflags" not in call_kwargs[1]
     assert "startupinfo" not in call_kwargs[1]
@@ -538,7 +538,7 @@ def test_setup_applies_hash_validated_devspace_compat_before_service_start(
     assert calls[5] == module.devspace_compat_argv(confirm_restarted=True)
     assert launched and launched[0][0][1:3] == [
         "-lc",
-        "exec npx --yes @waishnav/devspace@1.0.4 serve",
+        "exec npx --yes @waishnav/devspace@1.0.7 serve",
     ]
     assert launched[0][1]["DEVSPACE_TOOL_MODE"] == "full"
     assert launched[0][1]["DEVSPACE_OAUTH_SCOPES"] == "devspace,offline_access"
@@ -687,8 +687,8 @@ def test_owner_password_review_requires_tty_and_rejects_numeric_only(tmp_path: P
 def test_posix_setup_invokes_pinned_devspace_directly(tmp_path: Path) -> None:
     module, current = config(tmp_path)
     plan = module.setup_plan(current, platform_name="posix")
-    assert plan["devspace_init"] == ["npx", "--yes", "@waishnav/devspace@1.0.4", "init"]
-    assert plan["devspace_serve"] == ["npx", "--yes", "@waishnav/devspace@1.0.4", "serve"]
+    assert plan["devspace_init"] == ["npx", "--yes", "@waishnav/devspace@1.0.7", "init"]
+    assert plan["devspace_serve"] == ["npx", "--yes", "@waishnav/devspace@1.0.7", "serve"]
 
 
 def test_tailscale_hostname_is_discovered_from_status_json() -> None:

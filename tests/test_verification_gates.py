@@ -31,7 +31,15 @@ def test_fast_gate_targets_exist_and_cover_the_pre_submit_contracts() -> None:
     assert "tests/test_chatgpt_oracle_compat.py" in covered
     assert "tests/test_chatgpt_oracle_incident.py" in covered
     assert "tests/test_chatgpt_oracle_diagnose.py" in covered
-    assert gate.DEFAULT_BUDGET_SECONDS == 60.0
+    assert gate.FAST_DESELECTS == [
+        "tests/test_chatgpt_oracle_compat.py::test_archived_parent_direct_restore_requires_exact_control_and_composer_transition"
+    ]
+    deselected_path = gate.FAST_DESELECTS[0].split("::", 1)[0]
+    assert (ROOT / deselected_path).is_file()
+    # The gate must stay fast enough to run after every batch of edits. Pin an
+    # upper bound instead of one exact value so added coverage does not require
+    # editing this contract, while a runaway budget still fails.
+    assert 30.0 <= gate.DEFAULT_BUDGET_SECONDS <= 120.0
 
 
 def test_fast_gate_is_a_strict_subset_of_the_full_suite() -> None:

@@ -1,4 +1,4 @@
 interface:
   display_name: "ChatGPT Question Designer"
-  short_description: "Design Oracle+DevSpace missions, including explicit read/write Pro routes."
-  default_prompt: "Design a purpose-specific GPT mission using Oracle+DevSpace; honor a durable host Pro opt-in and otherwise default to the highest-tier non-Pro route. Use `pro-attachment` only for DevSpace-unreadable immutable evidence. Never route new work through CodexPro."
+  short_description: "Design regular write missions and explicit read-only Pro routes."
+  default_prompt: "Design a purpose-specific GPT mission using Oracle+DevSpace; default to the highest-tier non-Pro route and select read-only qualified Pro only after explicit user opt-in. Route writes and commands to regular GPT-5.6 extra-high. Use `pro-attachment` only for DevSpace-unreadable immutable evidence. Never route new work through CodexPro."

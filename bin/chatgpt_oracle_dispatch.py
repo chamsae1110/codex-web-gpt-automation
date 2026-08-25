@@ -65,6 +65,9 @@ def compile_manifest(
         "research": "deep" if contract["research"] else "off",
         "archive": "auto",
     }
+    source_thread_id = RUNNER.STATE.current_source_thread_id()
+    if source_thread_id is not None:
+        manifest["source_thread_id"] = source_thread_id
     if contract["route"] == "oracle-pro-attachment-only":
         manifest["attachments"] = contract["attachments"]
     else:

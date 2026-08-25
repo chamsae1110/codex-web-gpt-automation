@@ -51,6 +51,21 @@ def ultra_economy_manifest(tmp_path: Path) -> Path:
     return path
 
 
+@pytest.mark.parametrize("profile", ["standard", "ultra-economy"])
+def test_regular_comprehensive_write_stages_reject_non_gpt56_model(
+    tmp_path: Path,
+    profile: str,
+) -> None:
+    module = load()
+    path = ultra_economy_manifest(tmp_path) if profile == "ultra-economy" else manifest(tmp_path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["model"] = "gpt-5.6-sol"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(module.WorkflowError, match="COMPREHENSIVE_REGULAR_MODEL_REQUIRED"):
+        module.load_manifest(path)
+
+
 def test_ultra_economy_manifest_rejects_handshake_self_declaration(tmp_path: Path) -> None:
     module = load()
     path = ultra_economy_manifest(tmp_path)
@@ -84,7 +99,7 @@ def test_ultra_economy_dry_run_starts_with_explicit_pro_design(tmp_path: Path, m
     assert result["workflow_profile"] == "ultra-economy"
     assert seen["model"] == "gpt-5.6-sol"
     assert seen["thinking_time"] == "heavy"
-    assert seen["transport"] == "pro-devspace"
+    assert seen["transport"] == "pro-devspace-readonly"
 
 
 def test_standard_workflow_cannot_skip_plan_with_initial_pro(tmp_path: Path) -> None:
@@ -95,6 +110,103 @@ def test_standard_workflow_cannot_skip_plan_with_initial_pro(tmp_path: Path) -> 
     path.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(module.WorkflowError, match="standard workflow initial_stage must be plan"):
         module.load_manifest(path)
+
+
+def test_same_project_different_codex_tasks_get_distinct_workflow_scopes(tmp_path: Path, monkeypatch) -> None:
+    module = load()
+    path = manifest(tmp_path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    task_a = "11111111-1111-4111-8111-111111111111"
+    task_b = "22222222-2222-4222-8222-222222222222"
+    payload["source_thread_id"] = task_a
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("CODEX_THREAD_ID", task_a)
+    config_a = module.load_manifest(path)
+    payload["source_thread_id"] = task_b
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("CODEX_THREAD_ID", task_b)
+    config_b = module.load_manifest(path)
+
+    assert module._scope_path(config_a) != module._scope_path(config_b)
+    assert config_a["source_thread_id"] == task_a
+    assert config_b["source_thread_id"] == task_b
+
+
+def test_comprehensive_rejects_foreign_task_before_creating_workflow_state(tmp_path: Path, monkeypatch) -> None:
+    module = load()
+    path = manifest(tmp_path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["source_thread_id"] = "11111111-1111-4111-8111-111111111111"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("CODEX_THREAD_ID", "22222222-2222-4222-8222-222222222222")
+
+    with pytest.raises(module.WorkflowError, match="SOURCE_THREAD_ID_MISMATCH"):
+        module.run_workflow(path, dry_run=True, oracle_execute=lambda *_args, **_kwargs: pytest.fail("must not execute"))
+
+    assert not (tmp_path / "workflow").exists()
+
+
+def test_regular_stage_mission_binds_no_self_observation_guard(tmp_path: Path) -> None:
+    module = load()
+    captured: dict[str, str] = {}
+
+    def preview(oracle_manifest: Path, *, dry_run: bool):
+        payload = json.loads(oracle_manifest.read_text(encoding="utf-8"))
+        captured["mission"] = Path(payload["mission_path"]).read_text(encoding="utf-8")
+        captured["run_id"] = payload["run_id"]
+        return {"ok": True}
+
+    result = module.run_workflow(manifest(tmp_path), dry_run=True, oracle_execute=preview)
+    expected_slug = module.RUNNER.STATE.oracle_slug(tmp_path.resolve(), captured["run_id"])
+
+    assert result["ok"] is True
+    assert f"exact_oracle_run_id={captured['run_id']}" in captured["mission"]
+    assert f"exact_oracle_slug={expected_slug}" in captured["mission"]
+    assert "Do not launch a nested Oracle run" in captured["mission"]
+    assert "state.json, output.md, transcript.md, recovery" in captured["mission"]
+
+
+def test_recursive_self_observation_terminalizes_stage_and_releases_scope(tmp_path: Path) -> None:
+    module = load()
+    config = module.load_manifest(manifest(tmp_path))
+    config["_review_policy"] = module._review_policy_from_history(config)
+    run_id = "recursive1234"
+    slug = module.RUNNER.STATE.oracle_slug(config["project_root"], run_id)
+    run_dir = tmp_path / "oracle-run"
+    run_dir.mkdir()
+    output = run_dir / "output.md"
+    output.write_text(
+        f"run ID: {run_id}\nexact slug: {slug}\nstatus: running\n"
+        "task_outcome: pending\noutput.md absent\n"
+        "continue-observing-same-exact-session\nTASK_OUTCOME: BLOCKED\n",
+        encoding="utf-8",
+    )
+    module.RUNNER.STATE.write_json_atomic(run_dir / "state.json", {
+        "schema": "codex.chatgpt.oracle-run-state/v1",
+        "status": "attention_required",
+        "run_id": run_id,
+        "project_root": str(config["project_root"]),
+        "session_authority": "terminal",
+        "terminal_harvested": True,
+        "task_outcome": "blocked",
+        "oracle": {"slug": slug},
+        "artifacts": {"output": str(output)},
+    })
+    terminal = module._terminal_recursive_self_observation_state(
+        config, config["workflow_id"], run_dir, [{"stage": "plan", "ok": False}]
+    )
+    assert terminal is not None
+    assert terminal["terminal_status"] == "ORACLE_RECURSIVE_SELF_OBSERVATION"
+    assert terminal["scope_released"] is True
+    assert terminal["safe_for_fresh_run"] is False
+    assert terminal["auto_retry"] is False
+
+    state_path = module._state_path(config, config["workflow_id"])
+    module._write_workflow_state(state_path, config, terminal)
+    scope = json.loads(module._scope_path(config).read_text(encoding="utf-8"))
+    assert scope["status"] == "blocked"
+    assert scope["terminal_status"] == "ORACLE_RECURSIVE_SELF_OBSERVATION"
+    assert scope["scope_released"] is True
 
 
 def test_manifest_accepts_configured_workspace_app_before_workflow_creation(tmp_path: Path) -> None:
@@ -158,31 +270,122 @@ def test_web_authored_relay_reaches_complete_without_host_semantic_rewrite(tmp_p
     assert result["status"] == "complete"
 
 
-def test_host_configured_pro_applies_to_regular_comprehensive_stages(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("CODEX_CHATGPT_REGULAR_WEB_MODE", "pro")
+def test_read_only_web_surface_uses_bound_host_stage_materialization(tmp_path: Path) -> None:
     module = load()
-    config = module.load_manifest(manifest(tmp_path))
-    config["_parallel_parent_id"] = "b" * 64
-    stage_dir = tmp_path / "stage"
-    stage_dir.mkdir()
-    mission = stage_dir / "mission.md"
-    mission.write_text("plan", encoding="utf-8")
+    order = ["plan", "review", "implementation", "final-web-gate"]
+    seen: list[str] = []
 
-    value = json.loads(
-        module._oracle_manifest(
-            config, mission, stage_dir, "run-pro-default", stage="plan"
-        ).read_text(encoding="utf-8")
+    def fake_execute(path: Path, *, dry_run: bool):
+        value = json.loads(path.read_text(encoding="utf-8"))
+        mission = Path(value["mission_path"])
+        text = mission.read_text(encoding="utf-8")
+        stage = next(item for item in order if f"stage={item}\n" in text)
+        attempt = next(
+            line.split("=", 1)[1] for line in text.splitlines() if line.startswith("attempt_id=")
+        )
+        input_sha = next(
+            line.split("=", 1)[1]
+            for line in text.splitlines()
+            if line.startswith("input_mission_sha256=")
+        )
+        seen.append(stage)
+        next_stage = order[order.index(stage) + 1] if stage != order[-1] else "complete"
+        envelope = {
+            "schema": module.REGULAR_OUTPUT_SCHEMA,
+            "workflow_id": "a" * 32,
+            "stage": stage,
+            "attempt_id": attempt,
+            "input_mission_sha256": input_sha,
+            "status": (
+                "PLAN_READY"
+                if stage == "plan"
+                else "COMPLETE"
+                if stage == "final-web-gate"
+                else "PASS"
+            ),
+            "output_text": f"{stage} output from read-only web surface",
+            "next_stage": next_stage,
+            "next_mission_text": (
+                "" if next_stage == "complete" else f"mission after {stage}"
+            ),
+            "ready_for_next": True,
+            "blocker": "",
+            "critical_finding_ids": [],
+            "critical_findings_sha256": module._finding_hash([]) if stage == "review" else "",
+        }
+        run_dir = mission.parent / "run"
+        run_dir.mkdir()
+        (run_dir / "output.md").write_text(
+            f"{module.REGULAR_OUTPUT_BEGIN}\n"
+            + json.dumps(envelope, ensure_ascii=False)
+            + f"\n{module.REGULAR_OUTPUT_END}\nTASK_OUTCOME: EXECUTED\n",
+            encoding="utf-8",
+        )
+        return {
+            "ok": True,
+            "run_dir": str(run_dir),
+            "output_path": str(run_dir / "output.md"),
+        }
+
+    result = module.run_workflow(
+        manifest(tmp_path),
+        oracle_execute=fake_execute,
+        local_gate_runner=lambda *args, **kwargs: subprocess.CompletedProcess(args, 0, "ok", ""),
     )
 
-    assert value["transport"] == "pro-devspace"
-    assert value["model"] == "gpt-5.6-sol"
-    assert value["thinking_time"] == "heavy"
-    assert value["task_outcome_contract"] == "v1"
+    assert result["ok"] is True
+    assert result["status"] == "complete"
+    assert seen == order
+    for stage_dir in (tmp_path / "workflow" / "stages").iterdir():
+        if stage_dir.is_dir():
+            assert (stage_dir / "stage-result.json").is_file()
+            assert (stage_dir / "output.md").is_file()
 
 
-def test_explicit_pro_stage_runs_writable_devspace_and_materializes_bound_receipt(tmp_path: Path) -> None:
+def test_regular_stage_materialization_rejects_duplicate_or_wrong_identity(tmp_path: Path) -> None:
+    module = load()
+    config = module.load_manifest(manifest(tmp_path))
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    output = run_dir / "output.md"
+    base = {
+        "schema": module.REGULAR_OUTPUT_SCHEMA,
+        "workflow_id": "a" * 32,
+        "stage": "plan",
+        "attempt_id": "b" * 32,
+        "input_mission_sha256": "c" * 64,
+        "status": "PLAN_READY",
+        "output_text": "plan",
+        "next_stage": "review",
+        "next_mission_text": "review",
+        "ready_for_next": True,
+        "blocker": "",
+        "critical_finding_ids": [],
+        "critical_findings_sha256": "",
+    }
+    wrong = {**base, "attempt_id": "d" * 32}
+    output.write_text(
+        f"{module.REGULAR_OUTPUT_BEGIN}\n{json.dumps(wrong)}\n{module.REGULAR_OUTPUT_END}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(module.WorkflowError, match="identity mismatch"):
+        module._materialize_regular_receipt(
+            config, tmp_path / "stage-result.json", "a" * 32, "plan", "b" * 32,
+            "c" * 64,
+            {"run_dir": str(run_dir), "output_path": str(output)},
+            run_dir=run_dir,
+        )
+
+    duplicate = json.dumps(base)[:-1] + ',"status":"PASS"}'
+    output.write_text(
+        f"{module.REGULAR_OUTPUT_BEGIN}\n{duplicate}\n{module.REGULAR_OUTPUT_END}\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(module.WorkflowError, match="duplicate key"):
+        module._load_regular_envelope(output)
+
+
+def test_explicit_pro_stage_runs_readonly_devspace_and_materializes_bound_receipt(tmp_path: Path) -> None:
     module = load()
     stages = []
     workflow_manifest = manifest(tmp_path)
@@ -211,7 +414,9 @@ def test_explicit_pro_stage_runs_writable_devspace_and_materializes_bound_receip
         stage = next(item for item in ("plan", "pro", "review", "implementation", "final-web-gate") if f"stage={item}\n" in text)
         stages.append(stage)
         if stage == "pro":
-            assert payload["transport"] == "pro-devspace"
+            assert "[PRO_READ_ONLY_AUTHORITY]" in text
+            assert "separate regular GPT-5.6 extra-high DevSpace implementation stage" in text
+            assert payload["transport"] == "pro-devspace-readonly"
             assert payload["task_outcome_contract"] == "v1"
             assert payload["model"] == "gpt-5.6-sol"
             assert payload["app_name"] == "DevSpace"
@@ -227,6 +432,10 @@ def test_explicit_pro_stage_runs_writable_devspace_and_materializes_bound_receip
                 "ready_for_next": True, "blocker": "",
             }), encoding="utf-8")
             return {"ok": True, "run_dir": str(mission.parent / "run"), "output_path": str(oracle_output)}
+        if stage == "implementation":
+            assert payload["transport"] == "devspace"
+            assert payload["model"] == "gpt-5.6"
+            assert payload["thinking_time"] == "extra-high"
         next_stage = {
             "plan": "pro", "review": "implementation",
             "implementation": "final-web-gate", "final-web-gate": "complete",
@@ -582,128 +791,6 @@ def test_running_oracle_stage_recovers_exact_run_without_resubmission(tmp_path: 
     assert submitted == 1
     assert [item[1:] for item in recovered] == [("live", False)]
     assert second["recovery"]["status"] == "recovered"
-
-
-def test_exact_root_preflight_exception_settles_before_layout_without_resubmission(
-    tmp_path: Path,
-) -> None:
-    module = load()
-    attempts = 0
-
-    def exact_root_blocked(oracle_manifest: Path, *, dry_run: bool):
-        nonlocal attempts
-        attempts += 1
-        raise module.RUNNER.OracleRunError(
-            "DEVSPACE_EXACT_ROOT_UNAVAILABLE",
-            "the exact project root is not registered in DevSpace allowedRoots",
-            {"missing_root": str(tmp_path)},
-        )
-
-    workflow_manifest = manifest(tmp_path)
-    result = module.run_workflow(workflow_manifest, oracle_execute=exact_root_blocked)
-    config = module.load_manifest(workflow_manifest)
-    state = json.loads(module._state_path(config, "a" * 32).read_text(encoding="utf-8"))
-    record = state["records"][-1]
-
-    assert attempts == 1
-    assert result["status"] == "prepared"
-    assert result["safe_for_fresh_run"] is True
-    assert result["settlement"] == "oracle-layout-not-created-pre-submit"
-    assert state["status"] == "prepared"
-    assert state["next_stage"] == "plan"
-    assert state["pre_submit_retries"] == 1
-    assert record["failure_code"] == "DEVSPACE_EXACT_ROOT_UNAVAILABLE"
-    assert record["settlement_proof"]["kind"] == "oracle-layout-not-created"
-    assert not Path(record["run_dir"]).exists()
-
-
-def test_legacy_missing_layout_state_settles_to_prepared_without_submission(
-    tmp_path: Path,
-) -> None:
-    module = load()
-    planned_run_dirs: list[Path] = []
-
-    def legacy_preflight_crash(oracle_manifest: Path, *, dry_run: bool):
-        oracle_config = module.RUNNER.STATE.load_manifest(oracle_manifest)
-        layout = module.RUNNER.STATE.create_layout(
-            oracle_config, run_id=oracle_config.requested_run_id
-        )
-        planned_run_dirs.append(layout.run_dir)
-        raise RuntimeError("legacy exact-root preflight escaped before layout creation")
-
-    workflow_manifest = manifest(tmp_path)
-    with pytest.raises(RuntimeError, match="before layout creation"):
-        module.run_workflow(workflow_manifest, oracle_execute=legacy_preflight_crash)
-
-    config = module.load_manifest(workflow_manifest)
-    config["_review_policy"] = module._review_policy_from_history(config)
-    state_path = module._state_path(config, "a" * 32)
-    legacy_state = json.loads(state_path.read_text(encoding="utf-8"))
-    legacy_state["status"] = "attention_required"
-    legacy_state["records"] = [{
-        "stage": "plan",
-        "run_id": legacy_state["current_attempt_id"],
-        "run_dir": legacy_state["oracle_run_dir"],
-        "recovered": True,
-        "recovery_status": None,
-    }]
-    module._write_workflow_state(state_path, config, legacy_state)
-
-    def forbidden_execute(*args, **kwargs):
-        raise AssertionError("settlement must not submit a replacement")
-
-    def forbidden_recover(*args, **kwargs):
-        raise AssertionError("an absent layout has no exact session to recover")
-
-    settled = module.run_workflow(
-        workflow_manifest,
-        oracle_execute=forbidden_execute,
-        oracle_recover=forbidden_recover,
-    )
-    persisted = json.loads(state_path.read_text(encoding="utf-8"))
-
-    assert len(planned_run_dirs) == 1
-    assert not planned_run_dirs[0].exists()
-    assert settled["status"] == "prepared"
-    assert settled["safe_for_fresh_run"] is True
-    assert settled["settlement"] == "oracle-layout-not-created-pre-submit"
-    assert persisted["status"] == "prepared"
-    assert persisted["next_mission_path"] == str(config["initial_mission_path"])
-    assert persisted["pre_submit_retries"] == 1
-    assert persisted["records"][-1]["failure_code"] == "ORACLE_LAYOUT_NOT_CREATED_PRE_SUBMIT"
-
-
-def test_missing_layout_with_execution_result_record_remains_fail_closed(tmp_path: Path) -> None:
-    module = load()
-
-    def legacy_crash(oracle_manifest: Path, *, dry_run: bool):
-        raise RuntimeError("legacy crash")
-
-    workflow_manifest = manifest(tmp_path)
-    with pytest.raises(RuntimeError, match="legacy crash"):
-        module.run_workflow(workflow_manifest, oracle_execute=legacy_crash)
-
-    config = module.load_manifest(workflow_manifest)
-    config["_review_policy"] = module._review_policy_from_history(config)
-    state_path = module._state_path(config, "a" * 32)
-    state = json.loads(state_path.read_text(encoding="utf-8"))
-    state["records"] = [{
-        "stage": "plan",
-        "run_dir": state["oracle_run_dir"],
-        "ok": False,
-    }]
-    module._write_workflow_state(state_path, config, state)
-
-    result = module.run_workflow(
-        workflow_manifest,
-        oracle_execute=lambda *args, **kwargs: (_ for _ in ()).throw(
-            AssertionError("missing-layout recovery must not submit")
-        ),
-    )
-
-    assert result["status"] == "attention_required"
-    assert result["recovery"]["error"] == "ORACLE_RECOVERY_RUN_UNAVAILABLE"
-    assert result.get("safe_for_fresh_run") is not True
 
 
 def test_post_submit_watchdog_persists_same_attempt_and_only_exact_recovers(
@@ -1705,7 +1792,7 @@ def test_pro_attachment_contract_rejects_outside_project_and_symlink(tmp_path: P
         module._declared_pro_attachments(config, source)
 
 
-def test_regular_manifest_never_attaches_pro_packets_and_default_pro_uses_devspace(tmp_path: Path) -> None:
+def test_regular_manifest_never_attaches_pro_packets_and_default_pro_uses_readonly_devspace(tmp_path: Path) -> None:
     module = load()
     config = module.load_manifest(manifest(tmp_path))
     config["_parallel_parent_id"] = "b" * 64
@@ -1721,7 +1808,7 @@ def test_regular_manifest_never_attaches_pro_packets_and_default_pro_uses_devspa
     default_pro = json.loads(module._oracle_manifest(
         config, mission, tmp_path / "legacy-pro", "d" * 32, stage="pro"
     ).read_text(encoding="utf-8"))
-    assert default_pro["transport"] == "pro-devspace"
+    assert default_pro["transport"] == "pro-devspace-readonly"
     assert default_pro["task_outcome_contract"] == "v1"
     assert default_pro["app_name"] == config["app_name"]
     assert "attachments" not in default_pro
@@ -1738,6 +1825,9 @@ def test_plan_mission_teaches_declared_packet_contract(tmp_path: Path) -> None:
     assert module.PRO_ATTACHMENT_SCHEMA in text
     assert "Canonical plan receipt status is PLAN_READY" in text
     assert "output_path and next_mission_path MUST be absolute paths" in text
+    assert "[HOST_STAGE_MATERIALIZATION_FALLBACK]" in text
+    assert module.REGULAR_OUTPUT_SCHEMA in text
+    assert "Do not both write the receipt/files and return this fallback envelope." in text
 
 
 def test_receipt_compatibly_resolves_project_relative_paths_with_hash_binding(tmp_path: Path) -> None:
@@ -2108,3 +2198,346 @@ def test_awaiting_receipt_preserves_source_and_augmented_mission_bindings(tmp_pa
     assert result["current_binding_source_sha256"] == module.sha(source)
     assert result["current_augmented_mission_sha256"] == module.sha(augmented)
     assert result["current_binding_source_sha256"] != result["current_augmented_mission_sha256"]
+
+
+def _user_stop_fixture(module, tmp_path: Path) -> dict[str, object]:
+    path = manifest(tmp_path)
+    owner = os.environ.get("CODEX_THREAD_ID") or "11111111-1111-4111-8111-111111111111"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["source_thread_id"] = owner
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    os.environ["CODEX_THREAD_ID"] = owner
+    config = module.load_manifest(path)
+    config["_review_policy"] = module._default_review_policy()
+    workflow_id = str(config["workflow_id"])
+    run_id = "b" * 32
+    workflow_path = module._state_path(config, workflow_id)
+    scope_path = module._scope_path(config)
+    project_key = workflow_path.parent.name
+    run_dir = (
+        module.RUNNER.STATE.oracle_state_root()
+        / "projects"
+        / project_key
+        / "runs"
+        / run_id
+    )
+    run_dir.mkdir(parents=True)
+    run_state_path = run_dir / "state.json"
+    module._write(run_state_path, {
+        "schema": module.RUNNER.STATE.STATE_SCHEMA,
+        "run_id": run_id,
+        "project_root": str(config["project_root"]),
+        "status": "attention_required",
+        "transport_status": "complete",
+        "session_authority": "terminal",
+        "terminal_harvested": True,
+        "task_outcome": "blocked",
+        "exit_code": 0,
+        "originating_task": {
+            "schema": "codex.chatgpt.oracle-task-owner/v1",
+            "source_thread_id": config["source_thread_id"],
+            "binding": "task-bound",
+        },
+    })
+    module._write(workflow_path, {
+        "schema": module.STATE_SCHEMA,
+        "status": "attention_required",
+        "workflow_id": workflow_id,
+        "manifest_sha256": config["manifest_sha256"],
+        "current_stage": "plan",
+        "current_attempt_id": run_id,
+        "current_input_sha256": "c" * 64,
+        "oracle_run_id": run_id,
+        "oracle_run_dir": str(run_dir),
+        "records": [{"stage": "plan", "run_dir": str(run_dir), "ok": False}],
+        "blocker": "exact recovery retained",
+        "source_thread_id": config["source_thread_id"],
+    })
+    module._write(scope_path, {
+        "schema": module.SCOPE_SCHEMA,
+        "status": "active",
+        "active_workflow_id": workflow_id,
+        "project_root": str(config["project_root"]),
+        "workflow_parent": str(config["workflow_dir"].parent),
+        "review_policy": config["_review_policy"],
+        "source_thread_id": config["source_thread_id"],
+    })
+    return {
+        "config": config,
+        "workflow_state_path": workflow_path,
+        "scope_state_path": scope_path,
+        "run_dir": run_dir,
+        "workflow_id": workflow_id,
+        "run_id": run_id,
+        "expected_workflow_sha256": module.sha(workflow_path),
+        "expected_scope_sha256": module.sha(scope_path),
+        "expected_run_state_sha256": module.sha(run_state_path),
+        "confirmation": module.USER_STOP_CONFIRMATION,
+        "run_state_path": run_state_path,
+        "workflow_before": workflow_path.read_bytes(),
+        "scope_before": scope_path.read_bytes(),
+    }
+
+
+def _settlement_args(fixture: dict[str, object]) -> dict[str, object]:
+    return {
+        key: fixture[key]
+        for key in (
+            "workflow_state_path",
+            "scope_state_path",
+            "run_dir",
+            "workflow_id",
+            "run_id",
+            "expected_workflow_sha256",
+            "expected_scope_sha256",
+            "expected_run_state_sha256",
+            "confirmation",
+        )
+    }
+
+
+def _make_pre_submit_bridge_timeout(
+    module, fixture: dict[str, object], *, error: str | None = None
+) -> None:
+    run_dir = Path(fixture["run_dir"])
+    state = module._json(fixture["run_state_path"])
+    state.update({
+        "status": "failed",
+        "transport_status": "prepared",
+        "session_authority": "pre_submit",
+        "terminal_harvested": False,
+        "task_outcome": "pending",
+        "exit_code": None,
+    })
+    module._write(fixture["run_state_path"], state)
+    (run_dir / "stdout.log").write_bytes(b"")
+    (run_dir / "stderr.log").write_text(
+        (error or module.PRE_SUBMIT_DEVSPACE_BRIDGE_TIMEOUT) + "\n", encoding="utf-8"
+    )
+    fixture["expected_run_state_sha256"] = module.sha(fixture["run_state_path"])
+    fixture["confirmation"] = module.PRE_SUBMIT_CANCEL_CONFIRMATION
+
+
+def test_user_stop_settlement_dry_run_then_cancels_and_releases_scope(tmp_path: Path) -> None:
+    module = load()
+    fixture = _user_stop_fixture(module, tmp_path)
+    args = _settlement_args(fixture)
+
+    preview = module.settle_user_stopped_workflow(**args, dry_run=True)
+    assert preview["status"] == "dry-run"
+    assert module.sha(fixture["workflow_state_path"]) == fixture["expected_workflow_sha256"]
+    assert module.sha(fixture["scope_state_path"]) == fixture["expected_scope_sha256"]
+    assert not Path(preview["settlement_path"]).exists()
+
+    run_state_before = module.sha(fixture["run_state_path"])
+    result = module.settle_user_stopped_workflow(**args)
+    assert result["ok"] is True
+    assert result["terminal_status"] == "CANCELED"
+    assert result["scope_released"] is True
+    assert result["submission_action"] == "none"
+    assert module.sha(fixture["run_state_path"]) == run_state_before
+    workflow = module._json(fixture["workflow_state_path"])
+    scope = module._json(fixture["scope_state_path"])
+    receipt = module._json(Path(result["settlement_path"]))
+    completion = module._json(Path(result["completion_path"]))
+    assert workflow["status"] == "canceled" and workflow["terminal"] is True
+    assert scope["status"] == "canceled" and scope["scope_released"] is True
+    assert receipt["authority"] == module.USER_STOP_CONFIRMATION
+    assert receipt["workflow_state_sha256"] == fixture["expected_workflow_sha256"]
+    assert receipt["scope_state_sha256"] == fixture["expected_scope_sha256"]
+    assert completion["workflow_state_sha256"] == result["workflow_state_sha256"]
+    assert completion["scope_state_sha256"] == result["scope_state_sha256"]
+
+    second_config = dict(fixture["config"])
+    second_config["workflow_id"] = "d" * 32
+    module._claim_scope(second_config, second_config["workflow_id"])
+    claimed = module._json(fixture["scope_state_path"])
+    assert claimed["status"] == "active"
+    assert claimed["active_workflow_id"] == "d" * 32
+
+
+def test_foreign_task_cannot_cancel_or_release_another_tasks_workflow(tmp_path: Path, monkeypatch) -> None:
+    module = load()
+    fixture = _user_stop_fixture(module, tmp_path)
+    workflow_before = Path(fixture["workflow_state_path"]).read_bytes()
+    scope_before = Path(fixture["scope_state_path"]).read_bytes()
+    owner = str(fixture["config"]["source_thread_id"])
+    foreign = "ffffffff-ffff-4fff-8fff-ffffffffffff"
+    assert owner != foreign
+    monkeypatch.setenv("CODEX_THREAD_ID", foreign)
+
+    with pytest.raises(module.WorkflowError, match="FOREIGN_TASK_SESSION"):
+        module.settle_user_stopped_workflow(**_settlement_args(fixture))
+
+    assert Path(fixture["workflow_state_path"]).read_bytes() == workflow_before
+    assert Path(fixture["scope_state_path"]).read_bytes() == scope_before
+    state_root = module.RUNNER.STATE.oracle_state_root()
+    assert not list((state_root / "workflow-user-stop-settlements").rglob("*.json"))
+
+
+def test_user_stop_settlement_is_idempotent_and_recovers_partial_scope_write(tmp_path: Path) -> None:
+    module = load()
+    fixture = _user_stop_fixture(module, tmp_path)
+    args = _settlement_args(fixture)
+    first = module.settle_user_stopped_workflow(**args)
+    second = module.settle_user_stopped_workflow(**args)
+    assert second["settlement_sha256"] == first["settlement_sha256"]
+    assert second["completion_sha256"] == first["completion_sha256"]
+
+    Path(first["completion_path"]).unlink()
+    Path(fixture["scope_state_path"]).write_bytes(fixture["scope_before"])
+    recovered = module.settle_user_stopped_workflow(**args)
+    assert recovered["scope_released"] is True
+    assert module._json(fixture["scope_state_path"])["status"] == "canceled"
+
+
+def test_pre_submit_bridge_timeout_can_be_explicitly_canceled_without_run_mutation(
+    tmp_path: Path,
+) -> None:
+    module = load()
+    fixture = _user_stop_fixture(module, tmp_path)
+    _make_pre_submit_bridge_timeout(module, fixture)
+    run_state_before = module.sha(fixture["run_state_path"])
+
+    preview = module.settle_user_stopped_workflow(**_settlement_args(fixture), dry_run=True)
+    assert preview["status"] == "dry-run"
+    result = module.settle_user_stopped_workflow(**_settlement_args(fixture))
+
+    assert result["status"] == "canceled"
+    assert result["scope_released"] is True
+    assert result["submission_action"] == "none"
+    assert module.sha(fixture["run_state_path"]) == run_state_before
+    receipt = module._json(Path(result["settlement_path"]))
+    assert receipt["authority"] == module.PRE_SUBMIT_CANCEL_CONFIRMATION
+    assert receipt["evidence_mode"] == "pre-submit-devspace-bridge-timeout"
+
+
+def test_pre_submit_service_restart_requirement_can_be_canceled_after_restart(
+    tmp_path: Path,
+) -> None:
+    module = load()
+    fixture = _user_stop_fixture(module, tmp_path)
+    _make_pre_submit_bridge_timeout(
+        module, fixture, error=module.PRE_SUBMIT_DEVSPACE_SERVICE_RESTART
+    )
+
+    result = module.settle_user_stopped_workflow(**_settlement_args(fixture))
+
+    receipt = module._json(Path(result["settlement_path"]))
+    assert result["scope_released"] is True
+    assert receipt["evidence_mode"] == "pre-submit-devspace-service-restart-required"
+
+
+@pytest.mark.parametrize("mutation", ["stderr", "stdout", "output", "conversation"])
+def test_pre_submit_cancel_rejects_ambiguous_or_mutated_evidence(
+    tmp_path: Path, mutation: str
+) -> None:
+    module = load()
+    fixture = _user_stop_fixture(module, tmp_path)
+    _make_pre_submit_bridge_timeout(module, fixture)
+    run_dir = Path(fixture["run_dir"])
+    if mutation == "stderr":
+        (run_dir / "stderr.log").write_text("version resolution failed: other\n", encoding="utf-8")
+    elif mutation == "stdout":
+        (run_dir / "stdout.log").write_text("possibly submitted", encoding="utf-8")
+    elif mutation == "output":
+        (run_dir / "output.md").write_text("provider output", encoding="utf-8")
+    else:
+        state = module._json(fixture["run_state_path"])
+        state["conversation_url"] = "https://chatgpt.com/c/example"
+        module._write(fixture["run_state_path"], state)
+        fixture["expected_run_state_sha256"] = module.sha(fixture["run_state_path"])
+
+    with pytest.raises(module.WorkflowError, match="bounded pre-submit"):
+        module.settle_user_stopped_workflow(**_settlement_args(fixture))
+
+
+def test_canceled_workflow_is_terminal_and_does_not_reactivate_scope(tmp_path: Path) -> None:
+    module = load()
+    fixture = _user_stop_fixture(module, tmp_path)
+    args = _settlement_args(fixture)
+    module.settle_user_stopped_workflow(**args)
+
+    def never_submit(*_args, **_kwargs):
+        raise AssertionError("a canceled workflow must never submit")
+
+    result = module.run_workflow(
+        Path(fixture["config"]["initial_mission_path"]).with_name("workflow.json"),
+        oracle_execute=never_submit,
+    )
+    assert result["status"] == "canceled"
+    assert result["terminal_status"] == "CANCELED"
+    assert module._json(fixture["scope_state_path"])["status"] == "canceled"
+
+
+def test_cancel_user_stopped_cli_dry_run_requires_explicit_bound_evidence(
+    tmp_path: Path, capsys
+) -> None:
+    module = load()
+    fixture = _user_stop_fixture(module, tmp_path)
+    args = _settlement_args(fixture)
+    exit_code = module.main([
+        "--cancel-user-stopped",
+        "--workflow-state", str(args["workflow_state_path"]),
+        "--scope-state", str(args["scope_state_path"]),
+        "--run-dir", str(args["run_dir"]),
+        "--workflow-id", str(args["workflow_id"]),
+        "--run-id", str(args["run_id"]),
+        "--expected-workflow-sha256", str(args["expected_workflow_sha256"]),
+        "--expected-scope-sha256", str(args["expected_scope_sha256"]),
+        "--expected-run-state-sha256", str(args["expected_run_state_sha256"]),
+        "--confirmation", str(args["confirmation"]),
+        "--dry-run",
+    ])
+    value = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    assert value["status"] == "dry-run"
+    assert value["submission_action"] == "none"
+
+
+@pytest.mark.parametrize("mutation", ["run-live", "workflow-run", "foreign-scope"])
+def test_user_stop_settlement_rejects_insufficient_or_mismatched_evidence(
+    tmp_path: Path, mutation: str
+) -> None:
+    module = load()
+    fixture = _user_stop_fixture(module, tmp_path)
+    if mutation == "run-live":
+        value = module._json(fixture["run_state_path"])
+        value["terminal_harvested"] = False
+        value["session_authority"] = "live"
+        module._write(fixture["run_state_path"], value)
+        fixture["expected_run_state_sha256"] = module.sha(fixture["run_state_path"])
+    elif mutation == "workflow-run":
+        value = module._json(fixture["workflow_state_path"])
+        value["current_attempt_id"] = "e" * 32
+        module._write(fixture["workflow_state_path"], value)
+        fixture["expected_workflow_sha256"] = module.sha(fixture["workflow_state_path"])
+    else:
+        value = module._json(fixture["scope_state_path"])
+        value["active_workflow_id"] = "e" * 32
+        module._write(fixture["scope_state_path"], value)
+        fixture["expected_scope_sha256"] = module.sha(fixture["scope_state_path"])
+
+    with pytest.raises(module.WorkflowError):
+        module.settle_user_stopped_workflow(**_settlement_args(fixture))
+
+
+def test_user_stop_settlement_rejects_wrong_confirmation_hash_and_post_settlement_tamper(
+    tmp_path: Path,
+) -> None:
+    module = load()
+    fixture = _user_stop_fixture(module, tmp_path)
+    args = _settlement_args(fixture)
+    wrong = {**args, "confirmation": "user-confirmed-no-submission"}
+    with pytest.raises(module.WorkflowError, match="confirmation must be"):
+        module.settle_user_stopped_workflow(**wrong)
+    wrong_hash = {**args, "expected_scope_sha256": "0" * 64}
+    with pytest.raises(module.WorkflowError, match="scope state SHA-256 mismatch"):
+        module.settle_user_stopped_workflow(**wrong_hash)
+
+    module.settle_user_stopped_workflow(**args)
+    workflow = module._json(fixture["workflow_state_path"])
+    workflow["unexpected_external_edit"] = True
+    module._atomic_write(fixture["workflow_state_path"], workflow)
+    with pytest.raises(module.WorkflowError, match="changed outside"):
+        module.settle_user_stopped_workflow(**args)

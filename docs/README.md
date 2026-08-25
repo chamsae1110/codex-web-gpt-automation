@@ -1,8 +1,10 @@
 # Documentation
 
 This index is the single map for Codex Web GPT Automation documentation.
-Operational commands live in one authoritative guide and are linked instead of
-being copied into several files.
+`FIRST_INSTALL.md` and `FIRST_INSTALL.en.md` are the canonical localized procedures for installation and ChatGPT
+connection. Other guides link to it rather than restating it. `INSTALL_AGENT.md`
+is a deliberate short duplicate for an AI agent that received only the
+repository URL; keep the two in sync when either changes.
 
 ## Start here
 
@@ -11,6 +13,8 @@ being copied into several files.
 | [Main README](../README.md) | 한국어 | Product overview, quick install, mode selection |
 | [English README](../README.en.md) | English | English product overview and quick install |
 | [First Install](FIRST_INSTALL.md) | 한국어 | Canonical install-to-ChatGPT connection sequence |
+| [First Install](FIRST_INSTALL.en.md) | English | Canonical install-to-ChatGPT connection sequence |
+| [Install Contract](INSTALL_AGENT.md) | 한국어 | Agent-facing contract when only the repository URL is given |
 | [Contributing](../CONTRIBUTING.md) | English | Development, tests, pull requests, security boundary |
 
 ## Operate
@@ -35,9 +39,11 @@ route, then open a specialized guide only when that mode applies.
 | [Architecture](ARCHITECTURE.md) | Current Oracle/DevSpace execution and lifecycle overview |
 | [Brand guide](BRAND.md) | Product name, visual assets, terminology, attribution |
 | [Versioning](VERSIONING.md) | SemVer policy and release source of truth |
+| [Upstream runtime policy](UPSTREAM_RUNTIME_POLICY.md) | Newest-validated Oracle/DevSpace promotion, drift, and rollback LKG |
 | [Changelog](CHANGELOG.md) | User-visible changes by release |
 | [Release checklist](RELEASE_CHECKLIST.md) | Maintainer verification before tags and releases |
 | [Security policy](../SECURITY.md) | Supported versions and private reporting |
+| [Ultra GPT closed audit](STRICT_ULTRA.md) | Optional closed provenance contract inside Ultra GPT Mode; legacy name compatibility |
 | [Third-party notices](../THIRD_PARTY_NOTICES.md) | Upstream licenses and provenance |
 
 ## Research and evaluation

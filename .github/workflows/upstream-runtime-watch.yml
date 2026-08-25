@@ -1,0 +1,86 @@
+name: upstream-runtime-watch
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: upstream-runtime-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Query official npm latest tags without mutating local state
+        run: >-
+          python scripts/check_upstream_runtime_policy.py
+          --policy upstream-runtime-policy.json
+          --output upstream-runtime-report.json
+          --allow-drift
+      - name: Create or update the single stable drift issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          title="$(python -c 'import json; print(json.load(open("upstream-runtime-policy.json", encoding="utf-8"))["promotion"]["drift_issue_title"])')"
+          label="$(python -c 'import json; print(json.load(open("upstream-runtime-policy.json", encoding="utf-8"))["promotion"]["drift_issue_label"])')"
+          assignee="$(python -c 'import json; print(json.load(open("upstream-runtime-policy.json", encoding="utf-8"))["promotion"]["drift_issue_assignee"])')"
+          marker='<!-- codex-upstream-runtime-drift/v2 -->'
+          drift_count="$(python -c 'import json; print(len(json.load(open("upstream-runtime-report.json", encoding="utf-8"))["drifted"]))')"
+          gh api --paginate --slurp --method GET "repos/${GITHUB_REPOSITORY}/issues?state=open&per_page=100" > upstream-runtime-open-issues.json
+          TITLE="${title}" LABEL="${label}" MARKER="${marker}" python - <<'PY'
+          import json
+          import os
+          pages = json.load(open("upstream-runtime-open-issues.json", encoding="utf-8"))
+          issues = [item for page in pages for item in page if "pull_request" not in item]
+          managed = [
+              item for item in issues
+              if item.get("title") == os.environ["TITLE"]
+              and os.environ["MARKER"] in str(item.get("body") or "")
+              and os.environ["LABEL"] in {str(label.get("name") or "") for label in item.get("labels", [])}
+          ]
+          exact = [str(item["number"]) for item in managed]
+          if len(exact) > 1:
+              raise SystemExit("multiple exact upstream drift issues exist; refusing ambiguous mutation")
+          open("upstream-runtime-issue-number.txt", "w", encoding="utf-8").write(exact[0] if exact else "")
+          PY
+          issue_number="$(cat upstream-runtime-issue-number.txt)"
+          if [ "${drift_count}" -gt 0 ]; then
+            python - <<'PY'
+          import json
+          report = json.load(open("upstream-runtime-report.json", encoding="utf-8"))
+          policy = json.load(open("upstream-runtime-policy.json", encoding="utf-8"))
+          promotion = policy["promotion"]
+          lines = ["<!-- codex-upstream-runtime-drift/v2 -->", "", "The official npm `latest` tags differ from the validated runtime policy.", "", "This reporter did not promote, install, patch, or restart anything. The separately scheduled maintainer owns those gated actions.", "", "## Ownership and timing", "", f"- Promotion owner: `{promotion['promotion_owner']}`", f"- Installation owner: `{promotion['installation_owner']}`", f"- Safe-restart owner: `{promotion['restart_owner']}`", f"- Maintainer automation: `{promotion['promotion_automation_name']}` (`{promotion['promotion_automation_schedule']}`)", f"- Validation owner: `{promotion['validation_owner']}`", f"- Validation starts within: {promotion['validation_start_sla_hours']} hours", f"- Promotion target when all gates pass: {promotion['promotion_target_sla_hours']} hours", f"- Routine approval: `{promotion['routine_approval']}`", f"- Exceptions: `{promotion['exception_approval']}`", "", "| Runtime | Validated current | npm latest | Candidate integrity |", "| --- | --- | --- | --- |"]
+          for name in report["drifted"]:
+              item = report["runtimes"][name]
+              lines.append(f"| {name} | {item['current']['version']} | {item['latest']['version']} | `{item['latest']['integrity']}` |")
+          lines += ["", "## Required promotion gates", ""]
+          lines += [f"- [ ] `{gate}`" for gate in promotion["required_gates"]]
+          lines += ["", "Open one reviewed validation PR linked to this issue. Close it only after exact-commit CI, release, lifecycle install, parity, doctor, and service-health evidence are recorded."]
+          open("upstream-runtime-issue.md", "w", encoding="utf-8").write("\n".join(lines) + "\n")
+          PY
+            gh label list --repo "${GITHUB_REPOSITORY}" --limit 1000 --json name > upstream-runtime-labels.json
+            label_exists="$(LABEL="${label}" python -c 'import json, os; print("yes" if any(item.get("name") == os.environ["LABEL"] for item in json.load(open("upstream-runtime-labels.json", encoding="utf-8"))) else "no")')"
+            if [ "${label_exists}" != "yes" ]; then
+              gh label create "${label}" --repo "${GITHUB_REPOSITORY}" --color "1d76db" --description "Validated upstream Oracle/DevSpace promotion required"
+            fi
+            if [ -n "${issue_number}" ]; then
+              gh issue edit "${issue_number}" --repo "${GITHUB_REPOSITORY}" --title "${title}" --body-file upstream-runtime-issue.md --add-label "${label}" --add-assignee "${assignee}"
+            else
+              gh issue create --repo "${GITHUB_REPOSITORY}" --title "${title}" --body-file upstream-runtime-issue.md --label "${label}" --assignee "${assignee}"
+            fi
+          elif [ -n "${issue_number}" ]; then
+            gh issue close "${issue_number}" --repo "${GITHUB_REPOSITORY}" --comment "Official npm latest tags match the validated runtime policy again. No runtime was changed by this watcher."
+          fi

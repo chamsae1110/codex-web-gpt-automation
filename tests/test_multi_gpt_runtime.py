@@ -74,6 +74,11 @@ def test_runtime_defaults_reject_overrides_and_pin_every_stage_argv() -> None:
     assert "'-c', 'responses_websockets=false'" in launcher
     assert "args.splice" not in launcher
 
+    assert "assertCodexCliAcceptsExecutionContract()" in source
+    assert "LUNA_MAX_UNSUPPORTED_BY_CODEX_CLI" in source
+    assert "'mcp', 'list', '--json'" in source
+    assert "launch_contract_canary: launchCanary" in source
+
     assert "function resolveCodexCommand()" in source
     assert "process.env.MULTI_GPT_CODEX_CLI_PATH" in source
     assert "process.env.CODEX_CLI_PATH" in source
@@ -102,7 +107,9 @@ def test_packaging_and_installer_keep_multi_gpt_opt_in() -> None:
 
     installer = (ROOT / "install.ps1").read_text(encoding="utf-8")
     assert "elseif($pattern.StartsWith('mcp_servers/')){Join-Path $Root 'mcp_servers'}" in installer
-    assert "Local Multi-GPT도 설치할까요? [y/N]" in (ROOT / "install-manifest.json").read_text(encoding="utf-8")
+    manifest_text = (ROOT / "install-manifest.json").read_text(encoding="utf-8")
+    assert "Local Multi-GPT도 설치할까요? [y/N]" in manifest_text
+    assert "Install optional Local Multi-GPT too? [y/N]" in manifest_text
     assert "EnableLocalMultiGpt" in installer
     assert "Console]::IsInputRedirected" in installer
 

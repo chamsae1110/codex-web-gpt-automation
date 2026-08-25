@@ -31,18 +31,38 @@ must not be created until the exact commit passes both Windows and macOS CI.
 
 ## Release flow
 
+An upstream Oracle or DevSpace stable release is detected by the scheduled
+read-only drift workflow. Promotion is a reviewed release change: validate the
+candidate, update `upstream-runtime-policy.json`, retain the prior current as
+rollback LKG, and complete the normal release/install gates. Never execute the
+moving npm `latest` tag directly.
+
+The watcher reports and assigns the candidate; it never mutates a host. A
+separate scheduled Codex maintainer automation owns validation, promotion,
+publication, installation, and the one safe-window restart. Its required CI is
+the independent test authority, and all-gates success is standing approval for
+a stable patch/minor promotion. Major or breaking changes, permission/OAuth
+changes, patch conflicts, failed canaries, and ambiguous evidence require
+explicit user approval. Detection is due in six hours, validation starts within
+24 hours, and a clean promotion targets 48 hours; those service levels never
+authorize bypassing a gate.
+
 1. Choose the SemVer impact and update the three machine-readable sources.
 2. Add a user-oriented changelog entry.
 3. Run focused tests, the fast gate, portability, package/link checks, and the
    complete contract suite required by [Release Checklist](RELEASE_CHECKLIST.md).
 4. Commit and push public-safe source to `main`.
-5. Require successful Windows and macOS CI for that commit.
-6. Create the annotated tag and GitHub Release from the same commit.
+5. Require successful Windows, macOS, and Linux CI for that commit.
+6. Create the annotated tag from the same commit.
 7. Let the tag-push publication workflow validate the annotated tag and create
    the non-draft GitHub Release.
 8. Verify the peeled remote tag commit, GitHub Release tag,
    `releases/latest`, release workflow, release badge, and downloadable source
    archives independently.
+9. On the maintainer host, install the published bytes through the lifecycle
+   installer, verify receipt/source parity and both doctors, then restart the
+   managed DevSpace service once only if the final install requires it and no
+   active or uncertain foreign Oracle run can be disrupted.
 
 Changing the four source version fields completes only release preparation.
 Commit, push, or branch CI does not mean a release was published. If any

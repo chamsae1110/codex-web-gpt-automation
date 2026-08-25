@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import locale as locale_module
 import os
 import shutil
 import subprocess
@@ -18,11 +19,21 @@ import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 
 RECEIPT_SCHEMA = "codexpro.install-receipt/v3"
 WAL_SCHEMA = "codexpro.install-wal/v1"
+# A journal in any of these states is already settled.  The PowerShell installer
+# skipped ROLLED_BACK_AFTER_ERROR while this path did not, so a journal written
+# by one implementation could be replayed as an interrupted install by the other
+# and fail closed with INSTALL_CRASH_RECOVERY_CONFLICT.
+WAL_TERMINAL_STATUSES = frozenset({
+    "COMPLETE",
+    "ROLLED_BACK_AFTER_CRASH",
+    "ROLLED_BACK_AFTER_ERROR",
+    "ROLLED_BACK_AFTER_FAILURE",
+})
 SUPPORTED_ROOTS = {
     "bin",
     "skills",
@@ -34,6 +45,9 @@ SUPPORTED_ROOTS = {
     "plugins",
     "marketplace",
 }
+ROOT_FILE_ALLOWLIST = frozenset(
+    {"upstream-runtime-policy.json", "upstream-runtime-maintainer-automation.json"}
+)
 
 
 class LifecycleError(RuntimeError):
@@ -123,7 +137,7 @@ def manifest_files(repo_root: Path, *, include_local_multi_gpt: bool = False) ->
         path = Path(str(pattern))
         if path.is_absolute() or any(part in {".", ".."} for part in path.parts):
             raise LifecycleError(f"unsafe manifest pattern: {pattern}")
-        if not path.parts or path.parts[0] not in SUPPORTED_ROOTS:
+        if not path.parts or (path.parts[0] not in SUPPORTED_ROOTS and str(path) not in ROOT_FILE_ALLOWLIST):
             raise LifecycleError(f"unsupported manifest root: {pattern}")
         matches = [item for item in repo_root.glob(str(pattern)) if item.is_file()]
         if not matches:
@@ -156,7 +170,7 @@ def recover_pending_installs(codex_home: Path) -> list[str]:
     recovered: list[str] = []
     for wal_path in _active_wals(codex_home):
         wal = _read_json(wal_path)
-        if wal.get("schema") != WAL_SCHEMA or wal.get("status") in {"COMPLETE", "ROLLED_BACK_AFTER_CRASH"}:
+        if wal.get("schema") != WAL_SCHEMA or wal.get("status") in WAL_TERMINAL_STATUSES:
             continue
         backup = Path(str(wal.get("backup") or "")).expanduser().resolve()
         if not _is_within((codex_home / "backups").resolve(), backup):
@@ -380,6 +394,15 @@ def rollback(codex_home: Path, receipt_path: Path | None = None) -> dict[str, An
     return {"ok": not conflicts, "status": status, "receipt": str(receipt_path), "conflicts": conflicts}
 
 
+def _resolve_python_tool(*, platform_name: str = os.name, active_executable: str = sys.executable) -> str | None:
+    python_tool = shutil.which("python3")
+    if python_tool is None and platform_name == "nt":
+        python_tool = shutil.which("python") or shutil.which("py")
+        if python_tool is None and active_executable and Path(active_executable).is_file():
+            python_tool = str(Path(active_executable).resolve())
+    return python_tool
+
+
 def doctor(codex_home: Path) -> dict[str, Any]:
     codex_home = codex_home.expanduser().resolve()
     issues: list[dict[str, Any]] = []
@@ -411,7 +434,7 @@ def doctor(codex_home: Path) -> dict[str, Any]:
             local_multi_gpt["doctor"] = None
         if completed is None or completed.returncode != 0 or not local_multi_gpt["doctor"] or not local_multi_gpt["doctor"].get("ok"):
             issues.append({"code": "LOCAL_MULTI_GPT_MCP_INVALID", "detail": completed.stderr.strip() if completed else "helper missing"})
-    required = {"python3": shutil.which("python3"), "node": shutil.which("node"), "npx": shutil.which("npx")}
+    required = {"python3": _resolve_python_tool(), "node": shutil.which("node"), "npx": shutil.which("npx")}
     for name, path in required.items():
         if path is None:
             issues.append({"code": "TOOL_MISSING", "tool": name})
@@ -493,6 +516,27 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def localized_optional_prompt(optional: Mapping[str, Any], environment: Mapping[str, str] | None = None) -> str:
+    values = environment if environment is not None else os.environ
+    explicit_language = str(values.get("CODEX_ONBOARDING_LANG") or "").strip()
+    system_locale = ""
+    if environment is None and not explicit_language:
+        try:
+            system_locale = str(locale_module.getlocale()[0] or "")
+        except (ValueError, TypeError):
+            system_locale = ""
+    locale = (
+        explicit_language
+        if explicit_language
+        else " ".join([
+            system_locale,
+            *(str(values.get(name) or "") for name in ("LC_ALL", "LC_MESSAGES", "LANG")),
+        ])
+    ).casefold()
+    prompt_key = "prompt_ko" if "ko" in locale or "korean" in locale else "prompt_en"
+    return str(optional.get(prompt_key) or optional.get("prompt") or "Install optional Local Multi-GPT too? [y/N]")
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
@@ -506,7 +550,8 @@ def main(argv: list[str] | None = None) -> int:
                 if prior is not None:
                     requested = bool(prior)
                 elif not args.dry_run and sys.stdin.isatty():
-                    prompt = json.loads((args.repo_root / "install-manifest.json").read_text(encoding="utf-8"))["optional_components"]["local_multi_gpt"]["prompt"]
+                    optional = json.loads((args.repo_root / "install-manifest.json").read_text(encoding="utf-8"))["optional_components"]["local_multi_gpt"]
+                    prompt = localized_optional_prompt(optional)
                     requested = input(prompt + " ").strip().lower() in {"y", "yes", "예", "네"}
                 else:
                     requested = False

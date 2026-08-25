@@ -62,6 +62,20 @@ canonical root's existing DevSpace qualification through a hash-validated v2
 parent/lane binding; the mode does not mutate `allowedRoots` or restart the
 service for temporary worktrees.
 
+If the registered web app exposes only the read-only DevSpace surface, use the
+runtime's host-materialization fallback instead of asking the user to weaken
+tool annotations or abandoning the stage. Planner and reviewer answers return
+the closed stage envelope; writer lanes return the parent/lane/source-bound
+writeset. The deterministic host may materialize only workflow-owned stage
+artifacts or declared `owned_paths`, with file-count, byte, regular-path,
+symlink/reparse, Git-identity, and actual-delta checks. A lane must never mix
+direct DevSpace writes with a host writeset.
+
+When ordinary `read` reports that a single line exceeds 50KB, call
+`read_chunk` starting at byte offset 0 and continue only with each returned
+`nextOffsetBytes` until `eof=true`. Preserve the returned whole-file SHA-256
+across every call. Do not use shell merely to split the line.
+
 ## Manifest
 
 Use `bin/chatgpt_oracle_comprehensive.py` with:
@@ -94,3 +108,9 @@ gate.
 - Do not overlap local native-subagent work with the web workflow.
 - Completion requires the final web PASS receipt and the configured local
   deterministic gate with exit code zero.
+
+When the user explicitly requires closed, hash-bound workflow provenance,
+keep `workflow_profile` set to `ultra-gpt` and add its `closed_audit` contract
+as documented in `~/.codex/docs/ULTRA_GPT_MODE.md`. Do not present the audit
+contract as another mode or enable it silently. The old `strict-ultra` profile
+name is accepted only for exact legacy compatibility and recovery.

@@ -40,12 +40,19 @@ Afterward the helper starts `devspace serve` hidden and creates an HTTPS Funnel
 to `127.0.0.1:7676`. During `devspace init`, enter only the listed roots and
 the public origin `https://<hostname>` (without `/mcp`).
 
-Before starting or restarting DevSpace 1.0.4, run the installed
+Before starting or restarting DevSpace 1.0.7, run the installed
 `bin/chatgpt_devspace_compat.py`. It hash-validates the exact upstream
 `dist/workspaces.js`, backs it up, and applies bounded concurrent discovery
 that skips transient `.pytest-*` and cache trees. If it reports
 `service_restart_required=true`, restart DevSpace before any Oracle
 submission. Unknown versions or hashes fail closed.
+
+The same hash-gated compatibility layer exposes read-only `read_chunk` for a
+regular UTF-8 file whose single line exceeds the upstream 50KB line reader.
+Start at `offsetBytes=0`, continue only with the returned
+`nextOffsetBytes`, and require one stable whole-file SHA-256 through
+`eof=true`. The isolated compatibility doctor reconstructs a 60KB-plus
+single-line Unicode fixture before readiness.
 
 On Windows, any Startup shortcut or service wrapper must read
 `%USERPROFILE%\.devspace\config.json` at every launch and derive
@@ -95,14 +102,21 @@ operation and preserves a port that has additional path handlers.
 
 Then verify the manually registered app with a fresh **regular, non-Pro**
 Oracle `@codex` read-only probe that opens the exact project root and reads a
-small directory listing. Codex Desktop's built-in `DevSpace` plugin is a
+small directory listing. The probe must also issue a separate mission-file
+`read` with the exact workspace ID returned by `open_workspace`, then
+`read_chunk` that same file and report the server-computed complete SHA-256.
+The local gate matches it to the bound mission bytes; bundled instructions in
+the open response and local/public HTTP 401 health are not read-route evidence.
+A changed workspace ID, digest mismatch, or `mcp_network_error` fails the probe
+and keeps Pro blocked until a fresh regular non-Pro probe succeeds.
+Codex Desktop's built-in `DevSpace` plugin is a
 different connector; its tools cannot prove that the manually registered
 ChatGPT app works. A Pro submission must never be the first connectivity test.
 
 For a terminal `OAuth token request failed 503` that begins only when a
 previously working long run reaches access-token expiry, run the exact
 DevSpace compatibility helper before changing any credential or ChatGPT app
-setting. Its 1.0.4 contract hash-gates a short, client/scope/resource-bound
+setting. Its 1.0.7 contract hash-gates a short, client/scope/resource-bound
 refresh replay grace and exercises it against an isolated SQLite database.
 Preserve the real OAuth database, roots, Owner credential, and Funnel; restart
 only the exact managed service once, then require a regular non-Pro exact-root
