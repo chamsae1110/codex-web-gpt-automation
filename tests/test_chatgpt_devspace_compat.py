@@ -538,7 +538,10 @@ def test_107_workspace_bridge_patch_preserves_write_tools_and_adds_bounded_read_
     assert compat.PATCHES["dist/server.js"] == {
         "patch": "workspace-write-and-read-bridge.patch",
         "pristine": "42d340924421182eea7f2580f96c8d1d5aae459061a6a90804e6900905ef2d72",
-        "patched": "259b5810206bc87e1e16e7963d084f4c90adc19ea9f54b4655d90ad51e49a967",
+        "patched": "3b258463fcd5a31b754727545ac2b6ecbc0dd922bee568573a8e5a0643842bfc",
+        "upgrades": {
+            "259b5810206bc87e1e16e7963d084f4c90adc19ea9f54b4655d90ad51e49a967": "tool-read-receipts.patch",
+        },
     }
     assert 'delete: "delete_file"' in patch
     assert 'trash: "trash_file"' in patch
@@ -556,6 +559,134 @@ def test_107_workspace_bridge_patch_preserves_write_tools_and_adds_bounded_read_
     ).read_text(encoding="utf-8")
     assert "-import { randomUUID } from \"node:crypto\";" in migration
     assert '+    readChunk: "read_chunk",' in migration
+    receipt_patch = (
+        MODULE_PATH.parent
+        / "devspace-compat"
+        / compat.SUPPORTED_VERSION
+        / "tool-read-receipts.patch"
+    ).read_text(encoding="utf-8")
+    assert "AUDIT_NONCE_PATTERN" in receipt_patch
+    assert 'open(receiptPath, "wx", 0o600)' in receipt_patch
+    assert "codex.devspace.tool-read-receipt/v1" in receipt_patch
+    assert "readChunkSha256: result.eof ? result.sha256 : null" in receipt_patch
+    assert "readChunkOffsetBytes: result.offsetBytes" in receipt_patch
+    assert "readChunkBytesReturned: result.bytesReturned" in receipt_patch
+    assert "readChunkTotalBytes: result.totalBytes" in receipt_patch
+    assert "readChunkEof: result.eof" in receipt_patch
+    assert "auditNonce requires a nonempty OpenAI conversation scope" in receipt_patch
+    assert 'const AUDIT_RECEIPT_SEQUENCE = ["open_workspace", "read", "read_chunk"]' in receipt_patch
+    assert "reserveAuditReceipt" in receipt_patch
+    assert "auditStep" in receipt_patch
+    assert receipt_patch.count("Audit receipt ID:") == 3
+    for tool in (
+        'assertAuditReadonly(_meta, "exec_command")',
+        'assertAuditReadonly(_meta, "write_stdin")',
+        "assertAuditReadonly(_meta, toolNames.write)",
+        "assertAuditReadonly(_meta, toolNames.edit)",
+        'assertAuditReadonly(_meta, "apply_patch")',
+        "assertAuditReadonly(_meta, toolNames.shell)",
+        "assertAuditReadonly(_meta, toolNames.delete)",
+        "assertAuditReadonly(_meta, toolNames.trash)",
+    ):
+        assert tool in receipt_patch
+    assert "await writeToolReadReceipt" in receipt_patch
+
+
+def test_107_artifact_write_is_bound_to_audit_readonly_scope() -> None:
+    compat = load_compat()
+    artifact_patch = (
+        MODULE_PATH.parent
+        / "devspace-compat"
+        / compat.SUPPORTED_VERSION
+        / "artifact-audit-readonly.patch"
+    ).read_text(encoding="utf-8")
+    server_patch = (
+        MODULE_PATH.parent
+        / "devspace-compat"
+        / compat.SUPPORTED_VERSION
+        / "tool-read-receipts.patch"
+    ).read_text(encoding="utf-8")
+
+    assert compat.PATCHES["dist/artifact-tools.js"] == {
+        "patch": "artifact-audit-readonly.patch",
+        "pristine": "53a045b3961875afce5a95b3992aea3d156b64c0268b1d22724d2ed8e2c3aad2",
+        "patched": "fd5204b37da657d6183c8394b5ee8bed09bbffd50999946b4d0421897a52dfa7",
+    }
+    assert "beforeMutation = () => {}" in artifact_patch
+    assert "beforeMutation(input, _meta);" in artifact_patch
+    assert 'assertAuditReadonly(_meta, "download_artifact")' in server_patch
+    assert server_patch.index('assertAuditReadonly(_meta, "download_artifact")') < server_patch.index("return server;")
+
+
+def test_107_tool_read_receipt_upgrade_is_immutable_and_records_only_successes(
+    tmp_path: Path,
+) -> None:
+    compat = load_compat()
+    try:
+        source_root = compat.resolve_package_roots()[0]
+    except compat.DevSpaceCompatError as exc:
+        pytest.skip(f"DevSpace 1.0.7 package unavailable: {exc.code}")
+    source = source_root / "dist" / "server.js"
+    if compat.sha256_file(source) != next(iter(compat.PATCHES["dist/server.js"]["upgrades"])):
+        pytest.skip("installed DevSpace server is not the prior hash-gated bridge payload")
+    package = tmp_path / "devspace"
+    (package / "dist").mkdir(parents=True)
+    shutil.copy2(source, package / "dist" / "server.js")
+    compat._apply_patch(
+        package,
+        MODULE_PATH.parent / "devspace-compat" / compat.SUPPORTED_VERSION / "tool-read-receipts.patch",
+    )
+    server = (package / "dist" / "server.js").read_text(encoding="utf-8")
+    assert compat.sha256_file(package / "dist" / "server.js") == compat.PATCHES["dist/server.js"]["patched"]
+    assert "open(receiptPath, \"wx\", 0o600)" in server
+    read_handler = server[server.index("registerAppTool(server, toolNames.read,"):server.index("registerAppTool(server, toolNames.readChunk,")]
+    chunk_handler = server[server.index("registerAppTool(server, toolNames.readChunk,"):server.index("if (config.toolMode !== \"codex\")")]
+    assert read_handler.index("if (response.isError)") < read_handler.index("await writeToolReadReceipt")
+    assert chunk_handler.index("await readUtf8Chunk") < chunk_handler.index("await writeToolReadReceipt")
+    helper = re.search(
+        r"const AUDIT_NONCE_PATTERN = .*?(?=export async function readUtf8Chunk)",
+        server,
+        flags=re.DOTALL,
+    )
+    assert helper is not None
+    helper_source = helper.group(0).replace(
+        "export async function writeToolReadReceipt", "async function writeToolReadReceipt", 1
+    ).replace("randomUUID()", '"fixed-receipt-id"', 1)
+    harness = tmp_path / "receipt-harness.mjs"
+    harness.write_text(
+        'import assert from "node:assert/strict";\n'
+        'import { mkdir, open, readdir } from "node:fs/promises";\n'
+        'import { homedir } from "node:os";\n'
+        'import { isAbsolute, join } from "node:path";\n'
+        + 'function openAiConversationScopeId(meta) { return meta?.scope ?? null; }\n'
+        + helper_source
+        + '\nconst root = process.argv[2];\n'
+        + 'const base = {auditStep:3,tool:"read_chunk",workspaceId:"workspace-1",canonicalRoot:"C:/workspace",requestedRelativePath:"AGENTS.md",readChunkSha256:"a".repeat(64),readChunkOffsetBytes:0,readChunkBytesReturned:9,readChunkTotalBytes:9,readChunkEof:true,conversationScopeId:"conversation-1"};\n'
+        + 'assert.equal(await writeToolReadReceipt({...base}, root), null);\n'
+        + 'await assert.rejects(() => writeToolReadReceipt({...base,auditNonce:"too-short"}, root), /auditNonce/);\n'
+        + 'await mkdir(root,{recursive:true}); assert.equal((await readdir(root)).length,0);\n'
+        + 'const first = await writeToolReadReceipt({...base,auditNonce:"audit-nonce-0001"}, root);\n'
+        + 'assert.equal(first.receipt.schema,"codex.devspace.tool-read-receipt/v1"); assert.equal(first.receipt.auditNonce,"audit-nonce-0001"); assert.equal(first.receipt.readChunkSha256,"a".repeat(64)); assert.deepEqual([first.receipt.readChunkOffsetBytes,first.receipt.readChunkBytesReturned,first.receipt.readChunkTotalBytes,first.receipt.readChunkEof],[0,9,9,true]); assert.ok(!("content" in first.receipt));\n'
+        + 'await assert.rejects(() => writeToolReadReceipt({...base,auditNonce:"audit-nonce-0002"}, root), error => error?.code === "EEXIST");\n'
+        + 'assert.equal((await readdir(root)).length,1);\n'
+        + 'assert.throws(() => registerAuditReadonlyWorkspaceOpen({}, "audit-nonce-0003"), /nonempty OpenAI conversation scope/);\n'
+        + 'registerAuditReadonlyWorkspaceOpen({scope:"ordinary-scope"}); assert.throws(() => registerAuditReadonlyWorkspaceOpen({scope:"ordinary-scope"}, "audit-nonce-0004"), /precede every ordinary/);\n'
+        + 'registerAuditReadonlyWorkspaceOpen({scope:"audit-scope"}, "audit-nonce-0005"); registerAuditReadonlyWorkspaceOpen({scope:"audit-scope"}, "audit-nonce-0005"); assert.throws(() => registerAuditReadonlyWorkspaceOpen({scope:"audit-scope"}), /without auditNonce/);\n'
+        + 'assert.deepEqual(reserveAuditReceipt({scope:"audit-scope"},"audit-nonce-0005","open_workspace"),{conversationScopeId:"audit-scope",auditStep:1}); assert.equal(reserveAuditReceipt({scope:"audit-scope"},"audit-nonce-0005","read").auditStep,2); assert.equal(reserveAuditReceipt({scope:"audit-scope"},"audit-nonce-0005","read_chunk").auditStep,3); assert.throws(() => reserveAuditReceipt({scope:"audit-scope"},"audit-nonce-0005","read_chunk"),/tool order invalid/);\n'
+        + 'for (const tool of ["write","edit","apply_patch","exec_command","write_stdin","bash","delete_file","trash_file"]) assert.throws(() => assertAuditReadonly({scope:"audit-scope"}, tool), /audit-readonly/); assert.doesNotThrow(() => assertAuditReadonly({scope:"ordinary-scope"}, "write")); assert.doesNotThrow(() => assertAuditReadonly({scope:"pre-mutated-scope"}, "exec_command")); assert.throws(() => registerAuditReadonlyWorkspaceOpen({scope:"pre-mutated-scope"}, "audit-nonce-0006"), /precede every ordinary/);\n'
+        + 'console.log(JSON.stringify({ok:true}));\n',
+        encoding="utf-8",
+    )
+    completed = subprocess.run(
+        ["node", str(harness), str(tmp_path / "receipts")],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert json.loads(completed.stdout) == {"ok": True}
 
 
 def test_delete_file_contract_is_part_of_the_107_hash_gated_bridge() -> None:

@@ -102,7 +102,14 @@ operation and preserves a port that has additional path handlers.
 
 Then verify the manually registered app with a fresh **regular, non-Pro**
 Oracle `@codex` read-only probe that opens the exact project root and reads a
-small directory listing. Codex Desktop's built-in `DevSpace` plugin is a
+small directory listing. The probe must also issue a separate mission-file
+`read` with the exact workspace ID returned by `open_workspace`, then
+`read_chunk` that same file and report the server-computed complete SHA-256.
+The local gate matches it to the bound mission bytes; bundled instructions in
+the open response and local/public HTTP 401 health are not read-route evidence.
+A changed workspace ID, digest mismatch, or `mcp_network_error` fails the probe
+and keeps Pro blocked until a fresh regular non-Pro probe succeeds.
+Codex Desktop's built-in `DevSpace` plugin is a
 different connector; its tools cannot prove that the manually registered
 ChatGPT app works. A Pro submission must never be the first connectivity test.
 

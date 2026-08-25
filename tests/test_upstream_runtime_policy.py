@@ -40,13 +40,30 @@ def fixture(policy: dict[str, object], oracle_latest: str | None = None, devspac
     return {"registries": {oracle_url: oracle, devspace_url: devspace}}
 
 
-def test_checked_in_policy_is_closed_and_declares_no_automatic_mutation() -> None:
+def test_checked_in_policy_separates_reporter_from_gated_maintainer_mutation() -> None:
     module = load_module()
     policy = module.validate_policy(json.loads(POLICY_PATH.read_text(encoding="utf-8")))
     assert policy["promotion"]["mode"] == "newest-validated-stable"
-    assert policy["promotion"]["automatic_promotion"] is False
-    assert policy["promotion"]["automatic_install"] is False
-    assert policy["promotion"]["automatic_service_restart"] is False
+    assert policy["promotion"]["watcher_may_promote"] is False
+    assert policy["promotion"]["watcher_may_install"] is False
+    assert policy["promotion"]["watcher_may_restart"] is False
+    assert policy["promotion"]["maintainer_may_promote_after_gates"] is True
+    assert policy["promotion"]["maintainer_may_install_after_release"] is True
+    assert policy["promotion"]["maintainer_may_restart_in_safe_window"] is True
+    assert policy["promotion"]["candidate_reporter"] == "scheduled-read-only-watcher"
+    assert policy["promotion"]["promotion_owner"] == "scheduled-codex-maintainer-automation"
+    assert policy["promotion"]["validation_owner"] == "scheduled-codex-maintainer-automation-plus-required-ci"
+    assert policy["promotion"]["installation_owner"] == "scheduled-codex-maintainer-automation"
+    assert policy["promotion"]["restart_owner"] == "scheduled-codex-maintainer-automation-safe-window"
+    assert policy["promotion"]["routine_approval"] == "standing-after-all-gates"
+    assert policy["promotion"]["exception_approval"] == "explicit-user"
+    assert policy["promotion"]["candidate_detection_sla_hours"] == 6
+    assert policy["promotion"]["validation_start_sla_hours"] == 24
+    assert policy["promotion"]["promotion_target_sla_hours"] == 48
+    assert policy["promotion"]["drift_issue_assignee"] == "ventianima-lab"
+    assert policy["promotion"]["promotion_automation_name"] == "Validate upstream runtime drift"
+    assert policy["promotion"]["promotion_automation_schedule"] == "every-6-hours"
+    assert "devspace-open-workspace-same-id-read" in policy["promotion"]["required_gates"]
     assert policy["runtimes"]["oracle"]["current"]["version"] == "0.18.0"
     assert policy["runtimes"]["devspace"]["current"]["version"] == "1.0.7"
 
@@ -91,6 +108,27 @@ def test_rejects_extra_policy_keys_and_integrity_mismatch() -> None:
     report = module.check(policy, bad, timeout=0.01)
     assert report["errors"] == ["oracle"]
     assert "current archive integrity" in report["runtimes"]["oracle"]["error"]
+
+
+def test_rejects_missing_promotion_owner_or_closed_gate() -> None:
+    module = load_module()
+    policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+    policy["promotion"]["promotion_owner"] = "nobody"
+    try:
+        module.validate_policy(policy)
+    except module.PolicyError as exc:
+        assert "promotion_owner" in str(exc)
+    else:
+        raise AssertionError("promotion ownership must fail closed")
+
+    policy = json.loads(POLICY_PATH.read_text(encoding="utf-8"))
+    policy["promotion"]["required_gates"].remove("devspace-open-workspace-same-id-read")
+    try:
+        module.validate_policy(policy)
+    except module.PolicyError as exc:
+        assert "closed gate set" in str(exc)
+    else:
+        raise AssertionError("missing read-route canary must fail closed")
 
 
 def test_main_allows_drift_for_workflow_issue_handling(tmp_path: Path, capsys) -> None:

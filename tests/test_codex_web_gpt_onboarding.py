@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import hashlib
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -285,9 +286,16 @@ def _bound_final_gate_run(
     project = Path(environment["project"])
     run_dir = codex_home / "state" / "chatgpt-oracle" / "projects" / "test" / "runs" / ("f" * 32)
     run_dir.mkdir(parents=True, exist_ok=True)
+    mission_path = project / "missions" / "onboarding-final-gate.md"
+    mission_path.parent.mkdir(parents=True, exist_ok=True)
+    mission_path.write_text("# Final gate cryptographic read challenge\nnonce: 4d3a8f1c\n", encoding="utf-8")
+    mission_sha256 = hashlib.sha256(mission_path.read_bytes()).hexdigest()
     output = run_dir / "output.md"
     output.write_text(
-        f"App codex opened workspace ws_onboarding_test and listed: {', '.join(listing)}\n"
+        f"App codex opened and separately read workspace. Listed: {', '.join(listing)}\n"
+        "Audit receipts: 00000000-0000-4000-8000-000000000001 "
+        "00000000-0000-4000-8000-000000000002 "
+        "00000000-0000-4000-8000-000000000003\n"
         "TASK_OUTCOME: EXECUTED\n",
         encoding="utf-8",
     )
@@ -305,6 +313,7 @@ def _bound_final_gate_run(
         "terminal_harvested": True,
         "task_outcome": "executed",
         "artifact_sha256": output_sha256,
+        "mission": {"path": str(mission_path.resolve()), "sha256": mission_sha256},
         "oracle": {
             "slug": "oracle-onboarding-final",
             "conversation_url": "https://chatgpt.com/c/onboarding-final-test",
@@ -312,7 +321,63 @@ def _bound_final_gate_run(
         "artifacts": {"output": str(output.resolve())},
     }
     (run_dir / "state.json").write_text(json.dumps(state), encoding="utf-8")
+    receipt_root = Path(environment["devspace_home"]) / "state" / "tool-read-receipts"
+    receipt_root.mkdir(parents=True, exist_ok=True)
+    common = {
+        "schema": "codex.devspace.tool-read-receipt/v1",
+        "auditNonce": state["run_id"],
+        "workspaceId": "ws_onboarding_test",
+        "canonicalRoot": str(project.resolve()),
+        "conversationScopeId": "v1/opaque-openai-session-scope",
+    }
+    receipts = (
+        ("00000000-0000-4000-8000-000000000001", "open_workspace", None, None, None, None, None, None, "2026-08-22T00:00:01Z"),
+        ("00000000-0000-4000-8000-000000000002", "read", "missions/onboarding-final-gate.md", None, None, None, None, None, "2026-08-22T00:00:02Z"),
+        ("00000000-0000-4000-8000-000000000003", "read_chunk", "missions/onboarding-final-gate.md", mission_sha256, 0, mission_path.stat().st_size, mission_path.stat().st_size, True, "2026-08-22T00:00:03Z"),
+    )
+    for audit_step, (receipt_id, tool, requested_path, chunk_sha256, offset, returned, total, eof, timestamp) in enumerate(receipts, 1):
+        payload = {
+            **common,
+            "receiptId": receipt_id,
+            "auditStep": audit_step,
+            "tool": tool,
+            "requestedRelativePath": requested_path,
+            "readChunkSha256": chunk_sha256,
+            "readChunkOffsetBytes": offset,
+            "readChunkBytesReturned": returned,
+            "readChunkTotalBytes": total,
+            "readChunkEof": eof,
+            "timestamp": timestamp,
+        }
+        (receipt_root / f"{receipt_id}.json").write_text(json.dumps(payload), encoding="utf-8")
     return run_dir
+
+
+def _rewrite_tool_read_receipt(receipt: Path, **updates: object) -> None:
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
+    payload.update(updates)
+    receipt.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def _tail_partial_chunk_receipt(receipts: list[Path]) -> None:
+    receipt = receipts[2]
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
+    _rewrite_tool_read_receipt(
+        receipt,
+        readChunkOffsetBytes=1,
+        readChunkBytesReturned=payload["readChunkTotalBytes"] - 1,
+        readChunkEof=True,
+    )
+
+
+def _truncated_chunk_receipt(receipts: list[Path]) -> None:
+    receipt = receipts[2]
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
+    _rewrite_tool_read_receipt(
+        receipt,
+        readChunkBytesReturned=payload["readChunkTotalBytes"] - 1,
+        readChunkEof=True,
+    )
 
 
 def test_start_persists_resumable_state_without_secrets(tmp_path: Path) -> None:
@@ -477,6 +542,7 @@ def test_final_gate_requires_recorded_non_pro_exact_root_read(tmp_path: Path) ->
         listing=["AGENTS.md"],
         run_dir=run_dir,
         codex_home=environment["codex_home"],
+        devspace_home=environment["devspace_home"],
     )
     after = module.next_step(
         codex_home=environment["codex_home"],
@@ -487,6 +553,181 @@ def test_final_gate_requires_recorded_non_pro_exact_root_read(tmp_path: Path) ->
     assert after["done"] is True
     assert after["completion_state"] == "verified"
     assert after["completion_label"] == "전체 설치 및 실제 프로젝트 연결 검증 완료"
+
+
+def test_final_gate_rejects_self_authored_open_output_without_receipts(tmp_path: Path) -> None:
+    environment = _wizard_environment(tmp_path, ready=True)
+    module.start_onboarding(
+        provider="custom",
+        registration_url="https://mcp.example.com/mcp",
+        roots=[str(environment["project"])],
+        codex_home=environment["codex_home"],
+    )
+    run_dir = _bound_final_gate_run(environment, ["AGENTS.md"])
+    output = run_dir / "output.md"
+    output.write_text(
+        "App codex opened workspace and listed AGENTS.md\n"
+        "TASK_OUTCOME: EXECUTED\n",
+        encoding="utf-8",
+    )
+    state_path = run_dir / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["artifact_sha256"] = hashlib.sha256(output.read_bytes()).hexdigest()
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+    for receipt in (Path(environment["devspace_home"]) / "state" / "tool-read-receipts").glob("*.json"):
+        receipt.unlink()
+    with pytest.raises(module.OnboardingError, match="FINAL_GATE_TOOL_READ_RECEIPTS_MISSING_OR_DUPLICATE"):
+        module.record_final_gate(
+            read_ok=True,
+            root=str(environment["project"]),
+            evidence="regular oracle opened but did not separately read",
+            listing=["AGENTS.md"],
+            run_dir=run_dir,
+            codex_home=environment["codex_home"],
+            devspace_home=environment["devspace_home"],
+        )
+
+
+def test_final_gate_accepts_valid_receipts_with_server_challenge_response(tmp_path: Path) -> None:
+    environment = _wizard_environment(tmp_path, ready=True)
+    module.start_onboarding(
+        provider="custom",
+        registration_url="https://mcp.example.com/mcp",
+        roots=[str(environment["project"])],
+        codex_home=environment["codex_home"],
+    )
+    run_dir = _bound_final_gate_run(environment, ["AGENTS.md"])
+    output = run_dir / "output.md"
+    output.write_text(
+        "App codex listed AGENTS.md after the connector calls.\n"
+        "Audit receipts: 00000000-0000-4000-8000-000000000001 "
+        "00000000-0000-4000-8000-000000000002 "
+        "00000000-0000-4000-8000-000000000003\n"
+        "TASK_OUTCOME: EXECUTED\n",
+        encoding="utf-8",
+    )
+    state_path = run_dir / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["artifact_sha256"] = hashlib.sha256(output.read_bytes()).hexdigest()
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    recorded = module.record_final_gate(
+        read_ok=True,
+        root=str(environment["project"]),
+        evidence="server receipts bind the exact mission read",
+        listing=["AGENTS.md"],
+        run_dir=run_dir,
+        codex_home=environment["codex_home"],
+        devspace_home=environment["devspace_home"],
+    )
+    assert recorded["read_file_sha256"] == hashlib.sha256(
+        (Path(environment["project"]) / "missions" / "onboarding-final-gate.md").read_bytes()
+    ).hexdigest()
+
+
+def test_final_gate_rejects_receipts_not_echoed_by_exact_oracle_conversation(tmp_path: Path) -> None:
+    environment = _wizard_environment(tmp_path, ready=True)
+    module.start_onboarding(
+        provider="custom",
+        registration_url="https://mcp.example.com/mcp",
+        roots=[str(environment["project"])],
+        codex_home=environment["codex_home"],
+    )
+    run_dir = _bound_final_gate_run(environment, ["AGENTS.md"])
+    output = run_dir / "output.md"
+    output.write_text(
+        "App codex listed AGENTS.md but did not echo server challenges.\n"
+        "TASK_OUTCOME: EXECUTED\n",
+        encoding="utf-8",
+    )
+    state_path = run_dir / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["artifact_sha256"] = hashlib.sha256(output.read_bytes()).hexdigest()
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    with pytest.raises(module.OnboardingError, match="FINAL_GATE_CONVERSATION_RECEIPT_CHALLENGE_MISSING"):
+        module.record_final_gate(
+            read_ok=True,
+            root=str(environment["project"]),
+            evidence="different conversation cannot satisfy server challenge-response",
+            listing=["AGENTS.md"],
+            run_dir=run_dir,
+            codex_home=environment["codex_home"],
+            devspace_home=environment["devspace_home"],
+        )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "error"),
+    [
+        (lambda receipts: receipts[0].write_text(receipts[0].read_text(encoding="utf-8")[:-1] + ', "unexpected": true}', encoding="utf-8"), "KEYSET_INVALID"),
+        (lambda receipts: receipts[0].write_text(receipts[0].read_text(encoding="utf-8")[:-1] + ', "tool": "open_workspace"}', encoding="utf-8"), "INVALID"),
+        (lambda receipts: receipts.append(receipts[2].with_name("duplicate.json")) or receipts[-1].write_text(receipts[2].read_text(encoding="utf-8"), encoding="utf-8"), "MISSING_OR_DUPLICATE"),
+        (lambda receipts: _rewrite_tool_read_receipt(receipts[1], auditStep=3), "ORDER_INVALID"),
+        (lambda receipts: receipts[1].write_text(receipts[1].read_text(encoding="utf-8").replace("ws_onboarding_test", "ws_other"), encoding="utf-8"), "WORKSPACE_MISMATCH"),
+        (lambda receipts: receipts[0].write_text(receipts[0].read_text(encoding="utf-8").replace('"canonicalRoot": "', '"canonicalRoot": "C:/wrong-root'), encoding="utf-8"), "ROOT_MISMATCH"),
+        (lambda receipts: receipts[0].write_text(receipts[0].read_text(encoding="utf-8").replace("v1/opaque-openai-session-scope", "other-scope"), encoding="utf-8"), "SCOPE_MISMATCH"),
+        (lambda receipts: receipts[1].write_text(receipts[1].read_text(encoding="utf-8").replace("missions/onboarding-final-gate.md", "README.md"), encoding="utf-8"), "PATH_MISMATCH"),
+        (lambda receipts: receipts[2].write_text(re.sub(r'("readChunkSha256": ")[0-9a-f]+', r'\g<1>' + "0" * 64, receipts[2].read_text(encoding="utf-8")), encoding="utf-8"), "SHA_MISMATCH"),
+        (lambda receipts: _rewrite_tool_read_receipt(receipts[0], readChunkOffsetBytes=0), "CHUNK_METADATA_INVALID"),
+        (_tail_partial_chunk_receipt, "CHUNK_METADATA_INVALID"),
+        (_truncated_chunk_receipt, "CHUNK_METADATA_INVALID"),
+        (lambda receipts: receipts[0].write_text(receipts[0].read_text(encoding="utf-8").replace('"auditNonce": "', '"auditNonce": "other-'), encoding="utf-8"), "MISSING_OR_DUPLICATE"),
+    ],
+)
+def test_final_gate_rejects_invalid_tool_read_receipts(
+    tmp_path: Path,
+    mutation: object,
+    error: str,
+) -> None:
+    environment = _wizard_environment(tmp_path, ready=True)
+    module.start_onboarding(
+        provider="custom",
+        registration_url="https://mcp.example.com/mcp",
+        roots=[str(environment["project"])],
+        codex_home=environment["codex_home"],
+    )
+    run_dir = _bound_final_gate_run(environment, ["AGENTS.md"])
+    receipts = sorted((Path(environment["devspace_home"]) / "state" / "tool-read-receipts").glob("*.json"))
+    mutation(receipts)
+    with pytest.raises(module.OnboardingError, match=f"FINAL_GATE_TOOL_READ_RECEIPT.*{error}"):
+        module.record_final_gate(
+            read_ok=True,
+            root=str(environment["project"]),
+            evidence="receipt mutation must block the final gate",
+            listing=["AGENTS.md"],
+            run_dir=run_dir,
+            codex_home=environment["codex_home"],
+            devspace_home=environment["devspace_home"],
+        )
+
+
+def test_final_gate_rejects_symlink_tool_read_receipt(tmp_path: Path) -> None:
+    environment = _wizard_environment(tmp_path, ready=True)
+    module.start_onboarding(
+        provider="custom",
+        registration_url="https://mcp.example.com/mcp",
+        roots=[str(environment["project"])],
+        codex_home=environment["codex_home"],
+    )
+    run_dir = _bound_final_gate_run(environment, ["AGENTS.md"])
+    receipt_root = Path(environment["devspace_home"]) / "state" / "tool-read-receipts"
+    target = sorted(receipt_root.glob("*.json"))[0]
+    target.unlink()
+    try:
+        target.symlink_to(receipt_root / "00000000-0000-4000-8000-000000000002.json")
+    except OSError as exc:
+        pytest.skip(f"symlink unavailable: {exc}")
+    with pytest.raises(module.OnboardingError, match="FINAL_GATE_TOOL_READ_RECEIPT_SYMLINK_FORBIDDEN"):
+        module.record_final_gate(
+            read_ok=True,
+            root=str(environment["project"]),
+            evidence="a symlink receipt must not be accepted",
+            listing=["AGENTS.md"],
+            run_dir=run_dir,
+            codex_home=environment["codex_home"],
+            devspace_home=environment["devspace_home"],
+        )
 
 
 def test_final_gate_rejects_a_root_outside_the_allowed_list(tmp_path: Path) -> None:
@@ -706,6 +947,7 @@ def test_valid_final_gate_record_completes_onboarding_and_stores_listing_sample(
         listing=listing,
         run_dir=run_dir,
         codex_home=environment["codex_home"],
+        devspace_home=environment["devspace_home"],
     )
     assert recorded["listing_sample"] == ["README.md", "bin", "tests"]
 
@@ -737,6 +979,7 @@ def test_final_gate_listing_sample_is_capped_at_ten_entries(tmp_path: Path) -> N
         listing=listing,
         run_dir=run_dir,
         codex_home=environment["codex_home"],
+        devspace_home=environment["devspace_home"],
     )
 
     assert recorded["listing_sample"] == listing[:10]
@@ -928,6 +1171,7 @@ def test_clean_room_wizard_walks_every_user_boundary_to_hash_bound_completion(
         listing=["README.md"],
         run_dir=run_dir,
         codex_home=environment["codex_home"],
+        devspace_home=environment["devspace_home"],
     )
     done = module.next_step(
         codex_home=environment["codex_home"], devspace_home=environment["devspace_home"],
@@ -1058,6 +1302,7 @@ def test_honest_recorded_final_gate_still_completes_after_read_time_validation(t
         listing=["README.md"],
         run_dir=run_dir,
         codex_home=environment["codex_home"],
+        devspace_home=environment["devspace_home"],
     )
 
     step = module.next_step(
@@ -1087,15 +1332,16 @@ def test_final_gate_receipt_distinguishes_honest_and_tampered_evidence(tmp_path:
         listing=["README.md"],
         run_dir=run_dir,
         codex_home=environment["codex_home"],
+        devspace_home=environment["devspace_home"],
     )
     honest = module.load_state(codex_home=environment["codex_home"])
 
-    assert module._final_gate_receipt(environment["codex_home"], honest) == honest["stages"]["08_final_gate"]["evidence"]
+    assert module._final_gate_receipt(environment["codex_home"], environment["devspace_home"], honest) == honest["stages"]["08_final_gate"]["evidence"]
 
     honest["stages"]["08_final_gate"]["evidence"] = _final_gate_record(
         environment["project"], listing_sample=[]
     )
-    assert module._final_gate_receipt(environment["codex_home"], honest) is None
+    assert module._final_gate_receipt(environment["codex_home"], environment["devspace_home"], honest) is None
 
 
 def test_final_gate_hash_binding_rejects_output_tamper_after_recording(tmp_path: Path) -> None:
@@ -1115,8 +1361,41 @@ def test_final_gate_hash_binding_rejects_output_tamper_after_recording(tmp_path:
         listing=["README.md"],
         run_dir=run_dir,
         codex_home=environment["codex_home"],
+        devspace_home=environment["devspace_home"],
     )
     (run_dir / "output.md").write_text("tampered\nTASK_OUTCOME: EXECUTED\n", encoding="utf-8")
+
+    step = module.next_step(
+        codex_home=environment["codex_home"],
+        devspace_home=environment["devspace_home"],
+        **environment["probes"],
+    )
+    assert step["done"] is False
+    assert step["current_stage"] == "08_final_gate"
+
+
+def test_final_gate_revalidation_rejects_receipt_path_or_hash_tamper(tmp_path: Path) -> None:
+    environment = _wizard_environment(tmp_path, ready=True)
+    module.start_onboarding(
+        provider="custom",
+        registration_url="https://mcp.example.com/mcp",
+        roots=[str(environment["project"])],
+        codex_home=environment["codex_home"],
+    )
+    _confirm_ready_manual_stages(environment)
+    run_dir = _bound_final_gate_run(environment, ["README.md"])
+    recorded = module.record_final_gate(
+        read_ok=True,
+        root=str(environment["project"]),
+        evidence="receipt paths and hashes must remain unchanged",
+        listing=["README.md"],
+        run_dir=run_dir,
+        codex_home=environment["codex_home"],
+        devspace_home=environment["devspace_home"],
+    )
+    assert len(recorded["tool_read_receipts"]) == 3
+    receipt_path = Path(recorded["tool_read_receipts"][2]["path"])
+    receipt_path.write_text(receipt_path.read_text(encoding="utf-8").replace('"timestamp": "2026-08-22T00:00:03Z"', '"timestamp": "2026-08-22T00:00:04Z"'), encoding="utf-8")
 
     step = module.next_step(
         codex_home=environment["codex_home"],

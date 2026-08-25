@@ -684,6 +684,56 @@ def test_foreign_connector_search_evidence_requires_search_and_failure(
     assert module._foreign_connector_search_evidence(evidence_text) is expected
 
 
+@pytest.mark.parametrize(
+    ("evidence_text", "expected"),
+    [
+        (
+            "codex open_workspace succeeded with workspace id ws_123. "
+            "The separate read `AGENTS.md` failed with mcp_network_error: Connection failed.",
+            True,
+        ),
+        (
+            "codex open_workspace 성공, workspace id ws_123. "
+            "이후 파일 읽기가 mcp_network_error: Connection failed로 실패했습니다.",
+            True,
+        ),
+        ("open_workspace succeeded with workspace id ws_123 and read AGENTS.md succeeded", False),
+        ("read AGENTS.md failed with mcp_network_error: Connection failed", False),
+    ],
+)
+def test_same_workspace_read_network_failure_requires_open_and_read_evidence(
+    evidence_text: str, expected: bool
+) -> None:
+    module = load()
+
+    assert module._same_workspace_read_network_failure_evidence(evidence_text) is expected
+
+
+def test_terminal_blocked_same_workspace_read_network_failure_has_bounded_signature(
+    tmp_path: Path,
+) -> None:
+    module = load()
+    state_root = tmp_path / "oracle-state"
+    write_run(
+        state_root,
+        "r" * 8,
+        status="attention_required",
+        output=(
+            "codex open_workspace succeeded with workspace id ws_350cbc6826.\n"
+            "The separate read `AGENTS.md` failed with mcp_network_error: Connection failed.\n"
+            "TASK_OUTCOME: BLOCKED\n"
+        ),
+        session_authority="terminal",
+        terminal_harvested=True,
+        task_outcome="blocked",
+    )
+
+    verdict = module.diagnose(state_root)["unresolved_runs"][0]
+
+    assert verdict["bucket"] == "terminal-task-not-executed"
+    assert verdict["signature"] == "registered-app-read-network-failure-after-workspace-open"
+
+
 def test_terminal_blocked_foreign_connector_search_has_bounded_signature(tmp_path: Path) -> None:
     module = load()
     state_root = tmp_path / "oracle-state"

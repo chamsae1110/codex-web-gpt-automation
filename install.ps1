@@ -53,9 +53,9 @@ function Get-ManifestFiles([string]$Root,$Patterns){
     if($pattern -match '(^|/)\.{1,2}($|/)' -or [IO.Path]::IsPathRooted($pattern)){throw "unsafe manifest pattern: $pattern"}
     # Root-level files are deliberately an exact allowlist.  Do not recurse over
     # the repository root: that would traverse metadata and unrelated working files.
-    if($pattern -eq 'upstream-runtime-policy.json'){
+    if($pattern -in @('upstream-runtime-policy.json','upstream-runtime-maintainer-automation.json')){
       $source=Get-SafeChild $Root $pattern
-      if(!(Test-Path -LiteralPath $source) -or (Get-Item -LiteralPath $source -Force).LinkType){throw "manifest policy file invalid: $pattern"}
+      if(!(Test-Path -LiteralPath $source) -or (Get-Item -LiteralPath $source -Force).LinkType){throw "manifest root contract invalid: $pattern"}
       $files+=$pattern
       continue
     }

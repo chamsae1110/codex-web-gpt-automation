@@ -50,11 +50,28 @@ local patches were originally written for it.
   read-only scheduled watcher report drift within six hours. The watcher may
   create or update one stable GitHub issue, but it never installs, promotes,
   patches, restarts a service, opens ChatGPT, or changes a project.
+- Route that managed issue to the separately scheduled Codex maintainer. It
+  owns the validation PR, required cross-platform CI, publication, lifecycle
+  install, parity/doctor proof, and one safe-window managed DevSpace restart.
+  A routine stable patch/minor has standing approval only after every gate;
+  major/breaking, permission/OAuth, patch conflict, failed canary, or ambiguous
+  evidence requires explicit user approval. Detection/validation/promotion
+  targets are 6/24/48 hours and never weaken a gate.
+- The drift issue is a task assignment, not the promotion actor. One
+  scheduled Codex maintainer automation owns validation within 24 hours and targets
+  promotion within 48 hours when every gate can pass. The owner plus required
+  exact-commit CI performs the tests. Stable patch/minor promotion has standing
+  approval only after all gates pass; breaking/major, permission/OAuth, patch
+  conflict, failed canary, or ambiguous cases require explicit user approval.
 - Promote promptly after verifying the published archive integrity and exact
   package tree, rebasing every required local patch with pristine/patched
   hashes, running syntax and focused compatibility checks, proving an Oracle
   no-submission canary and DevSpace health/root/large-read canaries, and passing
-  Windows and macOS CI on the release commit.
+  Windows, macOS, and Linux CI on the release commit. A DevSpace canary must prove
+  `open_workspace`, a separate mission-file `read` through the same returned
+  workspace ID, and a `read_chunk` complete SHA-256 matching the local mission
+  bytes; HTTP health, bundled instructions, or workspace-open success alone
+  never proves the read route.
 - Make the promoted version the explicit default for new work. Retain the prior
   verified version as rollback LKG and exact historical-recovery authority;
   never reinterpret persisted runs or execute a moving unpinned `latest` tag.

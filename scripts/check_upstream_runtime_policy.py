@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 
-POLICY_SCHEMA = "codex.web-gpt.upstream-runtime-policy/v1"
+POLICY_SCHEMA = "codex.web-gpt.upstream-runtime-policy/v2"
 REPORT_SCHEMA = "codex.web-gpt.upstream-runtime-report/v1"
 SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$")
 INTEGRITY_RE = re.compile(r"^sha512-[A-Za-z0-9+/]+={0,2}$")
@@ -29,10 +29,39 @@ ROOT_KEYS = {"schema", "promotion", "runtimes"}
 PROMOTION_KEYS = {
     "mode",
     "npm_latest",
-    "automatic_promotion",
-    "automatic_install",
-    "automatic_service_restart",
+    "candidate_reporter",
+    "promotion_owner",
+    "validation_owner",
+    "installation_owner",
+    "restart_owner",
+    "routine_approval",
+    "exception_approval",
+    "candidate_detection_sla_hours",
+    "validation_start_sla_hours",
+    "promotion_target_sla_hours",
+    "drift_issue_assignee",
+    "promotion_automation_name",
+    "promotion_automation_schedule",
+    "watcher_may_promote",
+    "watcher_may_install",
+    "watcher_may_restart",
+    "maintainer_may_promote_after_gates",
+    "maintainer_may_install_after_release",
+    "maintainer_may_restart_in_safe_window",
     "drift_issue_title",
+    "drift_issue_label",
+    "required_gates",
+}
+REQUIRED_GATES = {
+    "published-archive-integrity",
+    "exact-package-tree-and-patch-hashes",
+    "syntax-and-focused-compatibility",
+    "oracle-no-submission-canary",
+    "devspace-open-workspace-same-id-read",
+    "devspace-root-large-read-and-health",
+    "windows-macos-linux-exact-commit-ci",
+    "reviewed-validation-pr",
+    "release-and-local-install-receipt",
 }
 RUNTIME_KEYS = {"package", "registry", "current", "last_known_good"}
 RELEASE_KEYS = {"version", "integrity", "source"}
@@ -87,10 +116,49 @@ def validate_policy(raw: Any) -> dict[str, Any]:
         raise PolicyError("policy.promotion.mode must be newest-validated-stable")
     if promotion["npm_latest"] != "candidate-immediately":
         raise PolicyError("policy.promotion.npm_latest must be candidate-immediately")
-    for key in ("automatic_promotion", "automatic_install", "automatic_service_restart"):
+    expected_roles = {
+        "candidate_reporter": "scheduled-read-only-watcher",
+        "promotion_owner": "scheduled-codex-maintainer-automation",
+        "validation_owner": "scheduled-codex-maintainer-automation-plus-required-ci",
+        "installation_owner": "scheduled-codex-maintainer-automation",
+        "restart_owner": "scheduled-codex-maintainer-automation-safe-window",
+        "routine_approval": "standing-after-all-gates",
+        "exception_approval": "explicit-user",
+    }
+    for key, expected in expected_roles.items():
+        if promotion[key] != expected:
+            raise PolicyError(f"policy.promotion.{key} must be {expected}")
+    expected_slas = {
+        "candidate_detection_sla_hours": 6,
+        "validation_start_sla_hours": 24,
+        "promotion_target_sla_hours": 48,
+    }
+    for key, expected in expected_slas.items():
+        value = promotion[key]
+        if isinstance(value, bool) or not isinstance(value, int) or value != expected:
+            raise PolicyError(f"policy.promotion.{key} must be {expected}")
+    for key in ("watcher_may_promote", "watcher_may_install", "watcher_may_restart"):
         if promotion[key] is not False:
             raise PolicyError(f"policy.promotion.{key} must be false")
+    for key in (
+        "maintainer_may_promote_after_gates",
+        "maintainer_may_install_after_release",
+        "maintainer_may_restart_in_safe_window",
+    ):
+        if promotion[key] is not True:
+            raise PolicyError(f"policy.promotion.{key} must be true")
     _string(promotion["drift_issue_title"], "policy.promotion.drift_issue_title")
+    _string(promotion["drift_issue_label"], "policy.promotion.drift_issue_label")
+    _string(promotion["drift_issue_assignee"], "policy.promotion.drift_issue_assignee")
+    if promotion["promotion_automation_name"] != "Validate upstream runtime drift":
+        raise PolicyError("policy.promotion.promotion_automation_name must name the managed Codex automation")
+    if promotion["promotion_automation_schedule"] != "every-6-hours":
+        raise PolicyError("policy.promotion.promotion_automation_schedule must be every-6-hours")
+    gates = promotion["required_gates"]
+    if not isinstance(gates, list) or any(not isinstance(item, str) for item in gates):
+        raise PolicyError("policy.promotion.required_gates must be a string array")
+    if len(gates) != len(set(gates)) or set(gates) != REQUIRED_GATES:
+        raise PolicyError("policy.promotion.required_gates must contain the exact closed gate set")
 
     runtimes = _object(policy["runtimes"], "policy.runtimes")
     if set(runtimes) != {"oracle", "devspace"}:

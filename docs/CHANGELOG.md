@@ -1,5 +1,48 @@
 # 기술 변경 기록
 
+## 1.20.1 - Assign and gate upstream runtime promotion
+
+- The six-hour watcher remains strictly read-only, but its stable drift issue
+  now carries the scheduled Codex maintainer promotion/validation owner, 24-hour validation-start and
+  48-hour all-gates promotion targets, exact candidate integrity, a dedicated
+  label, and the complete machine-readable gate checklist. A routine stable
+  patch/minor candidate has standing approval only after every gate passes;
+  breaking, permission/OAuth, patch-conflict, failed-canary, and ambiguous
+  cases still require explicit user approval.
+- Runtime policy schema v2 makes the reporter, promotion owner, test owner,
+  approval split, timing, and closed evidence set mandatory instead of relying
+  on the vague instruction to promote promptly.
+- Reporter permissions and maintainer permissions are now separate fields: the
+  reporter cannot mutate runtime state, while the scheduled maintainer may
+  promote, publish, install, and perform one safe-window restart after all
+  routine gates pass. This closes the previous policy gap where a candidate
+  could be detected without naming who actually deploys it.
+- The watcher resolves only one exact-title drift issue and fails closed on
+  duplicates; it creates a missing label without overwriting existing label
+  metadata.
+- DevSpace promotion and post-repair verification now require a separate
+  mission-file `read` and `read_chunk` through the exact workspace ID returned
+  by `open_workspace`. The gate verifies the server-returned complete SHA-256
+  against the locally bound mission bytes, so matching self-authored workspace
+  ID markers cannot pass. HTTP 401 health, workspace-open success, or bundled
+  instructions alone cannot hide an intermittent `mcp_network_error` read path,
+  and Pro stays blocked until a fresh regular non-Pro canary succeeds.
+- The audit nonce now makes `open_workspace` the first workspace/process/
+  mutation call in the opaque OpenAI session scope, disables every workspace
+  mutation surface including `download_artifact`, and server-numbers the exact
+  three receipt steps. Each tool response returns an unpredictable server receipt
+  ID; the exact terminal Oracle conversation must echo all three IDs, binding the
+  opaque DevSpace scope to that public conversation. The final gate rejects
+  duplicate-key JSON, mixed workspaces/scopes, partial/tail chunks, missing
+  challenge responses, and a receipt digest that does not match the exact mission.
+- The host maintainer heartbeat is now represented by a checked-in exact contract
+  and a verifier that compares the active Codex automation TOML. Downstream
+  installs receive the audit contract but never auto-register the maintainer task.
+- Read-only diagnosis now gives the bounded signature
+  `registered-app-read-network-failure-after-workspace-open` when durable
+  terminal evidence proves that workspace open succeeded but a same-connector
+  file read failed with `mcp_network_error: Connection failed`.
+
 ## 1.20.0 - Follow validated upstream stable runtimes
 
 - Oracle `0.18.0` and DevSpace `1.0.7` are now the defaults for new work after
