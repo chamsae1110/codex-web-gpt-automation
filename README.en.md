@@ -183,7 +183,15 @@ The current tested baseline is Oracle `0.18.0`, DevSpace `1.0.7`, Node.js
 `>=24 <27`, Windows 11, and macOS 12 or newer. Official npm `latest` releases
 become candidates immediately, but only an isolated archive, patch,
 no-submission, and cross-platform validation plus review can promote them to
-current. Oracle `0.17.1` and DevSpace `1.0.4` remain rollback LKG and exact
+current. The six-hour reporter only maintains the drift issue. A separate
+scheduled Codex maintainer starts validation within 24 hours and owns the PR,
+exact-commit CI, release, lifecycle install, and one safe-window DevSpace
+restart, targeting a clean promotion within 48 hours. Stable patch/minor
+candidates have standing approval only after all gates pass; major/breaking,
+permission/OAuth, patch-conflict, failed, ambiguous, and unsafe-restart cases
+still require explicit user approval. Its checked-in contract is audited by
+`python scripts/verify_upstream_runtime_maintainer.py` and is never auto-registered
+on downstream machines. Oracle `0.17.1` and DevSpace `1.0.4` remain rollback LKG and exact
 legacy-recovery versions, not defaults for new work. See the
 [upstream runtime policy](docs/UPSTREAM_RUNTIME_POLICY.md).
 

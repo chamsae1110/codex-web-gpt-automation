@@ -1,6 +1,6 @@
 {
   "schema": "codexpro.install-manifest/v1",
-  "version": "1.20.0",
+  "version": "1.20.1",
   "include": [
     "bin/chatgpt_agbrowse_bridge.py",
     "bin/chatgpt_agbrowse_composer.py",
@@ -20,7 +20,9 @@
     "bin/devspace-compat/1.0.4/file-safety-to-read-chunk.patch",
     "bin/devspace-compat/1.0.4/workspaces.patch",
     "bin/devspace-compat/1.0.7/oauth-refresh-replay.patch",
+    "bin/devspace-compat/1.0.7/artifact-audit-readonly.patch",
     "bin/devspace-compat/1.0.7/workspace-write-and-read-bridge.patch",
+    "bin/devspace-compat/1.0.7/tool-read-receipts.patch",
     "bin/devspace-compat/1.0.7/workspaces.patch",
     "bin/chatgpt_oracle_compat.py",
     "bin/oracle-compat/0.17.1/assistantResponse.terminal-marker-fallback.patch",
@@ -85,7 +87,9 @@
     "bin/codexpro_fixed_runtime_watchdog.py",
     "bin/codexpro_harness.py",
     "scripts/check_upstream_runtime_policy.py",
+    "scripts/verify_upstream_runtime_maintainer.py",
     "upstream-runtime-policy.json",
+    "upstream-runtime-maintainer-automation.json",
     "bin/codexpro_cloudflared_launchd.py",
     "bin/codexpro_macos_launchd.py",
     "bin/codexpro_mcp_identity.py",

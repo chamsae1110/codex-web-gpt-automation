@@ -11,6 +11,7 @@ import datetime as dt
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -58,6 +59,32 @@ USER_CONFIRMATION_STAGES = (
 )
 FINAL_GATE_TRANSPORTS = ("regular-non-pro-oracle",)
 FINAL_GATE_MIN_EVIDENCE = 16
+FINAL_GATE_RECEIPT_SCHEMA = "codex.devspace.tool-read-receipt/v1"
+FINAL_GATE_RECEIPT_KEYS = frozenset(
+    {
+        "schema",
+        "receiptId",
+        "auditNonce",
+        "auditStep",
+        "tool",
+        "workspaceId",
+        "canonicalRoot",
+        "requestedRelativePath",
+        "readChunkSha256",
+        "readChunkOffsetBytes",
+        "readChunkBytesReturned",
+        "readChunkTotalBytes",
+        "readChunkEof",
+        "conversationScopeId",
+        "timestamp",
+    }
+)
+FINAL_GATE_RECEIPT_TOOLS = ("open_workspace", "read", "read_chunk")
+FINAL_GATE_SHA256_RE = re.compile(r"^[0-9a-f]{64}$", re.IGNORECASE)
+FINAL_GATE_RECEIPT_ID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
 COMPLETION_STATES_BY_LANGUAGE = {
     "ko": {
         "installed": "프로그램 설치 완료",
@@ -662,9 +689,183 @@ def _conversation_url(run_state: dict[str, Any]) -> str:
     return ""
 
 
+def _receipt_timestamp(value: object) -> dt.datetime:
+    if not isinstance(value, str) or not value.strip():
+        raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_TIMESTAMP_INVALID")
+    try:
+        parsed = dt.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_TIMESTAMP_INVALID") from exc
+    if parsed.tzinfo is None:
+        raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_TIMESTAMP_INVALID")
+    return parsed
+
+
+def _receipt_directory(devspace_home: Path) -> Path:
+    return devspace_home.expanduser().resolve() / "state" / "tool-read-receipts"
+
+
+def _strict_receipt_json(payload: str) -> dict[str, Any]:
+    def no_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate JSON key")
+            result[key] = value
+        return result
+
+    decoded = json.loads(payload, object_pairs_hook=no_duplicate_keys)
+    if not isinstance(decoded, dict):
+        raise ValueError("receipt JSON must be an object")
+    return decoded
+
+
+def _tool_read_receipts(
+    *,
+    devspace_home: Path,
+    audit_nonce: str,
+    expected_root: Path,
+    mission_path: Path,
+    mission_sha256: str,
+) -> dict[str, Any]:
+    receipt_directory = _receipt_directory(devspace_home)
+    if receipt_directory.is_symlink() or not receipt_directory.is_dir():
+        raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_DIRECTORY_INVALID")
+    matching: list[dict[str, Any]] = []
+    try:
+        entries = sorted(receipt_directory.iterdir(), key=lambda item: item.name)
+    except OSError as exc:
+        raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_DIRECTORY_INVALID") from exc
+    for path in entries:
+        if path.is_symlink():
+            raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_SYMLINK_FORBIDDEN")
+        if path.suffix.casefold() != ".json":
+            continue
+        if not path.is_file():
+            raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_NOT_REGULAR")
+        try:
+            payload = _strict_receipt_json(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_INVALID") from exc
+        if set(payload) != FINAL_GATE_RECEIPT_KEYS:
+            raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_KEYSET_INVALID")
+        if payload.get("schema") != FINAL_GATE_RECEIPT_SCHEMA:
+            raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_SCHEMA_INVALID")
+        if not isinstance(payload.get("receiptId"), str) or not FINAL_GATE_RECEIPT_ID_RE.fullmatch(payload["receiptId"]):
+            raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_ID_INVALID")
+        if not isinstance(payload.get("auditNonce"), str) or not isinstance(payload.get("tool"), str):
+            raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_INVALID")
+        if (
+            not isinstance(payload.get("auditStep"), int)
+            or isinstance(payload.get("auditStep"), bool)
+            or payload["auditStep"] not in (1, 2, 3)
+        ):
+            raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_STEP_INVALID")
+        if not isinstance(payload.get("workspaceId"), str) or not payload["workspaceId"].strip():
+            raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_WORKSPACE_INVALID")
+        if not isinstance(payload.get("canonicalRoot"), str) or not payload["canonicalRoot"].strip():
+            raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_ROOT_INVALID")
+        if payload.get("requestedRelativePath") is not None and not isinstance(payload.get("requestedRelativePath"), str):
+            raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_PATH_INVALID")
+        if payload.get("readChunkSha256") is not None and (
+            not isinstance(payload.get("readChunkSha256"), str)
+            or not FINAL_GATE_SHA256_RE.fullmatch(payload["readChunkSha256"])
+        ):
+            raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_SHA_INVALID")
+        if not isinstance(payload.get("conversationScopeId"), str) or not payload["conversationScopeId"].strip():
+            raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_SCOPE_INVALID")
+        parsed_timestamp = _receipt_timestamp(payload.get("timestamp"))
+        if payload["auditNonce"] == audit_nonce:
+            matching.append(
+                {
+                    "path": path,
+                    "sha256": _sha256_file(path),
+                    "payload": payload,
+                    "timestamp": parsed_timestamp,
+                }
+            )
+    if len(matching) != len(FINAL_GATE_RECEIPT_TOOLS):
+        raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPTS_MISSING_OR_DUPLICATE")
+    by_tool: dict[str, dict[str, Any]] = {}
+    for item in matching:
+        tool = item["payload"]["tool"]
+        if tool not in FINAL_GATE_RECEIPT_TOOLS or tool in by_tool:
+            raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPTS_MISSING_OR_DUPLICATE")
+        by_tool[tool] = item
+    if set(by_tool) != set(FINAL_GATE_RECEIPT_TOOLS):
+        raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPTS_MISSING_OR_DUPLICATE")
+    ordered = [by_tool[tool] for tool in FINAL_GATE_RECEIPT_TOOLS]
+    if [item["payload"]["auditStep"] for item in ordered] != [1, 2, 3]:
+        raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_ORDER_INVALID")
+    workspace_ids = {item["payload"]["workspaceId"] for item in ordered}
+    canonical_roots = {item["payload"]["canonicalRoot"] for item in ordered}
+    scopes = {item["payload"]["conversationScopeId"] for item in ordered}
+    expected_canonical_root = str(expected_root.expanduser().resolve())
+    if len(workspace_ids) != 1:
+        raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_WORKSPACE_MISMATCH")
+    if len(canonical_roots) != 1 or os.path.normcase(next(iter(canonical_roots))) != os.path.normcase(expected_canonical_root):
+        raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_ROOT_MISMATCH")
+    if len(scopes) != 1:
+        raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_SCOPE_MISMATCH")
+    # `openai/session` is an opaque per-conversation scope (not the public
+    # ChatGPT /c/<id>). DevSpace enforces that auditNonce open_workspace is the
+    # first workspace/process/mutation action in that scope and issues the exact
+    # 1→2→3 sequence. The server-generated receipt IDs are returned only through
+    # those tool responses; the terminal Oracle conversation must echo all three
+    # below, which challenge-binds the opaque scope to the public conversation.
+    mission_relative = mission_path.relative_to(expected_root).as_posix()
+    if ordered[0]["payload"]["requestedRelativePath"] is not None:
+        raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_PATH_MISMATCH")
+    if any(item["payload"]["requestedRelativePath"] != mission_relative for item in ordered[1:]):
+        raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_PATH_MISMATCH")
+    if ordered[0]["payload"]["readChunkSha256"] is not None or ordered[1]["payload"]["readChunkSha256"] is not None:
+        raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_SHA_MISMATCH")
+    chunk_fields = (
+        "readChunkOffsetBytes",
+        "readChunkBytesReturned",
+        "readChunkTotalBytes",
+        "readChunkEof",
+    )
+    if any(item["payload"][field] is not None for item in ordered[:2] for field in chunk_fields):
+        raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_CHUNK_METADATA_INVALID")
+    chunk = ordered[2]["payload"]
+    numeric_chunk_fields = (
+        "readChunkOffsetBytes",
+        "readChunkBytesReturned",
+        "readChunkTotalBytes",
+    )
+    if any(
+        not isinstance(chunk[field], int) or isinstance(chunk[field], bool) or chunk[field] < 0
+        for field in numeric_chunk_fields
+    ) or not isinstance(chunk["readChunkEof"], bool):
+        raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_CHUNK_METADATA_INVALID")
+    if (
+        chunk["readChunkOffsetBytes"] != 0
+        or chunk["readChunkEof"] is not True
+        or chunk["readChunkBytesReturned"] != chunk["readChunkTotalBytes"]
+    ):
+        raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_CHUNK_METADATA_INVALID")
+    if str(ordered[2]["payload"]["readChunkSha256"]).casefold() != mission_sha256.casefold():
+        raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_SHA_MISMATCH")
+    return {
+        "workspace_id": next(iter(workspace_ids)),
+        "conversation_scope_id": next(iter(scopes)),
+        "tool_read_receipts": [
+            {
+                "tool": item["payload"]["tool"],
+                "receipt_id": item["payload"]["receiptId"],
+                "path": str(item["path"]),
+                "sha256": item["sha256"],
+            }
+            for item in ordered
+        ],
+    }
+
+
 def _oracle_final_gate_binding(
     *,
     codex_home: Path,
+    devspace_home: Path,
     run_dir: Path,
     expected_root: str,
     expected_app_name: str,
@@ -725,11 +926,39 @@ def _oracle_final_gate_binding(
     entries = [str(item).strip() for item in listing if str(item).strip()]
     if not entries or any(entry.casefold() not in folded for entry in entries):
         raise OnboardingError("FINAL_GATE_LISTING_NOT_BOUND_TO_ORACLE_OUTPUT")
-    if expected_app_name.casefold() not in folded or "ws_" not in folded:
+    if expected_app_name.casefold() not in folded:
         raise OnboardingError("FINAL_GATE_CONNECTOR_IDENTITY_MISSING")
+    mission = run_state.get("mission") if isinstance(run_state.get("mission"), dict) else {}
+    try:
+        mission_path = Path(str(mission.get("path") or "")).expanduser().resolve(strict=True)
+    except OSError as exc:
+        raise OnboardingError("FINAL_GATE_READ_PROOF_MISSION_UNREADABLE") from exc
+    root_path = Path(expected_root).expanduser().resolve()
+    if not mission_path.is_file() or not _inside(root_path, mission_path):
+        raise OnboardingError("FINAL_GATE_READ_PROOF_MISSION_INVALID")
+    mission_sha256 = _sha256_file(mission_path)
+    if mission.get("sha256") != mission_sha256:
+        raise OnboardingError("FINAL_GATE_READ_PROOF_MISSION_HASH_MISMATCH")
+    run_id = str(run_state.get("run_id") or "").strip()
+    if not run_id:
+        raise OnboardingError("FINAL_GATE_TOOL_READ_RECEIPT_AUDIT_NONCE_MISSING")
     conversation_url = _conversation_url(run_state)
     if not conversation_url:
         raise OnboardingError("FINAL_GATE_CONVERSATION_BINDING_MISSING")
+    parsed_conversation = urllib.parse.urlsplit(conversation_url)
+    match = re.fullmatch(r"/c/([^/]+)", parsed_conversation.path)
+    if not match:
+        raise OnboardingError("FINAL_GATE_CONVERSATION_BINDING_MISSING")
+    receipt_binding = _tool_read_receipts(
+        devspace_home=devspace_home,
+        audit_nonce=run_id,
+        expected_root=root_path,
+        mission_path=mission_path,
+        mission_sha256=mission_sha256,
+    )
+    receipt_ids = [item["receipt_id"] for item in receipt_binding["tool_read_receipts"]]
+    if any(receipt_id not in output for receipt_id in receipt_ids):
+        raise OnboardingError("FINAL_GATE_CONVERSATION_RECEIPT_CHALLENGE_MISSING")
     oracle = run_state.get("oracle") if isinstance(run_state.get("oracle"), dict) else {}
     return {
         "run_dir": str(directory),
@@ -739,11 +968,22 @@ def _oracle_final_gate_binding(
         "state_sha256": _sha256_file(state_path),
         "output_path": str(output_path),
         "output_sha256": output_sha256,
+        "workspace_id": receipt_binding["workspace_id"],
+        "conversation_scope_id": receipt_binding["conversation_scope_id"],
+        "tool_read_receipts": receipt_binding["tool_read_receipts"],
+        "separate_read_verified": True,
+        "read_file_path": str(mission_path),
+        "read_file_sha256": mission_sha256,
+        "cryptographic_read_verified": True,
         "transport": "regular-non-pro-oracle",
     }
 
 
-def _final_gate_receipt(codex_home: Path, state: dict[str, Any]) -> dict[str, Any] | None:
+def _final_gate_receipt(
+    codex_home: Path,
+    devspace_home: Path,
+    state: dict[str, Any],
+) -> dict[str, Any] | None:
     recorded = ((state.get("stages") or {}).get("08_final_gate") or {}).get("evidence")
     if not isinstance(recorded, dict):
         return None
@@ -763,6 +1003,7 @@ def _final_gate_receipt(codex_home: Path, state: dict[str, Any]) -> dict[str, An
     try:
         binding = _oracle_final_gate_binding(
             codex_home=codex_home,
+            devspace_home=devspace_home,
             run_dir=Path(str(recorded.get("run_dir") or "")),
             expected_root=root,
             expected_app_name=str(state.get("app_name") or ""),
@@ -820,7 +1061,8 @@ def evaluate_stages(
     checks["chatgpt_app_registration_confirmed"] = bool(
         checks.get("app_name_matches_expected") and _stage_user_confirmed(state, "07_chatgpt_app")
     )
-    gate = _final_gate_receipt(resolved_home, state)
+    resolved_devspace_home = (devspace_home or (Path.home() / ".devspace")).expanduser().resolve()
+    gate = _final_gate_receipt(resolved_home, resolved_devspace_home, state)
     checks["exact_root_read_verified"] = bool(status["ready"]) and bool(gate and gate.get("read_ok"))
     stages: dict[str, Any] = {}
     for stage_id in STAGE_IDS:
@@ -1096,7 +1338,9 @@ def stage_instructions(stage_id: str, state: dict[str, Any], language: str = "ko
         "08_final_gate": [
             "마지막으로 실제 프로젝트를 읽을 수 있는지 확인합니다.",
             (f"{setup} post-register {roots} --hostname {host}" if tailscale else status_command),
-            f"새 일반 비-Pro Oracle 실행에서 @{state['app_name']} 로 exact root 를 열고 작은 디렉터리를 나열합니다.",
+            f"새 일반 비-Pro Oracle 실행에서 @{state['app_name']} 로 exact root 를 열고 반환된 workspaceId를 보존합니다.",
+            "Oracle run_id를 세 호출의 auditNonce로 쓰고 open_workspace를 그 대화의 첫 workspace/process/mutation 호출로 실행합니다. 같은 workspaceId로 미션 파일을 별도 read 호출한 뒤 같은 파일 전체를 offset 0의 read_chunk로 읽습니다.",
+            "각 도구 결과가 돌려준 서버 생성 Audit receipt ID 3개를 최종 답변에 정확히 다시 적습니다. 이 challenge-response와 ~/.devspace/state/tool-read-receipts의 open_workspace → read → read_chunk 영수증을 함께 검증하며, 임의 ID/SHA 자기진술만으로는 통과하지 않습니다.",
             "Codex Desktop 내장 DevSpace 플러그인 결과는 증거로 쓰지 않습니다.",
             "성공하면 onboard.py record-final-gate --run-dir <Oracle run 디렉터리> --root <루트> --evidence <요약> --listing <항목> 을 실행합니다.",
         ],
@@ -1169,7 +1413,9 @@ def stage_instructions(stage_id: str, state: dict[str, Any], language: str = "ko
         "08_final_gate": [
             "Finally confirm the real project root is readable.",
             (f"{setup} post-register {roots} --hostname {host}" if tailscale else status_command),
-            f"In a fresh regular non-Pro Oracle run, open the exact root with @{state['app_name']} and list a small directory.",
+            f"In a fresh regular non-Pro Oracle run, open the exact root with @{state['app_name']} and preserve the returned workspaceId.",
+            "Use the Oracle run_id as auditNonce for all three calls and make open_workspace the conversation's first workspace/process/mutation call. With that same workspaceId, separately read the mission and then read_chunk the complete same file from offset zero.",
+            "Echo the three server-generated Audit receipt IDs returned by the tool calls exactly in the final answer. The gate verifies that challenge-response together with DevSpace's ~/.devspace/state/tool-read-receipts open_workspace → read → read_chunk chain; arbitrary output ID/SHA claims alone never pass.",
             "The built-in Codex Desktop DevSpace plugin is not valid evidence.",
             "On success run onboard.py record-final-gate --run-dir <Oracle run directory> --root <root> --evidence <summary> --listing <entry>.",
         ],
@@ -1375,6 +1621,7 @@ def record_final_gate(
     evidence: str,
     run_dir: Path | None = None,
     codex_home: Path | None = None,
+    devspace_home: Path | None = None,
     transport: str = "regular-non-pro-oracle",
     listing: Sequence[str] | None = None,
 ) -> dict[str, Any]:
@@ -1395,6 +1642,7 @@ def record_final_gate(
             raise OnboardingError("FINAL_GATE_ORACLE_RUN_REQUIRED")
         binding = _oracle_final_gate_binding(
             codex_home=_codex_home(codex_home),
+            devspace_home=(devspace_home or (Path.home() / ".devspace")).expanduser().resolve(),
             run_dir=run_dir,
             expected_root=root,
             expected_app_name=state["app_name"],
@@ -1451,6 +1699,7 @@ def _parser() -> argparse.ArgumentParser:
     gate.add_argument("--root", required=True)
     gate.add_argument("--evidence", required=True)
     gate.add_argument("--run-dir", type=Path)
+    gate.add_argument("--devspace-home", type=Path)
     gate.add_argument("--listing", action="append", default=[], help="One observed directory entry; repeatable")
     gate.add_argument("--failed", action="store_true")
     return parser
@@ -1540,6 +1789,7 @@ def main(argv: list[str] | None = None) -> int:
                 root=args.root,
                 evidence=args.evidence,
                 run_dir=args.run_dir,
+                devspace_home=args.devspace_home,
                 listing=args.listing,
             )
         else:

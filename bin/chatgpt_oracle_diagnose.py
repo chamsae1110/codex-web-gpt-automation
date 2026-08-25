@@ -132,6 +132,27 @@ def _foreign_connector_search_evidence(evidence_text: str) -> bool:
     return searched and (empty or missing_workspace)
 
 
+def _same_workspace_read_network_failure_evidence(evidence_text: str) -> bool:
+    """Detect a registered-app read failure after workspace open succeeded.
+
+    Endpoint health and a successful ``open_workspace`` response do not prove
+    that the authenticated MCP session can execute a later ``read``.  Keep the
+    signature narrow: durable evidence must name both the successful open and
+    its workspace ID, then report a read plus the connector's network error.
+    """
+    text = evidence_text.casefold()
+    opened = "open_workspace" in text and any(
+        needle in text for needle in ("succeeded", "success", "성공")
+    )
+    workspace_bound = "workspace id" in text or "workspaceid" in text
+    read_attempt = any(
+        needle in text
+        for needle in ("read `agents.md`", "read agents.md", "파일 읽기", "file read")
+    )
+    network_failure = "mcp_network_error" in text and "connection failed" in text
+    return opened and workspace_bound and read_attempt and network_failure
+
+
 def classify_run(
     state: dict[str, Any],
     *,
@@ -202,6 +223,8 @@ def classify_run(
             signature = "post-submit-recursive-self-observation"
         elif "OAuth token request failed" in evidence_text and "503" in evidence_text:
             signature = "registered-app-oauth-token-request-503"
+        elif _same_workspace_read_network_failure_evidence(evidence_text):
+            signature = "registered-app-read-network-failure-after-workspace-open"
         elif _foreign_connector_search_evidence(evidence_text):
             signature = "foreign-workspace-connector-substituted"
         else:

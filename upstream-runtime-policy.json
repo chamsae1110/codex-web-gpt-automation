@@ -1,12 +1,40 @@
 {
-  "schema": "codex.web-gpt.upstream-runtime-policy/v1",
+  "schema": "codex.web-gpt.upstream-runtime-policy/v2",
   "promotion": {
     "mode": "newest-validated-stable",
     "npm_latest": "candidate-immediately",
-    "automatic_promotion": false,
-    "automatic_install": false,
-    "automatic_service_restart": false,
-    "drift_issue_title": "Upstream runtime drift"
+    "candidate_reporter": "scheduled-read-only-watcher",
+    "promotion_owner": "scheduled-codex-maintainer-automation",
+    "validation_owner": "scheduled-codex-maintainer-automation-plus-required-ci",
+    "installation_owner": "scheduled-codex-maintainer-automation",
+    "restart_owner": "scheduled-codex-maintainer-automation-safe-window",
+    "routine_approval": "standing-after-all-gates",
+    "exception_approval": "explicit-user",
+    "candidate_detection_sla_hours": 6,
+    "validation_start_sla_hours": 24,
+    "promotion_target_sla_hours": 48,
+    "drift_issue_assignee": "ventianima-lab",
+    "promotion_automation_name": "Validate upstream runtime drift",
+    "promotion_automation_schedule": "every-6-hours",
+    "watcher_may_promote": false,
+    "watcher_may_install": false,
+    "watcher_may_restart": false,
+    "maintainer_may_promote_after_gates": true,
+    "maintainer_may_install_after_release": true,
+    "maintainer_may_restart_in_safe_window": true,
+    "drift_issue_title": "Upstream runtime drift",
+    "drift_issue_label": "upstream-runtime",
+    "required_gates": [
+      "published-archive-integrity",
+      "exact-package-tree-and-patch-hashes",
+      "syntax-and-focused-compatibility",
+      "oracle-no-submission-canary",
+      "devspace-open-workspace-same-id-read",
+      "devspace-root-large-read-and-health",
+      "windows-macos-linux-exact-commit-ci",
+      "reviewed-validation-pr",
+      "release-and-local-install-receipt"
+    ]
   },
   "runtimes": {
     "oracle": {

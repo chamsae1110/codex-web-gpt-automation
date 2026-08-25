@@ -61,24 +61,52 @@ def test_only_the_read_only_upstream_runtime_watcher_may_be_scheduled() -> None:
     watcher = scheduled[0].read_text(encoding='utf-8')
     assert 'upstream-runtime-policy.json' in watcher
     assert 'check_upstream_runtime_policy.py' in watcher
-    assert 'automatic_install' not in watcher
-    assert 'automatic_service_restart' not in watcher
+    assert 'maintainer_may_install_after_release' not in watcher
+    assert 'maintainer_may_restart_in_safe_window' not in watcher
+    for token in ('promotion_owner', 'installation_owner', 'restart_owner', 'promotion_automation_name', 'promotion_automation_schedule', 'validation_start_sla_hours', 'promotion_target_sla_hours', 'required_gates', 'drift_issue_assignee', 'gh label create', '--add-assignee'):
+        assert token in watcher
+    assert 'item.get("title") == os.environ["TITLE"]' in watcher
+    assert 'codex-upstream-runtime-drift/v2' in watcher
+    assert 'os.environ["MARKER"] in str(item.get("body") or "")' in watcher
+    assert 'os.environ["LABEL"] in' in watcher
+    assert 'group: upstream-runtime-watch' in watcher
+    assert 'cancel-in-progress: false' in watcher
+    assert 'multiple exact upstream drift issues exist' in watcher
+    assert '--force' not in watcher
+
+
+def test_upstream_runtime_watcher_paginates_issues_and_excludes_pull_requests() -> None:
+    watcher = (ROOT / '.github/workflows' / 'upstream-runtime-watch.yml').read_text(encoding='utf-8')
+    assert 'gh api --paginate --slurp' in watcher
+    assert 'issues?state=open&per_page=100' in watcher
+    assert 'pages = json.load' in watcher
+    assert 'for page in pages for item in page' in watcher
+    assert '"pull_request" not in item' in watcher
+    assert 'managed = [' in watcher
+    assert 'exact = [str(item["number"]) for item in managed]' in watcher
+    assert 'if len(exact) > 1:' in watcher
+    assert 'refusing ambiguous mutation' in watcher
 
 
 def test_upstream_runtime_policy_is_receipt_mapped_for_both_lifecycle_installers() -> None:
     manifest = json.loads((ROOT / 'install-manifest.json').read_text(encoding='utf-8'))
     assert 'upstream-runtime-policy.json' in manifest['include']
-    assert "pattern -eq 'upstream-runtime-policy.json'" in (ROOT / 'install.ps1').read_text(encoding='utf-8')
+    assert 'upstream-runtime-maintainer-automation.json' in manifest['include']
+    installer = (ROOT / 'install.ps1').read_text(encoding='utf-8')
+    assert "'upstream-runtime-policy.json','upstream-runtime-maintainer-automation.json'" in installer
     portable = (ROOT / 'bin' / 'codexpro_lifecycle.py').read_text(encoding='utf-8')
     assert 'upstream-runtime-policy.json' in portable
+    assert 'upstream-runtime-maintainer-automation.json' in portable
 
 
 def test_portable_lifecycle_maps_the_exact_root_policy_file() -> None:
     lifecycle = load_portable_lifecycle()
     files = lifecycle.manifest_files(ROOT)
     assert 'upstream-runtime-policy.json' in files
+    assert 'upstream-runtime-maintainer-automation.json' in files
     plan = lifecycle.install(ROOT, ROOT / '.codex-tmp' / 'portable-policy-plan', dry_run=True)
     assert 'upstream-runtime-policy.json' in plan['files']
+    assert 'upstream-runtime-maintainer-automation.json' in plan['files']
 
 
 def test_upstream_runtime_policy_install_and_rollback_are_exact_inverse() -> None:
@@ -95,12 +123,20 @@ def test_upstream_runtime_policy_install_and_rollback_are_exact_inverse() -> Non
         installed_policy = codex_home / 'upstream-runtime-policy.json'
         assert installed_policy.read_bytes() == (ROOT / 'upstream-runtime-policy.json').read_bytes()
         assert hashlib.sha256(installed_policy.read_bytes()).hexdigest() == record['installed_sha256']
+        contract_record = next(
+            entry for entry in receipt['files']
+            if entry['path'] == 'upstream-runtime-maintainer-automation.json'
+        )
+        installed_contract = codex_home / 'upstream-runtime-maintainer-automation.json'
+        assert installed_contract.read_bytes() == (ROOT / 'upstream-runtime-maintainer-automation.json').read_bytes()
+        assert hashlib.sha256(installed_contract.read_bytes()).hexdigest() == contract_record['installed_sha256']
 
         rolled_back = run_powershell(
             '-File', str(ROOT / 'rollback.ps1'), '-CodexHome', str(codex_home), '-Receipt', str(receipt_path),
         )
         assert rolled_back.returncode == 0, rolled_back.stderr
         assert not installed_policy.exists()
+        assert not installed_contract.exists()
 
 def test_update_records_and_validates_an_atomic_contract() -> None:
     text = (ROOT / 'update.ps1').read_text(encoding='utf-8')

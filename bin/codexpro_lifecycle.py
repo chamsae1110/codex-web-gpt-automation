@@ -45,7 +45,9 @@ SUPPORTED_ROOTS = {
     "plugins",
     "marketplace",
 }
-ROOT_FILE_ALLOWLIST = frozenset({"upstream-runtime-policy.json"})
+ROOT_FILE_ALLOWLIST = frozenset(
+    {"upstream-runtime-policy.json", "upstream-runtime-maintainer-automation.json"}
+)
 
 
 class LifecycleError(RuntimeError):

@@ -18,6 +18,11 @@ SUPPORTED_VERSION = "1.0.7"
 LEGACY_LKG_VERSION = "1.0.4"
 CREATE_NO_WINDOW = 0x08000000
 PATCHES = {
+    "dist/artifact-tools.js": {
+        "patch": "artifact-audit-readonly.patch",
+        "pristine": "53a045b3961875afce5a95b3992aea3d156b64c0268b1d22724d2ed8e2c3aad2",
+        "patched": "fd5204b37da657d6183c8394b5ee8bed09bbffd50999946b4d0421897a52dfa7",
+    },
     "dist/oauth-provider.js": {
         "patch": "oauth-refresh-replay.patch",
         "pristine": "90ff3fd116735e98af5751de1065538964f6eaae913171223e8e19337b9831b8",
@@ -26,7 +31,10 @@ PATCHES = {
     "dist/server.js": {
         "patch": "workspace-write-and-read-bridge.patch",
         "pristine": "42d340924421182eea7f2580f96c8d1d5aae459061a6a90804e6900905ef2d72",
-        "patched": "259b5810206bc87e1e16e7963d084f4c90adc19ea9f54b4655d90ad51e49a967",
+        "patched": "3b258463fcd5a31b754727545ac2b6ecbc0dd922bee568573a8e5a0643842bfc",
+        "upgrades": {
+            "259b5810206bc87e1e16e7963d084f4c90adc19ea9f54b4655d90ad51e49a967": "tool-read-receipts.patch",
+        },
     },
     "dist/workspaces.js": {
         "patch": "workspaces.patch",
