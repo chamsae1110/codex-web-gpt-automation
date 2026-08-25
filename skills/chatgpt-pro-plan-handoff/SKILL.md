@@ -18,6 +18,35 @@ contract for immutable/external evidence or DevSpace-unreadable artifacts, not
 an automatic fallback. CodexPro and all agbrowse creation are frozen; legacy
 files remain only for exact persisted-run recovery.
 
+## Explicit Pro-first collaborative ownership
+
+When the user explicitly asks to delegate heavily to qualified Pro, treat Pro
+as a semantic implementation owner rather than an advisory reviewer. Give the
+Oracle DevSpace stages as much mission-authorized architecture, exploration,
+code creation, code editing, refactoring, focused testing, and candidate review
+as the exact workspace and safety boundary allow.
+
+- Split work by comparative advantage. Pro normally owns broad semantic design
+  and implementation; local Codex normally retains exact-root qualification,
+  protected host-only observations, workflow identity and recovery, hashes,
+  deterministic gates, and irreversible release boundaries.
+- Local Codex may still implement a bounded integration slice when it is
+  materially safer or more efficient, but the mission must name the ownership
+  boundary. Serialize handoffs and never let Pro and local Codex edit the same
+  files concurrently.
+- A dirty live checkout or protected operational runtime constrains the write
+  location, not Pro's coding capability. Put candidate writes in the authorized
+  isolated root and pass bounded, non-secret host observations into the mission
+  instead of reducing Pro to read-only advice. Never copy an uncommitted live
+  diff or mutate live tasks, credentials, profiles, tokens, or state without
+  explicit authority.
+- When durable regular_web_mode is already pro, regular comprehensive plan,
+  review, implementation, and final-gate stages are themselves qualified Pro.
+  Do not add a redundant optional Pro stage merely to relabel them.
+- Delegation never expands user authority. Commit, push, deployment, provider
+  calls, credential use, and other external mutations keep their independent
+  approval gates.
+
 ## Evidence-economical review loop
 
 Minimize redundant verification without lowering the safety floor.

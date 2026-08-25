@@ -37,6 +37,8 @@ DIAGNOSE = _load("oracle_incident_diagnose", BIN / "chatgpt_oracle_diagnose.py")
 STATE = DIAGNOSE.STATE
 
 SCHEMA = "codex.chatgpt.oracle-incident/v1"
+WORKFLOW_STATE_SCHEMA = "codex.chatgpt.oracle-comprehensive-state/v1"
+MISSING_LAYOUT_PRE_SUBMIT_SCHEMA = "codex.chatgpt.oracle-missing-layout-pre-submit/v1"
 
 # Exactly one role may edit automation sources.
 MAINTENANCE_OWNER = "automation-maintenance-session"
@@ -62,14 +64,18 @@ class IncidentError(RuntimeError):
         return {"ok": False, "error": {"code": self.code, "message": str(self), "evidence": self.evidence}}
 
 
-def build_packet(run_dir: Path, *, reporter_role: str = REPORTER_ROLE) -> dict[str, Any]:
-    """Build one incident packet from persisted run evidence only."""
+def _validate_reporter_role(reporter_role: str) -> None:
     if reporter_role != REPORTER_ROLE:
         raise IncidentError(
             "INCIDENT_REPORTER_ROLE_INVALID",
             f"an incident packet is reported by {REPORTER_ROLE}",
             {"reporter_role": reporter_role},
         )
+
+
+def build_packet(run_dir: Path, *, reporter_role: str = REPORTER_ROLE) -> dict[str, Any]:
+    """Build one incident packet from persisted run evidence only."""
+    _validate_reporter_role(reporter_role)
     directory = run_dir.expanduser().resolve(strict=True)
     state_path = directory / "state.json"
     if not state_path.is_file():
@@ -136,6 +142,106 @@ def build_packet(run_dir: Path, *, reporter_role: str = REPORTER_ROLE) -> dict[s
     }
 
 
+def build_missing_layout_packet(
+    workflow_state_path: Path,
+    *,
+    reporter_role: str = REPORTER_ROLE,
+) -> dict[str, Any]:
+    """Build an incident packet for a settled attempt whose layout never existed."""
+    _validate_reporter_role(reporter_role)
+    path = workflow_state_path.expanduser().resolve(strict=True)
+    try:
+        workflow = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise IncidentError(
+            "INCIDENT_WORKFLOW_STATE_INVALID",
+            "the comprehensive workflow state is not valid UTF-8 JSON",
+            {"workflow_state_path": str(path)},
+        ) from exc
+    if not isinstance(workflow, dict) or workflow.get("schema") != WORKFLOW_STATE_SCHEMA:
+        raise IncidentError(
+            "INCIDENT_WORKFLOW_STATE_INVALID",
+            f"workflow state schema must be {WORKFLOW_STATE_SCHEMA}",
+            {"workflow_state_path": str(path)},
+        )
+    records = workflow.get("records") if isinstance(workflow.get("records"), list) else []
+    settlement = next(
+        (
+            record
+            for record in reversed(records)
+            if isinstance(record, dict)
+            and record.get("settlement") == "oracle-layout-not-created-pre-submit"
+        ),
+        None,
+    )
+    proof = settlement.get("settlement_proof") if isinstance(settlement, dict) else None
+    if (
+        not isinstance(proof, dict)
+        or proof.get("schema") != MISSING_LAYOUT_PRE_SUBMIT_SCHEMA
+        or proof.get("kind") != "oracle-layout-not-created"
+        or proof.get("safe_for_fresh_run") is not True
+        or str(proof.get("workflow_id") or "") != str(workflow.get("workflow_id") or "")
+        or str(proof.get("attempt_id") or "") != str(settlement.get("run_id") or "")
+        or str(proof.get("run_dir") or "") != str(settlement.get("run_dir") or "")
+    ):
+        raise IncidentError(
+            "INCIDENT_MISSING_LAYOUT_PROOF_INVALID",
+            "workflow state lacks an exact missing-layout pre-submit settlement proof",
+            {"workflow_state_path": str(path)},
+        )
+    run_dir = Path(str(proof["run_dir"])).expanduser()
+    manifest_path = Path(str(proof.get("oracle_manifest_path") or "")).expanduser()
+    if not run_dir.is_absolute() or run_dir.exists() or run_dir.is_symlink():
+        raise IncidentError(
+            "INCIDENT_MISSING_LAYOUT_PROOF_INVALID",
+            "the settled Oracle run directory must remain absent",
+            {"run_dir": str(run_dir)},
+        )
+    try:
+        manifest_path = manifest_path.resolve(strict=True)
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        project_root = Path(str(manifest.get("project_root") or "")).expanduser().resolve(strict=True)
+    except (OSError, UnicodeDecodeError, TypeError, json.JSONDecodeError) as exc:
+        raise IncidentError(
+            "INCIDENT_MISSING_LAYOUT_BINDING_INVALID",
+            "the settled attempt's Oracle manifest binding is unavailable",
+            {"oracle_manifest_path": str(manifest_path)},
+        ) from exc
+    attempt_id = str(proof["attempt_id"])
+    if (
+        not isinstance(manifest, dict)
+        or str(manifest.get("run_id") or "") != attempt_id
+        or not project_root.is_dir()
+    ):
+        raise IncidentError(
+            "INCIDENT_MISSING_LAYOUT_BINDING_INVALID",
+            "the settled attempt does not match its Oracle manifest",
+            {"oracle_manifest_path": str(manifest_path), "attempt_id": attempt_id},
+        )
+    owners = STATE.unresolved_project_sessions(
+        run_dir.resolve().parent,
+        project_root,
+        exclude_run_id=attempt_id,
+    )
+    return {
+        "schema": SCHEMA,
+        "run_dir": str(run_dir.resolve()),
+        "project_root": str(project_root),
+        "bucket": DIAGNOSE.PRE_SUBMIT_HOST,
+        "signature": "oracle-layout-not-created-pre-submit",
+        "lifecycle": "pre_submit_settled",
+        "authority_source": "workflow-settlement-proof",
+        "conversation_url": "",
+        "reporter_role": reporter_role,
+        "repair_owner": MAINTENANCE_OWNER,
+        "reporter_may_edit_automation_sources": False,
+        "safe_for_fresh_run": not owners,
+        "unresolved_owners": owners,
+        "remediation": DIAGNOSE.REMEDIATION.get(DIAGNOSE.PRE_SUBMIT_HOST, ""),
+        "evidence_paths": [str(path), str(manifest_path)],
+    }
+
+
 def validate_packet(packet: dict[str, Any]) -> dict[str, Any]:
     """Reject a packet that is malformed or claims cross-session repair rights."""
     if not isinstance(packet, dict):
@@ -178,7 +284,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Build or validate one Oracle incident packet.")
     commands = parser.add_subparsers(dest="command", required=True)
     report = commands.add_parser("report")
-    report.add_argument("--run-dir", type=Path, required=True)
+    source = report.add_mutually_exclusive_group(required=True)
+    source.add_argument("--run-dir", type=Path)
+    source.add_argument("--workflow-state", type=Path)
     check = commands.add_parser("validate")
     check.add_argument("--packet", type=Path, required=True)
     return parser
@@ -188,7 +296,11 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         if args.command == "report":
-            packet = validate_packet(build_packet(args.run_dir))
+            packet = validate_packet(
+                build_packet(args.run_dir)
+                if args.run_dir is not None
+                else build_missing_layout_packet(args.workflow_state)
+            )
         else:
             packet = validate_packet(
                 json.loads(args.packet.expanduser().resolve(strict=True).read_text(encoding="utf-8"))

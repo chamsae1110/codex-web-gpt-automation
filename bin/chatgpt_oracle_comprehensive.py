@@ -28,6 +28,7 @@ PRO_OUTPUT_PREFIX_KEYS = (
 PRO_OUTPUT_RECOVERY_SCHEMA = "codex.chatgpt.oracle-pro-output-recovery/v1"
 STATE_SCHEMA = "codex.chatgpt.oracle-comprehensive-state/v1"
 SCOPE_SCHEMA = "codex.chatgpt.oracle-comprehensive-scope/v1"
+MISSING_LAYOUT_PRE_SUBMIT_SCHEMA = "codex.chatgpt.oracle-missing-layout-pre-submit/v1"
 STANDARD_PROFILE = "standard"
 ULTRA_ECONOMY_PROFILE = "ultra-economy"
 ULTRA_GPT_PROFILE = "ultra-gpt"
@@ -1048,6 +1049,129 @@ def _is_unambiguous_pre_submit_failure(run_dir: Path) -> bool:
     return any(marker in text for marker in UNAMBIGUOUS_PRE_SUBMIT_MARKERS)
 
 
+def _missing_layout_pre_submit_proof(
+    stored: dict[str, Any],
+    *,
+    config: dict[str, Any],
+    workflow_id: str,
+) -> dict[str, Any] | None:
+    """Prove that a persisted attempt never crossed Oracle's layout boundary.
+
+    ``chatgpt_oracle_run.execute_run`` creates the exact run directory before
+    it writes run state, starts a browser, or can submit a prompt.  Older
+    comprehensive versions persisted the planned directory before calling the
+    runner, so an exact-root qualification exception could leave a running
+    workflow whose directory never existed.  Treat that legacy shape as
+    pre-submit only when every immutable binding still matches and no execution
+    result record exists for the attempt.  A missing directory alone is never
+    sufficient because an operator could have removed a real run afterward.
+    """
+    attempt_id = str(stored.get("current_attempt_id") or "").strip()
+    run_id = str(stored.get("oracle_run_id") or "").strip()
+    raw_run_dir = str(stored.get("oracle_run_dir") or "").strip()
+    raw_manifest = str(stored.get("oracle_manifest_path") or "").strip()
+    if not attempt_id or run_id != attempt_id or not raw_run_dir or not raw_manifest:
+        return None
+    if str(stored.get("workflow_id") or "") != workflow_id:
+        return None
+
+    run_dir = Path(raw_run_dir).expanduser()
+    manifest_path = Path(raw_manifest).expanduser()
+    if (
+        not run_dir.is_absolute()
+        or run_dir.exists()
+        or run_dir.is_symlink()
+        or not manifest_path.is_absolute()
+        or manifest_path.is_symlink()
+        or not manifest_path.is_file()
+    ):
+        return None
+    receipt_path = Path(str(stored.get("receipt_path") or "")).expanduser()
+    if receipt_path.is_file():
+        return None
+
+    augmented_candidate = Path(str(stored.get("current_augmented_mission_path") or "")).expanduser()
+    binding_candidate = Path(str(stored.get("current_binding_source_path") or "")).expanduser()
+    current_candidate = Path(str(stored.get("current_mission_path") or "")).expanduser()
+    if any(path.is_symlink() for path in (augmented_candidate, binding_candidate, current_candidate)):
+        return None
+    try:
+        oracle_config = RUNNER.STATE.load_manifest(manifest_path)
+        expected_layout = RUNNER.STATE.create_layout(oracle_config, run_id=attempt_id)
+        augmented_mission = augmented_candidate.resolve(strict=True)
+        binding_source = binding_candidate.resolve(strict=True)
+        current_mission = current_candidate.resolve(strict=True)
+    except (OSError, ValueError, TypeError, RUNNER.STATE.OracleStateError):
+        return None
+    if not all(path.is_file() for path in (augmented_mission, binding_source, current_mission)):
+        return None
+    if (
+        expected_layout.run_dir.resolve() != run_dir.resolve()
+        or str(getattr(oracle_config, "requested_run_id", "") or "") != attempt_id
+        or Path(oracle_config.project_root).resolve() != config["project_root"]
+        or Path(oracle_config.mission_path).resolve() != augmented_mission
+        or binding_source != current_mission
+        or str(getattr(oracle_config, "mission_sha256", "") or "") != sha(augmented_mission)
+        or str(stored.get("current_augmented_mission_sha256") or "") != sha(augmented_mission)
+        or str(stored.get("current_input_sha256") or "") != sha(binding_source)
+        or str(stored.get("current_binding_source_sha256") or "") != sha(binding_source)
+    ):
+        return None
+
+    for record in stored.get("records") or []:
+        if not isinstance(record, dict):
+            return None
+        record_run_id = str(record.get("run_id") or "").strip()
+        record_run_dir = str(record.get("run_dir") or "").strip()
+        same_run = record_run_id == attempt_id
+        if record_run_dir:
+            try:
+                same_run = same_run or Path(record_run_dir).resolve() == run_dir.resolve()
+            except OSError:
+                return None
+        if not same_run:
+            continue
+        # The comprehensive runner appends ``ok`` only after execute_run
+        # returns.  Its presence means this is not the legacy pre-call gap.
+        if "ok" in record or record.get("recovered") is not True:
+            return None
+        if record.get("recovery_status") not in {None, ""}:
+            return None
+
+    return {
+        "schema": MISSING_LAYOUT_PRE_SUBMIT_SCHEMA,
+        "kind": "oracle-layout-not-created",
+        "safe_for_fresh_run": True,
+        "workflow_id": workflow_id,
+        "attempt_id": attempt_id,
+        "run_dir": str(run_dir.resolve()),
+        "oracle_manifest_path": str(manifest_path.resolve()),
+        "reason": "the exact bound Oracle layout was never created and no execution result was recorded",
+    }
+
+
+def _missing_layout_pre_submit_record(
+    proof: dict[str, Any],
+    *,
+    stage: str,
+    input_sha256: str,
+    failure_code: str,
+    failure_evidence: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "stage": stage,
+        "run_id": proof["attempt_id"],
+        "run_dir": proof["run_dir"],
+        "pre_submit_failure": True,
+        "pre_submit_retry_consumed": True,
+        "input_mission_sha256": input_sha256,
+        "failure_code": failure_code,
+        "failure_evidence": dict(failure_evidence or {}),
+        "settlement": "oracle-layout-not-created-pre-submit",
+        "settlement_proof": proof,
+    }
+
+
 def _pre_submit_retry_count(
     records: list[dict[str, Any]],
     *,
@@ -1458,14 +1582,48 @@ def _run_workflow_locked(
             stored_records = list(stored.get("records") or [])
             stored_stage = str(stored["current_stage"])
             stored_input_sha = str(stored.get("current_input_sha256") or "")
-            if (
-                _pre_submit_retry_count(
-                    stored_records,
+            retry_count = _pre_submit_retry_count(
+                stored_records,
+                stage=stored_stage,
+                input_sha256=stored_input_sha,
+                current_run_dir=persisted_run_dir,
+                legacy_total=pre_submit_retries,
+            )
+            missing_layout_proof = _missing_layout_pre_submit_proof(
+                stored,
+                config=config,
+                workflow_id=workflow_id,
+            )
+            if retry_count < 1 and missing_layout_proof is not None:
+                source = Path(str(stored["current_mission_path"])).resolve(strict=True)
+                retry_record = _missing_layout_pre_submit_record(
+                    missing_layout_proof,
                     stage=stored_stage,
                     input_sha256=stored_input_sha,
-                    current_run_dir=persisted_run_dir,
-                    legacy_total=pre_submit_retries,
-                ) < 1
+                    failure_code="ORACLE_LAYOUT_NOT_CREATED_PRE_SUBMIT",
+                )
+                prepared = {
+                    "schema": STATE_SCHEMA,
+                    "status": "prepared",
+                    "workflow_id": workflow_id,
+                    "manifest_sha256": config["manifest_sha256"],
+                    "next_stage": stored_stage,
+                    "next_mission_path": str(source),
+                    "next_mission_sha256": sha(source),
+                    "next_index": int(stored["next_index"]),
+                    "records": stored_records + [retry_record],
+                    "pre_submit_retries": pre_submit_retries + 1,
+                }
+                _write_workflow_state(state_path, config, prepared)
+                return {
+                    "ok": False,
+                    **prepared,
+                    "safe_for_fresh_run": True,
+                    "settlement": "oracle-layout-not-created-pre-submit",
+                    "blocker": "pre-submit attempt settled without a replacement submission; rerun the existing workflow manifest",
+                }
+            if (
+                retry_count < 1
                 and persisted_run_dir.is_dir()
                 and _is_unambiguous_pre_submit_failure(persisted_run_dir)
                 and _user_confirmed_retry_binding_matches(
@@ -1639,7 +1797,67 @@ def _run_workflow_locked(
             "oracle_run_id": attempt_id, "oracle_run_dir": str(oracle_layout.run_dir), "oracle_manifest_path": str(oracle_manifest),
             "next_index": index, "records": records, "pre_submit_retries": stage_pre_submit_retries,
         })
-        run = oracle_execute(oracle_manifest, dry_run=False)
+        try:
+            run = oracle_execute(oracle_manifest, dry_run=False)
+        except RUNNER.OracleRunError as exc:
+            if exc.code != "DEVSPACE_EXACT_ROOT_UNAVAILABLE" or oracle_layout.run_dir.exists():
+                raise
+            current = _json(state_path)
+            proof = _missing_layout_pre_submit_proof(
+                current,
+                config=config,
+                workflow_id=workflow_id,
+            )
+            if proof is None:
+                raise
+            retry_count = _pre_submit_retry_count(
+                records,
+                stage=stage,
+                input_sha256=input_sha,
+                current_run_dir=oracle_layout.run_dir,
+                legacy_total=stage_pre_submit_retries,
+            )
+            if retry_count >= 1:
+                blocked = {
+                    **current,
+                    "status": "attention_required",
+                    "blocker": "exact-root pre-submit retry budget is exhausted; no replacement was submitted",
+                    "pre_submit_failure": {
+                        "code": exc.code,
+                        "message": str(exc),
+                        "evidence": dict(exc.evidence),
+                        "proof": proof,
+                    },
+                }
+                _write_workflow_state(state_path, config, blocked)
+                return {"ok": False, **blocked, "safe_for_fresh_run": False}
+            retry_record = _missing_layout_pre_submit_record(
+                proof,
+                stage=stage,
+                input_sha256=input_sha,
+                failure_code=exc.code,
+                failure_evidence=exc.evidence,
+            )
+            prepared = {
+                "schema": STATE_SCHEMA,
+                "status": "prepared",
+                "workflow_id": workflow_id,
+                "manifest_sha256": config["manifest_sha256"],
+                "next_stage": stage,
+                "next_mission_path": str(source),
+                "next_mission_sha256": sha(source),
+                "next_index": index,
+                "records": records + [retry_record],
+                "pre_submit_retries": stage_pre_submit_retries + 1,
+            }
+            _write_workflow_state(state_path, config, prepared)
+            return {
+                "ok": False,
+                **prepared,
+                "safe_for_fresh_run": True,
+                "settlement": "oracle-layout-not-created-pre-submit",
+                "blocker": "exact DevSpace root must be registered before rerunning the existing workflow manifest",
+            }
         records.append({"stage": stage, "run_dir": run.get("run_dir"), "ok": bool(run.get("ok"))})
         if stage == "pro" and run.get("ok") and not receipt_path.is_file():
             _materialize_pro_receipt(

@@ -224,6 +224,96 @@ def test_packet_build_requires_the_exact_persisted_run(tmp_path: Path) -> None:
     assert exc.value.code == "INCIDENT_RUN_STATE_MISSING"
 
 
+def test_missing_layout_workflow_packet_uses_settlement_as_pre_submit_authority(
+    tmp_path: Path,
+) -> None:
+    module = load()
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    run_dir = tmp_path / "state" / "projects" / "projectkey" / "runs" / ("a" * 32)
+    manifest_path = tmp_path / "oracle.json"
+    manifest_path.write_text(json.dumps({
+        "schema": "codex.chatgpt.oracle-run/v1",
+        "project_root": str(project_root),
+        "run_id": "a" * 32,
+    }), encoding="utf-8")
+    workflow_state = tmp_path / "workflow-state.json"
+    workflow_state.write_text(json.dumps({
+        "schema": "codex.chatgpt.oracle-comprehensive-state/v1",
+        "status": "prepared",
+        "workflow_id": "b" * 32,
+        "records": [{
+            "stage": "plan",
+            "run_id": "a" * 32,
+            "run_dir": str(run_dir),
+            "pre_submit_failure": True,
+            "pre_submit_retry_consumed": True,
+            "settlement": "oracle-layout-not-created-pre-submit",
+            "settlement_proof": {
+                "schema": "codex.chatgpt.oracle-missing-layout-pre-submit/v1",
+                "kind": "oracle-layout-not-created",
+                "safe_for_fresh_run": True,
+                "workflow_id": "b" * 32,
+                "attempt_id": "a" * 32,
+                "run_dir": str(run_dir),
+                "oracle_manifest_path": str(manifest_path),
+            },
+        }],
+    }), encoding="utf-8")
+
+    packet = module.validate_packet(module.build_missing_layout_packet(workflow_state))
+
+    assert packet["run_dir"] == str(run_dir.resolve())
+    assert packet["bucket"] == "pre-submit-host-environment"
+    assert packet["signature"] == "oracle-layout-not-created-pre-submit"
+    assert packet["lifecycle"] == "pre_submit_settled"
+    assert packet["authority_source"] == "workflow-settlement-proof"
+    assert packet["safe_for_fresh_run"] is True
+    assert packet["evidence_paths"] == [
+        str(workflow_state.resolve()),
+        str(manifest_path.resolve()),
+    ]
+
+
+def test_missing_layout_workflow_packet_rejects_an_existing_run_directory(
+    tmp_path: Path,
+) -> None:
+    module = load()
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    manifest_path = tmp_path / "oracle.json"
+    manifest_path.write_text(json.dumps({
+        "project_root": str(project_root),
+        "run_id": "a" * 32,
+    }), encoding="utf-8")
+    workflow_state = tmp_path / "workflow-state.json"
+    workflow_state.write_text(json.dumps({
+        "schema": "codex.chatgpt.oracle-comprehensive-state/v1",
+        "workflow_id": "b" * 32,
+        "records": [{
+            "run_id": "a" * 32,
+            "run_dir": str(run_dir),
+            "settlement": "oracle-layout-not-created-pre-submit",
+            "settlement_proof": {
+                "schema": "codex.chatgpt.oracle-missing-layout-pre-submit/v1",
+                "kind": "oracle-layout-not-created",
+                "safe_for_fresh_run": True,
+                "workflow_id": "b" * 32,
+                "attempt_id": "a" * 32,
+                "run_dir": str(run_dir),
+                "oracle_manifest_path": str(manifest_path),
+            },
+        }],
+    }), encoding="utf-8")
+
+    with pytest.raises(module.IncidentError) as exc:
+        module.build_missing_layout_packet(workflow_state)
+
+    assert exc.value.code == "INCIDENT_MISSING_LAYOUT_PROOF_INVALID"
+
+
 def test_build_is_read_only_for_the_reported_run(tmp_path: Path) -> None:
     module = load()
     run_dir = write_run(

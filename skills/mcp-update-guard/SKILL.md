@@ -74,6 +74,10 @@ instead of the layer that failed.
   `python "$env:USERPROFILE\.codex\bin\chatgpt_oracle_incident.py" report --run-dir <exact-run-dir>`.
   The packet carries the exact run directory, the classified bucket, the
   lifecycle verdict with its authority source, and existing evidence paths.
+  If comprehensive settlement proves that the planned Oracle layout was never
+  created, report from its exact persisted workflow state instead with
+  `report --workflow-state <exact-workflow-state.json>`; never fabricate a run
+  directory just to satisfy the normal reporter.
 - Classify before repairing. Run
   `python "$env:USERPROFILE\.codex\bin\chatgpt_oracle_diagnose.py" --summary-only`
   and fix the largest bucket rather than the newest report. A `pre-submit-*`

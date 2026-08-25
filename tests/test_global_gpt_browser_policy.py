@@ -55,6 +55,19 @@ def test_qualified_pro_has_exact_root_mission_scoped_write_authority() -> None:
     assert "must not change accounts, app settings, or external state unless the mission explicitly authorizes" in flat
 
 
+def test_handoff_supports_explicit_pro_first_collaborative_implementation() -> None:
+    value = text(HANDOFF)
+    flat = " ".join(value.split())
+    assert "## Explicit Pro-first collaborative ownership" in value
+    assert "semantic implementation owner rather than an advisory reviewer" in flat
+    assert "code creation, code editing, refactoring, focused testing" in flat
+    assert "Split work by comparative advantage" in flat
+    assert "never let Pro and local Codex edit the same files concurrently" in flat
+    assert "constrains the write location, not Pro's coding capability" in flat
+    assert "regular comprehensive plan, review, implementation, and final-gate stages are themselves qualified Pro" in flat
+    assert "Delegation never expands user authority" in flat
+
+
 def test_qualified_pro_has_ordered_fail_closed_evidence_gates() -> None:
     value = text(PRO)
     flat = " ".join(value.split())
