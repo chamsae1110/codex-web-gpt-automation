@@ -231,6 +231,17 @@ state/output/transcript SHA-256 values and confirmation token
 writes one append-only receipt; it does not edit historical run artifacts or
 submit a prompt.
 
+A second, non-generic settlement exists only for a terminal DevSpace checkout
+answer that names the exact project root, reports `502 Upstream or external
+service errors` plus the missing workspace ID, and explicitly states that it
+did not read the mission, run commands, or change files. After the user
+authorizes a new run, the same Codex task may invoke
+`settle-terminal-devspace-nonexecution` with the exact state, output,
+transcript, stdout, stderr, and immutable mission SHA-256 values. The command
+rejects generic BLOCKED output, foreign tasks, active run-owned processes, and
+same-task live owners. Its append-only receipt authorizes a fresh task run; it
+is never an automatic retry and never edits the historical run.
+
 Direct runs from the same Codex task against one project hold one cross-process mutex for the entire Oracle
 process lifetime. A Multi parent owns that project mutex while authorized
 children use a short parent-scoped launch mutex and isolated copied Chrome

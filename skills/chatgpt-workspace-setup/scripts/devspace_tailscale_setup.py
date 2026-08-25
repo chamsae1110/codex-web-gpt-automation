@@ -16,12 +16,15 @@ import shlex
 import shutil
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
+import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Sequence, TextIO
 
 
 DEFAULT_PORT = 7676
@@ -29,9 +32,19 @@ APP_NAME = "codex"
 DEVSPACE_PACKAGE = "@waishnav/devspace@1.0.7"
 DEVSPACE_TOOL_MODE = "full"
 DEVSPACE_OAUTH_SCOPES = "devspace,offline_access"
-SECRET_PATTERN = re.compile(r"(?i)(password|token|secret|authorization)\s*([:=])\s*[^\s,;]+")
+SERVICE_STATE_SCHEMA = "codex.chatgpt.devspace-managed-service/v1"
+SERVICE_LOG_MAX_BYTES = 5 * 1024 * 1024
+SECRET_PATTERN = re.compile(
+    r"(?i)\b([a-z0-9_-]*(?:password|token|secret|authorization|cookie|oauth_code|"
+    r"code_verifier)[a-z0-9_-]*)([\"']?\s*[:=]\s*[\"']?)([^\"'\s,;&]+)"
+)
+BEARER_PATTERN = re.compile(r"(?i)\b(Bearer\s+)[A-Za-z0-9._~+\-/]+=*")
+QUERY_SECRET_PATTERN = re.compile(
+    r"(?i)([?&](?:code|token|access_token|refresh_token)=)[^&\s]+"
+)
 HOSTNAME_PATTERN = re.compile(r"^[a-z0-9][a-z0-9.-]*\.ts\.net$", re.IGNORECASE)
 WINDOWS_BOOTSTRAP_RUN_NAME = "Codex Web GPT DevSpace Bootstrap"
+WINDOWS_BOOTSTRAP_WATCH_SECONDS = 30
 
 
 class SetupError(ValueError):
@@ -58,9 +71,22 @@ class SetupConfig:
     def local_mcp_url(self) -> str:
         return f"http://127.0.0.1:{self.local_port}/mcp"
 
+    @property
+    def local_health_url(self) -> str:
+        return f"http://127.0.0.1:{self.local_port}/healthz"
+
+    @property
+    def public_health_url(self) -> str:
+        return f"{self.public_origin}/healthz"
+
 
 def redact(value: str) -> str:
-    return SECRET_PATTERN.sub(lambda match: f"{match.group(1)}{match.group(2)}[REDACTED]", value)
+    redacted = BEARER_PATTERN.sub(lambda match: f"{match.group(1)}[REDACTED]", value)
+    redacted = QUERY_SECRET_PATTERN.sub(lambda match: f"{match.group(1)}[REDACTED]", redacted)
+    return SECRET_PATTERN.sub(
+        lambda match: f"{match.group(1)}{match.group(2)}[REDACTED]",
+        redacted,
+    )
 
 
 def _is_volume_root(path: Path) -> bool:
@@ -176,10 +202,13 @@ def setup_plan(
         "managed_service_environment": {
             "DEVSPACE_TOOL_MODE": DEVSPACE_TOOL_MODE,
             "DEVSPACE_OAUTH_SCOPES": DEVSPACE_OAUTH_SCOPES,
+            "DEVSPACE_LOG_REQUESTS": "false",
+            "DEVSPACE_LOG_TOOL_CALLS": "false",
+            "DEVSPACE_LOG_SHELL_COMMANDS": "false",
         },
         "startup_watchdog": {
             "windows_mode": "per-user login watchdog",
-            "health_interval_seconds": 300,
+            "health_interval_seconds": WINDOWS_BOOTSTRAP_WATCH_SECONDS,
             "runtime_root_source": str(Path.home() / ".devspace" / "config.json"),
         },
         "tailscale_funnel": [
@@ -198,7 +227,18 @@ def setup_plan(
 
 
 def run_checked(argv: Sequence[str], *, runner: Callable[..., Any] = subprocess.run) -> None:
-    runner(list(argv), check=True, text=True, **windows_subprocess_kwargs())
+    completed = runner(
+        list(argv),
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        **windows_subprocess_kwargs(),
+    )
+    if completed.returncode != 0:
+        summary = redact((completed.stderr or completed.stdout or "").strip())[-1200:]
+        raise SetupError(f"MANAGED_COMMAND_FAILED:{completed.returncode}:{summary}")
 
 
 def run_interactive_checked(
@@ -296,6 +336,13 @@ def devspace_service_environment(base: dict[str, str] | None = None) -> dict[str
     environment = dict(os.environ if base is None else base)
     environment["DEVSPACE_TOOL_MODE"] = DEVSPACE_TOOL_MODE
     environment["DEVSPACE_OAUTH_SCOPES"] = DEVSPACE_OAUTH_SCOPES
+    # Persistent service logs are operational evidence, not request telemetry.
+    # Keep request/tool/shell payloads out before the redacting supervisor sees
+    # the stream, then redact defensive key/value and bearer patterns as a
+    # second layer.
+    environment["DEVSPACE_LOG_REQUESTS"] = "false"
+    environment["DEVSPACE_LOG_TOOL_CALLS"] = "false"
+    environment["DEVSPACE_LOG_SHELL_COMMANDS"] = "false"
     return environment
 
 
@@ -317,6 +364,215 @@ def launch_hidden(
         start_new_session=platform != "nt",
         **windows_subprocess_kwargs(platform),
     )
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def managed_service_paths(codex_home: Path | None = None) -> dict[str, Path]:
+    root = (
+        codex_home
+        or Path(os.environ.get("CODEX_HOME") or Path(__file__).resolve().parents[3])
+    ).expanduser().resolve()
+    log_root = root / "logs" / "codexpro-devspace"
+    state_root = root / "state" / "devspace-service"
+    return {
+        "stdout": log_root / "service.stdout.log",
+        "stderr": log_root / "service.stderr.log",
+        "events": log_root / "service-events.jsonl",
+        "state": state_root / "service-state.json",
+    }
+
+
+def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    if path.is_symlink():
+        raise SetupError("DEVSPACE_SERVICE_STATE_SYMLINK_UNSUPPORTED")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}-{uuid.uuid4().hex}")
+    try:
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _rotate_managed_log(path: Path, *, max_bytes: int = SERVICE_LOG_MAX_BYTES) -> None:
+    if path.is_symlink():
+        raise SetupError("DEVSPACE_SERVICE_LOG_SYMLINK_UNSUPPORTED")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.is_file() or path.stat().st_size <= max_bytes:
+        return
+    archive = path.with_name(path.name + ".1")
+    if archive.is_symlink():
+        raise SetupError("DEVSPACE_SERVICE_LOG_ARCHIVE_SYMLINK_UNSUPPORTED")
+    archive.unlink(missing_ok=True)
+    os.replace(path, archive)
+
+
+def _append_service_event(path: Path, payload: dict[str, Any]) -> None:
+    if path.is_symlink():
+        raise SetupError("DEVSPACE_SERVICE_EVENT_LOG_SYMLINK_UNSUPPORTED")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8", newline="\n") as stream:
+        stream.write(json.dumps(payload, ensure_ascii=True, sort_keys=True) + "\n")
+    os.chmod(path, 0o600)
+
+
+def _copy_redacted_stream(source: TextIO, target: Path) -> None:
+    if target.is_symlink():
+        raise SetupError("DEVSPACE_SERVICE_LOG_SYMLINK_UNSUPPORTED")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with target.open("a", encoding="utf-8", newline="\n") as destination:
+        os.chmod(target, 0o600)
+        for line in iter(source.readline, ""):
+            destination.write(f"[{_utc_now()}] {redact(line.rstrip())}\n")
+            destination.flush()
+
+
+def managed_service_runner_argv() -> list[str]:
+    return [sys.executable, str(Path(__file__).resolve()), "service-runner"]
+
+
+def run_managed_devspace_service(
+    *,
+    popen_factory: Callable[..., Any] = subprocess.Popen,
+    platform_name: str | None = None,
+    codex_home: Path | None = None,
+) -> int:
+    """Supervise DevSpace and preserve only redacted, payload-minimized logs."""
+    platform = platform_name or os.name
+    paths = managed_service_paths(codex_home)
+    for key in ("stdout", "stderr", "events"):
+        _rotate_managed_log(paths[key])
+    started_at = _utc_now()
+    base_state: dict[str, Any] = {
+        "schema": SERVICE_STATE_SCHEMA,
+        "status": "starting",
+        "package": DEVSPACE_PACKAGE,
+        "supervisor_pid": os.getpid(),
+        "started_at": started_at,
+        "stdout_path": str(paths["stdout"]),
+        "stderr_path": str(paths["stderr"]),
+        "events_path": str(paths["events"]),
+        "state_path": str(paths["state"]),
+    }
+    _write_json_atomic(paths["state"], base_state)
+    try:
+        child = popen_factory(
+            command_argv(["npx", "--yes", DEVSPACE_PACKAGE, "serve"], platform_name=platform),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+            shell=False,
+            env=devspace_service_environment(),
+            start_new_session=platform != "nt",
+            **windows_subprocess_kwargs(platform),
+        )
+    except Exception as error:
+        failed = {
+            **base_state,
+            "status": "launch_failed",
+            "ended_at": _utc_now(),
+            "error_type": type(error).__name__,
+            "error": redact(str(error))[:1000],
+        }
+        _write_json_atomic(paths["state"], failed)
+        _append_service_event(paths["events"], failed)
+        return 1
+    running = {
+        **base_state,
+        "status": "running",
+        "child_pid": int(child.pid),
+    }
+    _write_json_atomic(paths["state"], running)
+    _append_service_event(paths["events"], {**running, "event": "started"})
+    if child.stdout is None or child.stderr is None:
+        raise SetupError("DEVSPACE_SERVICE_PIPE_UNAVAILABLE")
+    pumps = (
+        threading.Thread(
+            target=_copy_redacted_stream,
+            args=(child.stdout, paths["stdout"]),
+            name="devspace-stdout-redactor",
+            daemon=True,
+        ),
+        threading.Thread(
+            target=_copy_redacted_stream,
+            args=(child.stderr, paths["stderr"]),
+            name="devspace-stderr-redactor",
+            daemon=True,
+        ),
+    )
+    for pump in pumps:
+        pump.start()
+    exit_code = int(child.wait())
+    for pump in pumps:
+        pump.join(timeout=5)
+    ended = {
+        **running,
+        "status": "exited",
+        "ended_at": _utc_now(),
+        "exit_code": exit_code,
+    }
+    _write_json_atomic(paths["state"], ended)
+    _append_service_event(paths["events"], {**ended, "event": "exited"})
+    return exit_code
+
+
+def launch_managed_devspace_service(
+    *,
+    popen_factory: Callable[..., Any] = subprocess.Popen,
+    platform_name: str | None = None,
+    codex_home: Path | None = None,
+) -> dict[str, Any]:
+    paths = managed_service_paths(codex_home)
+    supervisor = launch_hidden(
+        managed_service_runner_argv(),
+        popen_factory=popen_factory,
+        environment=devspace_service_environment(),
+        platform_name=platform_name,
+    )
+    return {
+        "supervisor_pid": int(supervisor.pid),
+        "state_path": str(paths["state"]),
+        "stdout_path": str(paths["stdout"]),
+        "stderr_path": str(paths["stderr"]),
+        "events_path": str(paths["events"]),
+    }
+
+
+def managed_service_evidence(launch: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    paths = managed_service_paths()
+    if paths["state"].is_file() and not paths["state"].is_symlink():
+        try:
+            payload = json.loads(paths["state"].read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            payload = None
+        if isinstance(payload, dict) and payload.get("schema") == SERVICE_STATE_SCHEMA:
+            allowed = (
+                "schema",
+                "status",
+                "package",
+                "supervisor_pid",
+                "child_pid",
+                "started_at",
+                "ended_at",
+                "exit_code",
+                "stdout_path",
+                "stderr_path",
+                "events_path",
+                "state_path",
+            )
+            return {key: payload[key] for key in allowed if key in payload}
+    return dict(launch) if launch is not None else None
 
 
 def apply_setup(
@@ -361,10 +617,8 @@ def apply_setup(
         devspace_compat_argv(stop_exact_service=True, local_port=config.local_port),
         runner=runner,
     )
-    launch_hidden(
-        command_argv(["npx", "--yes", DEVSPACE_PACKAGE, "serve"], platform_name=platform_name),
+    launch_managed_devspace_service(
         popen_factory=popen_factory,
-        environment=devspace_service_environment(),
         platform_name=platform_name,
     )
     run_checked(
@@ -384,7 +638,9 @@ def recover_service(
 ) -> dict[str, Any]:
     """Idempotently restore the managed DevSpace service and its exact Funnel."""
     local = http_probe(config.local_mcp_url, opener=opener)
-    service_started = not local.get("ok")
+    local_health = health_probe(config.local_health_url, opener=opener)
+    service_started = not (local.get("ok") and local_health.get("ok"))
+    launch: dict[str, Any] | None = None
     if service_started:
         run_checked(devspace_native_argv(), runner=runner)
         run_checked(devspace_compat_argv(), runner=runner)
@@ -392,17 +648,19 @@ def recover_service(
             devspace_compat_argv(stop_exact_service=True, local_port=config.local_port),
             runner=runner,
         )
-        launch_hidden(
-            bash_argv(["npx", "--yes", DEVSPACE_PACKAGE, "serve"]),
+        launch = launch_managed_devspace_service(
             popen_factory=popen_factory,
-            environment=devspace_service_environment(),
         )
         run_checked(
             devspace_compat_argv(confirm_restarted=True, local_port=config.local_port),
             runner=runner,
         )
     result = ensure_public_route(config, opener=opener, runner=runner, sleeper=sleeper)
-    return {**result, "service_started": service_started}
+    return {
+        **result,
+        "service_started": service_started,
+        "service": managed_service_evidence(launch),
+    }
 
 
 def refresh_after_app_registration(
@@ -427,10 +685,8 @@ def refresh_after_app_registration(
         devspace_compat_argv(stop_exact_service=True, local_port=config.local_port),
         runner=runner,
     )
-    launch_hidden(
-        bash_argv(["npx", "--yes", DEVSPACE_PACKAGE, "serve"]),
+    launch = launch_managed_devspace_service(
         popen_factory=popen_factory,
-        environment=devspace_service_environment(),
     )
     run_checked(
         devspace_compat_argv(confirm_restarted=True, local_port=config.local_port),
@@ -440,6 +696,7 @@ def refresh_after_app_registration(
     return {
         **result,
         "service_restarted": True,
+        "service": managed_service_evidence(launch),
         "credentials_preserved": True,
         "next_action": "VERIFY_REGISTERED_CHATGPT_APP_WITH_ORACLE",
         "verification_boundary": (
@@ -479,7 +736,7 @@ def refresh_exact_public_route(
     unrelated ports.  If port 443 has any additional path handlers, preserve
     it and fall back to the non-destructive idempotent check.
     """
-    wait_for_local_service(config, opener=opener, sleeper=sleeper)
+    wait_for_local_readiness(config, opener=opener, sleeper=sleeper)
     current = funnel_status(config, runner=runner, allow_absent=True)
     if current.get("mapping") == "conflict":
         raise SetupError("TAILSCALE_FUNNEL_PORT_IN_USE")
@@ -505,7 +762,7 @@ def windows_bootstrap_watchdog_command(codex_home: Path | None = None) -> str:
     powershell = Path(os.environ.get("SystemRoot") or r"C:\Windows") / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
     return (
         f'"{powershell}" -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass '
-        f'-File "{script}" -Mode Watch -WatchIntervalSeconds 300'
+        f'-File "{script}" -Mode Watch -WatchIntervalSeconds {WINDOWS_BOOTSTRAP_WATCH_SECONDS}'
     )
 
 
@@ -555,7 +812,7 @@ def register_windows_bootstrap_watchdog(
             "-Mode",
             "Watch",
             "-WatchIntervalSeconds",
-            "300",
+            str(WINDOWS_BOOTSTRAP_WATCH_SECONDS),
         ],
         popen_factory=popen_factory,
         platform_name=platform,
@@ -566,7 +823,7 @@ def register_windows_bootstrap_watchdog(
         "platform": platform,
         "mode": "per-user-login-watchdog",
         "run_name": WINDOWS_BOOTSTRAP_RUN_NAME,
-        "watch_interval_seconds": 300,
+        "watch_interval_seconds": WINDOWS_BOOTSTRAP_WATCH_SECONDS,
     }
 
 
@@ -587,6 +844,42 @@ def wait_for_local_service(
         if index + 1 < attempts:
             sleeper(delay_seconds)
     raise SetupError("DEVSPACE_LOCAL_SERVICE_NOT_READY")
+
+
+def wait_for_local_readiness(
+    config: SetupConfig,
+    *,
+    opener: Callable[..., Any] = urllib.request.urlopen,
+    sleeper: Callable[[float], None] = time.sleep,
+    attempts: int = 60,
+    delay_seconds: float = 2.0,
+    consecutive: int = 2,
+) -> dict[str, Any]:
+    """Require stable MCP auth and process-health responses, not a transient port."""
+    stable = 0
+    last_mcp: dict[str, Any] = {"ok": False}
+    last_health: dict[str, Any] = {"ok": False}
+    for index in range(max(1, attempts)):
+        last_mcp = http_probe(config.local_mcp_url, opener=opener)
+        last_health = health_probe(config.local_health_url, opener=opener)
+        stable = stable + 1 if last_mcp.get("ok") and last_health.get("ok") else 0
+        if stable >= max(1, consecutive):
+            return {
+                "ok": True,
+                "mcp": last_mcp,
+                "health": last_health,
+                "consecutive": stable,
+            }
+        if index + 1 < attempts:
+            sleeper(delay_seconds)
+    raise SetupError(
+        "DEVSPACE_LOCAL_READINESS_FAILED:"
+        + json.dumps(
+            {"mcp": last_mcp, "health": last_health, "consecutive": stable},
+            ensure_ascii=True,
+            sort_keys=True,
+        )
+    )
 
 
 def wait_for_public_service(
@@ -610,6 +903,29 @@ def wait_for_public_service(
     )
 
 
+def wait_for_public_readiness(
+    config: SetupConfig,
+    *,
+    opener: Callable[..., Any] = urllib.request.urlopen,
+    sleeper: Callable[[float], None] = time.sleep,
+    attempts: int = 30,
+    delay_seconds: float = 2.0,
+) -> dict[str, Any]:
+    last_mcp: dict[str, Any] = {"ok": False}
+    last_health: dict[str, Any] = {"ok": False}
+    for index in range(max(1, attempts)):
+        last_mcp = http_probe(config.registration_url, opener=opener)
+        last_health = health_probe(config.public_health_url, opener=opener)
+        if last_mcp.get("ok") and last_health.get("ok"):
+            return {"ok": True, "mcp": last_mcp, "health": last_health}
+        if index + 1 < attempts:
+            sleeper(delay_seconds)
+    raise SetupError(
+        "DEVSPACE_PUBLIC_READINESS_FAILED:"
+        + json.dumps({"mcp": last_mcp, "health": last_health}, ensure_ascii=True, sort_keys=True)
+    )
+
+
 def ensure_public_route(
     config: SetupConfig,
     *,
@@ -618,7 +934,7 @@ def ensure_public_route(
     sleeper: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any]:
     """Idempotently restore the exact Funnel mapping after service or network restart."""
-    local = wait_for_local_service(config, opener=opener, sleeper=sleeper)
+    local = wait_for_local_readiness(config, opener=opener, sleeper=sleeper)
     current = funnel_status(config, runner=runner, allow_absent=True)
     if current.get("mapping") == "conflict":
         raise SetupError("TAILSCALE_FUNNEL_PORT_IN_USE")
@@ -631,7 +947,7 @@ def ensure_public_route(
     final = funnel_status(config, runner=runner)
     if not final.get("ok"):
         raise SetupError("TAILSCALE_FUNNEL_RESTORE_FAILED")
-    public = wait_for_public_service(config, opener=opener, sleeper=sleeper)
+    public = wait_for_public_readiness(config, opener=opener, sleeper=sleeper)
     return {"ok": True, "changed": changed, "local": local, "funnel": final, "public": public}
 
 
@@ -644,6 +960,14 @@ def http_probe(url: str, *, opener: Callable[..., Any] = urllib.request.urlopen)
         return {"ok": error.code in {401, 403, 405, 406}, "status": error.code, "url": url}
     except OSError as error:
         return {"ok": False, "error": type(error).__name__, "url": url}
+
+
+def health_probe(url: str, *, opener: Callable[..., Any] = urllib.request.urlopen) -> dict[str, Any]:
+    result = http_probe(url, opener=opener)
+    result["ok"] = result.get("status") == 200
+    if not result["ok"] and "error" not in result:
+        result["error"] = "DEVSPACE_HEALTH_STATUS_INVALID"
+    return result
 
 
 def persisted_config(config_path: Path) -> dict[str, Any]:
@@ -855,6 +1179,16 @@ def doctor(config: SetupConfig, *, opener: Callable[..., Any] = urllib.request.u
             "recommended_app_name": APP_NAME,
             "next_action": "CHECK_DEVSPACE_LOCAL_SERVICE",
         }
+    local_health = health_probe(config.local_health_url, opener=opener)
+    if not local_health.get("ok"):
+        return {
+            "local": local,
+            "local_health": local_health,
+            "tool_mode": tool_mode,
+            "registration_url": config.registration_url,
+            "recommended_app_name": APP_NAME,
+            "next_action": "CHECK_DEVSPACE_LOCAL_HEALTH",
+        }
     if config_path is not None:
         try:
             configured_roots = persisted_allowed_roots(config_path)
@@ -907,15 +1241,19 @@ def doctor(config: SetupConfig, *, opener: Callable[..., Any] = urllib.request.u
             "next_action": "CHECK_TAILSCALE_FUNNEL",
         }
     public = http_probe(config.registration_url, opener=opener)
+    public_health = health_probe(config.public_health_url, opener=opener)
     report: dict[str, Any] = {
         "local": local,
+        "local_health": local_health,
         "funnel": funnel,
         "public": public,
+        "public_health": public_health,
+        "service": managed_service_evidence(),
         "registration_url": config.registration_url,
         "recommended_app_name": APP_NAME,
         "tool_mode": tool_mode,
     }
-    if public.get("ok") and chatgpt_call_failed:
+    if public.get("ok") and public_health.get("ok") and chatgpt_call_failed:
         report["next_action"] = "POST_REGISTER_REFRESH_OR_EXTERNAL_APP_CHECK"
         report["message"] = (
             "Public endpoint is healthy. If manual registration or reconnect just completed, "
@@ -923,7 +1261,7 @@ def doctor(config: SetupConfig, *, opener: Callable[..., Any] = urllib.request.u
             "@codex read-only probe. Do not use Codex Desktop DevSpace plugin tools as proof, "
             "and do not automate or repeat app registration."
         )
-    elif not public.get("ok"):
+    elif not public.get("ok") or not public_health.get("ok"):
         report["next_action"] = "CHECK_PUBLIC_FUNNEL_ENDPOINT"
     else:
         report["next_action"] = "READY"
@@ -933,6 +1271,7 @@ def doctor(config: SetupConfig, *, opener: Callable[..., Any] = urllib.request.u
 def parser() -> argparse.ArgumentParser:
     value = argparse.ArgumentParser(description=__doc__)
     sub = value.add_subparsers(dest="command", required=True)
+    sub.add_parser("service-runner", help=argparse.SUPPRESS)
     for name in ("setup", "doctor", "ensure", "recover", "post-register"):
         command = sub.add_parser(name)
         command.add_argument("--root", action="append", default=[], help="Narrow allowed DevSpace root; repeat as needed")
@@ -951,6 +1290,8 @@ def parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
+        if args.command == "service-runner":
+            return run_managed_devspace_service()
         if args.command == "owner-password":
             result = review_owner_password_interactive(auth_path=args.auth_path)
             print(json.dumps(result, ensure_ascii=True, indent=2))

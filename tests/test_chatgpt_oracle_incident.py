@@ -515,6 +515,77 @@ def test_recursive_self_observation_needs_append_only_user_authority(tmp_path: P
     assert after["fresh_run_authority"]["sha256"] == module.STATE.sha256_file(receipt_path)
 
 
+def test_terminal_devspace_nonexecution_authority_releases_only_the_authorized_task(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = load()
+    task_id = DEFAULT_EVALUATOR
+    project_root = tmp_path / "project"
+    output = (
+        f"I opened the exact project root {project_root} in checkout mode.\n"
+        "The checkout failed with 502 Upstream or external service errors and no workspace ID.\n"
+        "I did not read the mission, did not run commands, and did not change files.\n"
+        "TASK_OUTCOME: BLOCKED\n"
+    )
+    run_dir = write_run(
+        tmp_path,
+        "devspace502run",
+        status="attention_required",
+        output=output,
+        session_authority="terminal",
+        terminal_harvested=True,
+    )
+    mission = run_dir / "mission.md"
+    mission.write_text("review exact project", encoding="utf-8")
+    state_path = run_dir / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state.update({
+        "transport": "pro-devspace",
+        "task_outcome_contract": "v1",
+        "mission": {"sha256": module.STATE.sha256_file(mission)},
+    })
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    before = module.validate_packet(module.build_packet(run_dir))
+    assert before["signature"] == "terminal-devspace-checkout-502-no-execution"
+    assert before["ownership_scope"] == "legacy-unbound"
+    assert before["safe_for_fresh_run"] is False
+
+    receipt_path = run_dir / "settlements" / "terminal-devspace-nonexecution-fresh-run.json"
+    receipt_path.parent.mkdir()
+    receipt_path.write_text(json.dumps({
+        "schema": module.STATE.TERMINAL_DEVSPACE_NONEXECUTION_SETTLEMENT_SCHEMA,
+        "confirmation": module.STATE.USER_AUTHORIZED_FRESH_AFTER_TERMINAL_DEVSPACE_NONEXECUTION,
+        "reason": "user authorized a new review after repairing the bounded outage",
+        "authorized_source_thread_id": task_id,
+        "historical_owner_scope": "legacy-unbound",
+        "run_id": state["run_id"],
+        "project_root": state["project_root"],
+        "slug": state["oracle"]["slug"],
+        "transport": state["transport"],
+        "task_outcome": state["task_outcome"],
+        "signature": "terminal-devspace-checkout-502-no-execution",
+        "state_sha256": module.STATE.sha256_file(state_path),
+        "output_sha256": module.STATE.sha256_file(run_dir / "output.md"),
+        "transcript_sha256": module.STATE.sha256_file(run_dir / "transcript.md"),
+        "stdout_sha256": module.STATE.sha256_file(run_dir / "stdout.log"),
+        "stderr_sha256": module.STATE.sha256_file(run_dir / "stderr.log"),
+        "mission_sha256": module.STATE.sha256_file(mission),
+        "auto_retry": False,
+        "submission_action": "none",
+        "authorized_at": "2026-08-25T00:00:00Z",
+    }), encoding="utf-8")
+
+    after = module.validate_packet(module.build_packet(run_dir))
+
+    assert after["safe_for_fresh_run"] is True
+    assert after["fresh_run_authority"]["authorized_source_thread_id"] == task_id
+    foreign = "22222222-2222-4222-8222-222222222222"
+    monkeypatch.setenv("CODEX_THREAD_ID", foreign)
+    foreign_packet = module.build_packet(run_dir)
+    assert foreign_packet["safe_for_fresh_run"] is False
+
+
 def test_packet_build_requires_the_exact_persisted_run(tmp_path: Path) -> None:
     module = load()
     empty = tmp_path / "no-run"
@@ -543,6 +614,7 @@ def test_missing_layout_workflow_packet_uses_settlement_as_pre_submit_authority(
         "schema": "codex.chatgpt.oracle-comprehensive-state/v1",
         "status": "prepared",
         "workflow_id": "b" * 32,
+        "source_thread_id": DEFAULT_EVALUATOR,
         "records": [{
             "stage": "plan",
             "run_id": "a" * 32,
@@ -570,6 +642,9 @@ def test_missing_layout_workflow_packet_uses_settlement_as_pre_submit_authority(
     assert packet["lifecycle"] == "pre_submit_settled"
     assert packet["authority_source"] == "workflow-settlement-proof"
     assert packet["safe_for_fresh_run"] is True
+    assert packet["ownership_scope"] == "same-task"
+    assert packet["operational_instruction"]["action"] == "rerun-settled-workflow"
+    assert packet["operational_instruction"]["executable_by_evaluated_thread"] is True
     assert packet["evidence_paths"] == [
         str(workflow_state.resolve()),
         str(manifest_path.resolve()),

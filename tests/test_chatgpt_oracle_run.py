@@ -4871,6 +4871,149 @@ def test_exact_recovery_bypasses_live_submit_mutex_and_harvests_same_slug(tmp_pa
     )
 
 
+def terminal_devspace_nonexecution_run(runner, tmp_path: Path) -> tuple[Path, dict[str, str]]:
+    project_root = tmp_path / "project"
+    project_root.mkdir(parents=True)
+    run_id = "devspace502run"
+    slug = "oracle-project-devspace502"
+    run_dir = tmp_path / "state" / "projects" / "key" / "runs" / run_id
+    run_dir.mkdir(parents=True)
+    mission = run_dir / "mission.md"
+    output = run_dir / "output.md"
+    transcript = run_dir / "transcript.md"
+    stdout = run_dir / "stdout.log"
+    stderr = run_dir / "stderr.log"
+    mission.write_text("review the exact project", encoding="utf-8")
+    exact = (
+        f"I opened the exact project root {project_root} in checkout mode.\n"
+        "The checkout failed with 502 Upstream or external service errors and no workspace ID.\n"
+        "I did not read the mission, did not run commands, and did not change files.\n"
+        "TASK_OUTCOME: BLOCKED\n"
+    )
+    output.write_text(exact, encoding="utf-8")
+    transcript.write_text(exact, encoding="utf-8")
+    stdout.write_text("terminal assistant answer captured", encoding="utf-8")
+    stderr.write_text("", encoding="utf-8")
+    state_path = run_dir / "state.json"
+    runner.STATE.write_json_atomic(state_path, {
+        "schema": "codex.chatgpt.oracle-run-state/v1",
+        "status": "attention_required",
+        "run_id": run_id,
+        "project_root": str(project_root),
+        "transport": "pro-devspace",
+        "session_authority": "terminal",
+        "terminal_harvested": True,
+        "transport_status": "complete",
+        "task_outcome_contract": "v1",
+        "task_outcome": "blocked",
+        "mission": {"sha256": runner.STATE.sha256_file(mission)},
+        "oracle": {"slug": slug},
+        "artifacts": {
+            "output": str(output), "transcript": str(transcript),
+            "stdout": str(stdout), "stderr": str(stderr),
+        },
+    })
+    hashes = {
+        "expected_state_sha256": runner.STATE.sha256_file(state_path),
+        "expected_output_sha256": runner.STATE.sha256_file(output),
+        "expected_transcript_sha256": runner.STATE.sha256_file(transcript),
+        "expected_stdout_sha256": runner.STATE.sha256_file(stdout),
+        "expected_stderr_sha256": runner.STATE.sha256_file(stderr),
+        "expected_mission_sha256": runner.STATE.sha256_file(mission),
+    }
+    return run_dir, hashes
+
+
+def test_terminal_devspace_nonexecution_settlement_is_append_only_and_task_bound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = load_runner()
+    task_id = "11111111-1111-4111-8111-111111111111"
+    monkeypatch.setenv("CODEX_THREAD_ID", task_id)
+    run_dir, hashes = terminal_devspace_nonexecution_run(runner, tmp_path)
+    state_path = run_dir / "state.json"
+    before_state = state_path.read_bytes()
+
+    dry = runner.settle_terminal_devspace_nonexecution_fresh_run(
+        run_dir,
+        confirmation=runner.STATE.USER_AUTHORIZED_FRESH_AFTER_TERMINAL_DEVSPACE_NONEXECUTION,
+        reason="user authorized a new review after repairing the bounded DevSpace outage",
+        dry_run=True,
+        **hashes,
+    )
+    assert dry["status"] == "dry-run"
+    assert dry["settlement_payload"]["authorized_source_thread_id"] == task_id
+    assert not Path(dry["settlement_path"]).exists()
+
+    settled = runner.settle_terminal_devspace_nonexecution_fresh_run(
+        run_dir,
+        confirmation=runner.STATE.USER_AUTHORIZED_FRESH_AFTER_TERMINAL_DEVSPACE_NONEXECUTION,
+        reason="user authorized a new review after repairing the bounded DevSpace outage",
+        **hashes,
+    )
+    proof = runner.STATE.proven_terminal_devspace_nonexecution_fresh_run_authority(state_path)
+
+    assert settled["safe_for_fresh_run"] is True
+    assert settled["auto_retry"] is False
+    assert settled["submission_action"] == "none"
+    assert proof is not None
+    assert proof["authorized_source_thread_id"] == task_id
+    assert proof["historical_owner_scope"] == "legacy-unbound"
+    assert state_path.read_bytes() == before_state
+    repeated = runner.settle_terminal_devspace_nonexecution_fresh_run(
+        run_dir,
+        confirmation=runner.STATE.USER_AUTHORIZED_FRESH_AFTER_TERMINAL_DEVSPACE_NONEXECUTION,
+        reason="user authorized a new review after repairing the bounded DevSpace outage",
+        **hashes,
+    )
+    assert repeated["settlement"]["sha256"] == proof["sha256"]
+    (run_dir / "output.md").write_text(
+        "changed after settlement\nTASK_OUTCOME: BLOCKED\n", encoding="utf-8"
+    )
+    assert runner.STATE.proven_terminal_devspace_nonexecution_fresh_run_authority(
+        state_path
+    ) is None
+
+
+def test_terminal_devspace_nonexecution_settlement_rejects_generic_blocker_and_foreign_task(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = load_runner()
+    caller = "11111111-1111-4111-8111-111111111111"
+    foreign = "22222222-2222-4222-8222-222222222222"
+    monkeypatch.setenv("CODEX_THREAD_ID", caller)
+    run_dir, hashes = terminal_devspace_nonexecution_run(runner, tmp_path)
+    output = run_dir / "output.md"
+    output.write_text("ordinary blocker\nTASK_OUTCOME: BLOCKED\n", encoding="utf-8")
+    hashes["expected_output_sha256"] = runner.STATE.sha256_file(output)
+    with pytest.raises(runner.OracleRunError) as generic:
+        runner.settle_terminal_devspace_nonexecution_fresh_run(
+            run_dir,
+            confirmation=runner.STATE.USER_AUTHORIZED_FRESH_AFTER_TERMINAL_DEVSPACE_NONEXECUTION,
+            reason="continue",
+            **hashes,
+        )
+    assert generic.value.code == "TERMINAL_DEVSPACE_NONEXECUTION_EVIDENCE_REQUIRED"
+
+    run_dir, hashes = terminal_devspace_nonexecution_run(runner, tmp_path / "foreign")
+    state_path = run_dir / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["originating_task"] = {
+        "schema": "codex.chatgpt.oracle-task-owner/v1",
+        "source_thread_id": foreign,
+    }
+    runner.STATE.write_json_atomic(state_path, state)
+    hashes["expected_state_sha256"] = runner.STATE.sha256_file(state_path)
+    with pytest.raises(runner.OracleRunError) as foreign_error:
+        runner.settle_terminal_devspace_nonexecution_fresh_run(
+            run_dir,
+            confirmation=runner.STATE.USER_AUTHORIZED_FRESH_AFTER_TERMINAL_DEVSPACE_NONEXECUTION,
+            reason="continue",
+            **hashes,
+        )
+    assert foreign_error.value.code == "FOREIGN_TASK_SESSION"
+
+
 def test_recursive_self_observation_settlement_is_append_only_and_hash_bound(tmp_path: Path) -> None:
     runner = load_runner()
     project_root = tmp_path / "project"

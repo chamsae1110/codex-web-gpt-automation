@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import shutil
 import subprocess
@@ -53,10 +54,13 @@ def test_setup_plan_has_no_secrets_and_is_explicit_only(tmp_path: Path, monkeypa
     assert plan["managed_service_environment"] == {
         "DEVSPACE_TOOL_MODE": "full",
         "DEVSPACE_OAUTH_SCOPES": "devspace,offline_access",
+        "DEVSPACE_LOG_REQUESTS": "false",
+        "DEVSPACE_LOG_TOOL_CALLS": "false",
+        "DEVSPACE_LOG_SHELL_COMMANDS": "false",
     }
     assert plan["startup_watchdog"] == {
         "windows_mode": "per-user login watchdog",
-        "health_interval_seconds": 300,
+        "health_interval_seconds": 30,
         "runtime_root_source": str(Path.home() / ".devspace" / "config.json"),
     }
     assert plan["devspace_init"][1:3] == [
@@ -199,7 +203,12 @@ def test_doctor_orders_local_funnel_public_and_manual_failure_branch(tmp_path: P
         )
 
     report = module.doctor(current, opener=opener, runner=runner, chatgpt_call_failed=True)
-    assert seen == [current.local_mcp_url, current.registration_url]
+    assert seen == [
+        current.local_mcp_url,
+        current.local_health_url,
+        current.registration_url,
+        current.public_health_url,
+    ]
     assert report["next_action"] == "POST_REGISTER_REFRESH_OR_EXTERNAL_APP_CHECK"
     assert "run post-register once" in report["message"]
     assert "do not automate or repeat app registration" in report["message"]
@@ -227,15 +236,19 @@ def test_doctor_reports_persisted_allowed_root_mismatch(tmp_path: Path) -> None:
     config_path.write_text(json.dumps({"allowedRoots": [str(other.resolve())]}), encoding="utf-8")
 
     class Response:
-        status = 401
+        def __init__(self, status: int):
+            self.status = status
         def __enter__(self):
             return self
         def __exit__(self, *args):
             return False
 
+    def opener(request, timeout):
+        return Response(200 if request.full_url.endswith("/healthz") else 401)
+
     report = module.doctor(
         current,
-        opener=lambda *args, **kwargs: Response(),
+        opener=opener,
         config_path=config_path,
     )
 
@@ -320,6 +333,81 @@ def test_windows_launch_is_hidden() -> None:
     assert kwargs["creationflags"] & module.subprocess.CREATE_NO_WINDOW
 
 
+def test_managed_service_runner_persists_redacted_pid_and_exit_evidence(tmp_path: Path) -> None:
+    module = load_module()
+    seen: dict[str, object] = {}
+
+    class Child:
+        pid = 5050
+        stdout = io.StringIO("ready token=raw-secret\n")
+        stderr = io.StringIO("Authorization: Bearer top-secret\n")
+
+        @staticmethod
+        def wait() -> int:
+            return 7
+
+    def popen(argv, **kwargs):
+        seen["argv"] = list(argv)
+        seen["env"] = dict(kwargs["env"])
+        return Child()
+
+    exit_code = module.run_managed_devspace_service(
+        popen_factory=popen,
+        platform_name="posix",
+        codex_home=tmp_path,
+    )
+    paths = module.managed_service_paths(tmp_path)
+    state = json.loads(paths["state"].read_text(encoding="utf-8"))
+    stdout = paths["stdout"].read_text(encoding="utf-8")
+    stderr = paths["stderr"].read_text(encoding="utf-8")
+    events = [json.loads(line) for line in paths["events"].read_text(encoding="utf-8").splitlines()]
+
+    assert exit_code == 7
+    assert seen["argv"] == ["npx", "--yes", "@waishnav/devspace@1.0.7", "serve"]
+    assert seen["env"]["DEVSPACE_LOG_REQUESTS"] == "false"
+    assert "raw-secret" not in stdout and "[REDACTED]" in stdout
+    assert "top-secret" not in stderr and "[REDACTED]" in stderr
+    assert state["status"] == "exited"
+    assert state["child_pid"] == 5050
+    assert state["exit_code"] == 7
+    assert state["state_path"] == str(paths["state"])
+    assert [event["event"] for event in events] == ["started", "exited"]
+
+
+def test_local_readiness_requires_two_consecutive_mcp_and_health_probes(tmp_path: Path) -> None:
+    module, current = config(tmp_path)
+    health_calls = 0
+    sleeps: list[float] = []
+
+    class Response:
+        def __init__(self, status: int):
+            self.status = status
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            return False
+
+    def opener(request, timeout):
+        nonlocal health_calls
+        if request.full_url == current.local_mcp_url:
+            return Response(401)
+        health_calls += 1
+        return Response(503 if health_calls == 1 else 200)
+
+    result = module.wait_for_local_readiness(
+        current,
+        opener=opener,
+        sleeper=sleeps.append,
+        attempts=3,
+        delay_seconds=0.25,
+    )
+
+    assert result["ok"] is True
+    assert result["consecutive"] == 2
+    assert health_calls == 3
+    assert sleeps == [0.25, 0.25]
+
+
 def test_recover_starts_missing_service_then_restores_exact_funnel(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -333,7 +421,8 @@ def test_recover_starts_missing_service_then_restores_exact_funnel(
     launches: list[list[str]] = []
 
     class Response:
-        status = 401
+        def __init__(self, status: int):
+            self.status = status
         def __enter__(self):
             return self
         def __exit__(self, *args):
@@ -344,7 +433,7 @@ def test_recover_starts_missing_service_then_restores_exact_funnel(
         probes += 1
         if probes == 1:
             raise OSError("service is down")
-        return Response()
+        return Response(200 if request.full_url.endswith("/healthz") else 401)
 
     def runner(argv, **kwargs):
         calls.append(list(argv))
@@ -356,11 +445,15 @@ def test_recover_starts_missing_service_then_restores_exact_funnel(
             )
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
+    def popen(argv, **kwargs):
+        launches.append(list(argv))
+        return SimpleNamespace(pid=1234)
+
     report = module.recover_service(
         current,
         opener=opener,
         runner=runner,
-        popen_factory=lambda argv, **kwargs: launches.append(list(argv)),
+        popen_factory=popen,
         sleeper=lambda _: None,
     )
 
@@ -383,7 +476,8 @@ def test_post_register_always_recycles_service_and_preserves_oauth_state(
     launches: list[tuple[list[str], dict[str, str] | None]] = []
 
     class Response:
-        status = 401
+        def __init__(self, status: int):
+            self.status = status
         def __enter__(self):
             return self
         def __exit__(self, *args):
@@ -404,11 +498,18 @@ def test_post_register_always_recycles_service_and_preserves_oauth_state(
             )
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
+    def opener(request, timeout):
+        return Response(200 if request.full_url.endswith("/healthz") else 401)
+
+    def popen(argv, **kwargs):
+        launches.append((list(argv), kwargs.get("env")))
+        return SimpleNamespace(pid=2234)
+
     report = module.refresh_after_app_registration(
         current,
-        opener=lambda *args, **kwargs: Response(),
+        opener=opener,
         runner=runner,
-        popen_factory=lambda argv, **kwargs: launches.append((list(argv), kwargs.get("env"))),
+        popen_factory=popen,
         sleeper=lambda _: None,
     )
 
@@ -427,8 +528,10 @@ def test_post_register_always_recycles_service_and_preserves_oauth_state(
     assert [
         "tailscale", "funnel", "--bg", "--https=443", f"http://127.0.0.1:{current.local_port}"
     ] in calls
+    assert launches[0][0] == module.managed_service_runner_argv()
     assert launches[0][1]["DEVSPACE_TOOL_MODE"] == "full"
     assert launches[0][1]["DEVSPACE_OAUTH_SCOPES"] == "devspace,offline_access"
+    assert launches[0][1]["DEVSPACE_LOG_REQUESTS"] == "false"
 
 
 def test_post_register_preserves_shared_funnel_port(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -439,7 +542,8 @@ def test_post_register_preserves_shared_funnel_port(tmp_path: Path, monkeypatch:
     calls: list[list[str]] = []
 
     class Response:
-        status = 401
+        def __init__(self, status: int):
+            self.status = status
         def __enter__(self):
             return self
         def __exit__(self, *args):
@@ -458,11 +562,14 @@ def test_post_register_preserves_shared_funnel_port(tmp_path: Path, monkeypatch:
             )
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
+    def opener(request, timeout):
+        return Response(200 if request.full_url.endswith("/healthz") else 401)
+
     report = module.refresh_after_app_registration(
         current,
-        opener=lambda *args, **kwargs: Response(),
+        opener=opener,
         runner=runner,
-        popen_factory=lambda *args, **kwargs: SimpleNamespace(),
+        popen_factory=lambda *args, **kwargs: SimpleNamespace(pid=3234),
         sleeper=lambda _: None,
     )
 
@@ -497,7 +604,8 @@ def test_setup_applies_hash_validated_devspace_compat_before_service_start(
     funnel_reads = 0
 
     class Response:
-        status = 401
+        def __init__(self, status: int):
+            self.status = status
         def __enter__(self):
             return self
         def __exit__(self, *args):
@@ -515,11 +623,18 @@ def test_setup_applies_hash_validated_devspace_compat_before_service_start(
             return SimpleNamespace(returncode=0, stdout=json.dumps({"Web": web}), stderr="")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
+    def opener(request, timeout):
+        return Response(200 if request.full_url.endswith("/healthz") else 401)
+
+    def popen(argv, **kwargs):
+        launched.append((list(argv), kwargs.get("env")))
+        return SimpleNamespace(pid=4234)
+
     module.apply_setup(
         current,
-        opener=lambda *args, **kwargs: Response(),
+        opener=opener,
         runner=runner,
-        popen_factory=lambda argv, **kwargs: launched.append((list(argv), kwargs.get("env"))),
+        popen_factory=popen,
         sleeper=lambda _: None,
         platform_name="nt",
         owner_password_reviewer=lambda: {"ok": True},
@@ -536,10 +651,7 @@ def test_setup_applies_hash_validated_devspace_compat_before_service_start(
     assert calls[3] == module.devspace_compat_argv()
     assert calls[4] == module.devspace_compat_argv(stop_exact_service=True)
     assert calls[5] == module.devspace_compat_argv(confirm_restarted=True)
-    assert launched and launched[0][0][1:3] == [
-        "-lc",
-        "exec npx --yes @waishnav/devspace@1.0.7 serve",
-    ]
+    assert launched and launched[0][0] == module.managed_service_runner_argv()
     assert launched[0][1]["DEVSPACE_TOOL_MODE"] == "full"
     assert launched[0][1]["DEVSPACE_OAUTH_SCOPES"] == "devspace,offline_access"
 
@@ -568,7 +680,7 @@ def test_windows_startup_watchdog_registration_is_hidden_and_deterministic(tmp_p
     )
 
     assert result["mode"] == "per-user-login-watchdog"
-    assert result["watch_interval_seconds"] == 300
+    assert result["watch_interval_seconds"] == 30
     assert runs[0][0][:3] == [
         "reg.exe",
         "ADD",
@@ -576,9 +688,9 @@ def test_windows_startup_watchdog_registration_is_hidden_and_deterministic(tmp_p
     ]
     assert module.WINDOWS_BOOTSTRAP_RUN_NAME in runs[0][0]
     command = runs[0][0][runs[0][0].index("/d") + 1]
-    assert "-Mode Watch -WatchIntervalSeconds 300" in command
+    assert "-Mode Watch -WatchIntervalSeconds 30" in command
     assert str(script.resolve()) in command
-    assert launches[0][0][-4:] == ["-Mode", "Watch", "-WatchIntervalSeconds", "300"]
+    assert launches[0][0][-4:] == ["-Mode", "Watch", "-WatchIntervalSeconds", "30"]
     assert launches[0][1]["stdin"] is subprocess.DEVNULL
     assert launches[0][1]["stdout"] is subprocess.DEVNULL
     assert launches[0][1]["stderr"] is subprocess.DEVNULL
@@ -607,7 +719,8 @@ def test_public_route_retries_bounded_funnel_propagation(tmp_path: Path) -> None
     sleeps: list[float] = []
 
     class Response:
-        status = 401
+        def __init__(self, status: int):
+            self.status = status
         def __enter__(self):
             return self
         def __exit__(self, *args):
@@ -616,11 +729,15 @@ def test_public_route_retries_bounded_funnel_propagation(tmp_path: Path) -> None
     def opener(request, timeout):
         nonlocal public_calls
         if request.full_url == current.local_mcp_url:
-            return Response()
-        public_calls += 1
-        if public_calls == 1:
-            raise OSError("relay still propagating")
-        return Response()
+            return Response(401)
+        if request.full_url == current.local_health_url:
+            return Response(200)
+        if request.full_url == current.registration_url:
+            public_calls += 1
+            if public_calls == 1:
+                raise OSError("relay still propagating")
+            return Response(401)
+        return Response(200)
 
     status = json.dumps({"Web": {current.hostname + ":443": {
         "Proxy": f"http://127.0.0.1:{current.local_port}"
@@ -634,7 +751,7 @@ def test_public_route_retries_bounded_funnel_propagation(tmp_path: Path) -> None
 
     assert report["ok"] is True
     assert public_calls == 2
-    assert sleeps == [2.0]
+    assert sleeps == [2.0, 2.0]
 
 
 def test_owner_password_review_keeps_or_atomically_replaces_secret(tmp_path: Path) -> None:
@@ -717,7 +834,8 @@ def test_ensure_public_route_restores_missing_mapping_after_exact_local_health(t
     ))
 
     class Response:
-        status = 401
+        def __init__(self, status: int):
+            self.status = status
         def __enter__(self):
             return self
         def __exit__(self, *args):
@@ -733,7 +851,10 @@ def test_ensure_public_route_restores_missing_mapping_after_exact_local_health(t
         ]
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    report = module.ensure_public_route(current, opener=lambda *args, **kwargs: Response(), runner=runner)
+    def opener(request, timeout):
+        return Response(200 if request.full_url.endswith("/healthz") else 401)
+
+    report = module.ensure_public_route(current, opener=opener, runner=runner)
     assert report["ok"] is True
     assert report["changed"] is True
     assert calls.count(["tailscale", "funnel", "status", "--json"]) == 2

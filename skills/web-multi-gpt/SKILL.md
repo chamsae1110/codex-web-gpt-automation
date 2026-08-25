@@ -1,6 +1,6 @@
 ---
 name: web-multi-gpt
-description: Run genuine parallel configured-power ChatGPT sessions through Oracle, with stable solver lanes, waves of at most five, file handoffs, and one merger. No single-GPT role simulation and no new agbrowse runs.
+description: Run genuine parallel regular ChatGPT sessions through Oracle, with stable solver lanes, waves of at most five, file handoffs, and one merger. No single-GPT role simulation and no new agbrowse runs.
 ---
 
 # Oracle Web Multi-GPT
@@ -36,11 +36,6 @@ their paths in lane order. The parent holds same-task project exclusion while ch
 launches use a short parent-scoped mutex. On Windows each lane uses a separate
 throwaway copy of the signed-in Oracle profile, preventing one solver from
 closing or taking over another solver's Chrome session.
-
-The unset/default host power preference uses the highest supported non-Pro
-tier. An explicitly persisted `regular_web_mode: pro` applies `GPT-5.6 Sol`
-with the Pro effort to every solver and merger; task difficulty never changes
-that preference.
 
 No attachments, app/settings automation, broad tab cleanup, `--force`,
 restart, or silent resubmission. Oracle owns one-shot tab archival. Existing

@@ -58,8 +58,8 @@ def test_deep_research_is_only_a_mode_flag() -> None:
     assert contract["pro_selection_policy"] == "explicit-only"
 
 
-@pytest.mark.parametrize("mode", ["direct", "plan", "review", "edit", "orchestrator"])
-def test_durable_host_pro_opt_in_upgrades_regular_modes_without_losing_task_kind(
+@pytest.mark.parametrize("mode", ["plan", "review"])
+def test_durable_host_pro_opt_in_upgrades_advisory_modes_without_losing_task_kind(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
 ) -> None:
     monkeypatch.setenv("CODEX_CHATGPT_REGULAR_WEB_MODE", "pro")
@@ -70,15 +70,34 @@ def test_durable_host_pro_opt_in_upgrades_regular_modes_without_losing_task_kind
 
     assert contract["mode"] == mode
     assert contract["task_kind"] == mode
-    assert contract["route"] == "oracle-pro-devspace"
+    assert contract["route"] == "oracle-pro-devspace-readonly"
     assert contract["model"] == "gpt-5.6-sol"
     assert contract["reasoning_level"] == "Pro"
     assert contract["thinking_time"] == "heavy"
     assert contract["configured_regular_web_mode"] == "pro"
     assert contract["pro_selection_policy"] == "host-configured-pro"
+    assert contract["action_authority"] == "read-only"
     assert contract["composer_prompt"].startswith(
-        f"@DevSpace Read and execute the mission file: {mission}."
+        f"@DevSpace Read and analyze the read-only mission file: {mission}."
     )
+
+
+@pytest.mark.parametrize("mode", ["direct", "edit", "orchestrator"])
+def test_durable_host_pro_opt_in_never_upgrades_write_capable_modes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    monkeypatch.setenv("CODEX_CHATGPT_REGULAR_WEB_MODE", "pro")
+    profiles = load_profiles()
+
+    contract = profiles.build_launch_contract(
+        mode, mission_path=(tmp_path / "mission.md").resolve()
+    )
+
+    assert contract["route"] == "oracle-devspace"
+    assert contract["reasoning_level"] == "Very High"
+    assert contract["thinking_time"] == "extra-high"
+    assert contract["action_authority"] == "mission-scoped-write"
+    assert contract["pro_selection_policy"] == "write-authority-forces-regular"
 
 
 def test_durable_host_pro_opt_in_does_not_replace_deep_research(

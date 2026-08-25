@@ -130,7 +130,7 @@ def test_multi_uses_unique_child_manifests_waves_and_merger(tmp_path: Path) -> N
     assert merger_text.count(".md") == 7
 
 
-def test_host_configured_pro_applies_to_every_web_multi_child(
+def test_host_configured_pro_never_upgrades_web_multi_write_children(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("CODEX_CHATGPT_REGULAR_WEB_MODE", "pro")
@@ -149,10 +149,9 @@ def test_host_configured_pro_applies_to_every_web_multi_child(
 
     assert result["ok"] is True
     assert len(calls) == 3
-    assert all(item["transport"] == "pro-devspace" for item in calls)
-    assert all(item["model"] == "gpt-5.6-sol" for item in calls)
-    assert all(item["thinking_time"] == "heavy" for item in calls)
-    assert all(item["task_outcome_contract"] == "v1" for item in calls)
+    assert all("transport" not in item for item in calls)
+    assert all(item["model"] == "gpt-5.6" for item in calls)
+    assert all(item["thinking_time"] == "extra-high" for item in calls)
 
 
 def test_multi_preserves_partial_results_and_rejects_over_capacity(tmp_path: Path) -> None:

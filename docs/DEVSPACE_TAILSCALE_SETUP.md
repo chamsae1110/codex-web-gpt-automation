@@ -117,6 +117,15 @@ without automatic retry. Direct fresh-run authority requires the append-only,
 three-artifact hash-bound `settle-recursive-self-observation` receipt; a general
 BLOCKED answer or a simple run-ID mention never qualifies.
 
+A terminal registered-app checkout 502 can be released only when its durable
+answer binds the exact project root and workspace-ID failure and explicitly
+states that it did not read the mission, run commands, or change files. With
+fresh user authority, the same Codex task runs
+`settle-terminal-devspace-nonexecution` using the exact state, mission, output,
+transcript, stdout, and stderr SHA-256 values. The append-only receipt does not
+rewrite history or retry automatically; generic BLOCKED answers, foreign-task
+adoption, active run processes, and live same-task owners remain ineligible.
+
 When a previously healthy long-running session fails only as its access token
 expires, the managed DevSpace 1.0.7 compatibility layer also checks a bounded
 server-side refresh replay grace. It returns the same rotated pair only for an

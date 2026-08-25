@@ -61,6 +61,15 @@ second root list in the startup wrapper: DevSpace gives the environment
 variable precedence over the persisted config, so a stale wrapper silently
 removes newer projects after every reboot.
 
+The managed watchdog reloads that file on every 30-second health cycle. A
+recovery launches DevSpace under the installed redacting supervisor, records
+supervisor/child PID, start/exit time, and recovery evidence under
+`%CODEX_HOME%\state\devspace-service`, and keeps bounded payload-minimized
+stdout/stderr under `%CODEX_HOME%\logs\codexpro-devspace`. Request, tool-call,
+and shell-command logging stays disabled; bearer, token, cookie, password, and
+OAuth-looking values are redacted before persistence. Do not replace this with
+raw `DEVNULL` output or an unbounded unredacted service log.
+
 Every new or managed DevSpace service launch must set
 `DEVSPACE_TOOL_MODE=full`. This retains the approved-root boundary while
 making read-only workspace discovery tools such as `grep`, `glob`, and `ls`
@@ -132,7 +141,9 @@ probes, while any config change triggers a lightweight recheck.
 
 ## Diagnosis
 
-This is read-only and checks only local DevSpace, then Funnel status, then the public `/mcp` endpoint:
+This is read-only and checks local DevSpace `/mcp` plus `/healthz`, then Funnel
+status, then the public `/mcp` plus `/healthz` endpoints. A managed restart
+requires two consecutive local readiness observations before Funnel recovery:
 
 ```powershell
 python skills/chatgpt-workspace-setup/scripts/devspace_tailscale_setup.py doctor --root C:\projects\one --hostname your-device.your-tailnet.ts.net

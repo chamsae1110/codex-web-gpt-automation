@@ -115,6 +115,10 @@ instead of the layer that failed.
   `python "$env:USERPROFILE\.codex\bin\chatgpt_oracle_incident.py" report --run-dir <exact-run-dir>`.
   The packet carries the exact run directory, the classified bucket, the
   lifecycle verdict with its authority source, and existing evidence paths.
+  If comprehensive settlement proves that the planned Oracle layout was never
+  created, report from its exact persisted workflow state instead with
+  `report --workflow-state <exact-workflow-state.json>`; never fabricate a run
+  directory just to satisfy the normal reporter.
   Its v2 routing block must name `evaluated_from_thread`, the exact
   `target_source_thread_id`, run ID, slug, and whether the instruction is
   executable by the evaluating task. Send each target task its own report;
@@ -126,12 +130,20 @@ instead of the layer that failed.
   retry that run.
 - Classify before repairing. Run
   `python "$env:USERPROFILE\.codex\bin\chatgpt_oracle_diagnose.py" --summary-only`
-  and fix the largest bucket rather than the newest report. A `pre-submit-*`
-  bucket proves no web submission occurred and is safe to retry; a
-  `post-submit-*` bucket requires exact-slug recovery and never a replacement
-  submission.
+  and fix the largest bucket rather than the newest report. Only buckets named
+  in `safe_for_fresh_run_buckets` authorize a fresh run. A submit mutex or live
+  task owner is `submission-ownership-conflict` and is never retry-safe merely
+  because the rejected attempt itself was pre-submit. A post-submit bucket
+  requires exact-slug recovery and never a replacement submission.
 - Treat `safe_for_fresh_run: false` as binding. Do not resubmit, stop, or close
   another session's work while repairing code.
+- A terminal DevSpace checkout 502 remains unsafe until the exact terminal
+  answer explicitly proves no mission read, command, or file change and the
+  user authorizes a new run. Only the same Codex task may write the append-only
+  `settle-terminal-devspace-nonexecution` receipt, bound to state, mission,
+  output, transcript, stdout, and stderr hashes. Generic BLOCKED output,
+  foreign-task adoption, active processes, or live same-task owners remain
+  fail-closed. This is explicit new-run authority, never an automatic retry.
 
 ## Safety boundaries
 

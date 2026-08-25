@@ -181,6 +181,12 @@ USER_AUTHORIZED_FRESH_AFTER_RECURSIVE_SELF_OBSERVATION = (
 RECURSIVE_SELF_OBSERVATION_SETTLEMENT_SCHEMA = (
     "codex.chatgpt.oracle-recursive-self-observation-settlement/v1"
 )
+USER_AUTHORIZED_FRESH_AFTER_TERMINAL_DEVSPACE_NONEXECUTION = (
+    "user-authorized-fresh-run-after-terminal-devspace-nonexecution"
+)
+TERMINAL_DEVSPACE_NONEXECUTION_SETTLEMENT_SCHEMA = (
+    "codex.chatgpt.oracle-terminal-devspace-nonexecution-settlement/v1"
+)
 ORACLE_RECOVERY_STATE_RE = re.compile(r"(?im)^\s*State:\s*[a-z][a-z0-9_-]*\s*$")
 ORACLE_PROFILE_COPY_EBUSY_RE = re.compile(
     r"(?im)^(?:ERROR:\s*|User error \(browser-automation\):\s*)?"
@@ -1733,6 +1739,72 @@ def recursive_self_observation_evidence(
     }
 
 
+def terminal_devspace_nonexecution_evidence(
+    state: dict[str, Any], output_text: str
+) -> dict[str, str] | None:
+    """Recognize one terminal DevSpace checkout outage with explicit nonexecution.
+
+    This signature is intentionally narrower than a generic BLOCKED answer.  A
+    fresh run is safe only when the provider's durable terminal answer binds
+    the exact project, reports the registered-app checkout 502, and explicitly
+    says that it did not read the mission, run commands, or change files.
+    """
+    run_id = str(state.get("run_id") or "").strip()
+    project_root = str(state.get("project_root") or "").strip()
+    transport = str(state.get("transport") or "").strip().casefold()
+    outcome = str(state.get("task_outcome") or "").strip().casefold()
+    oracle = state.get("oracle") if isinstance(state.get("oracle"), dict) else {}
+    slug = str(oracle.get("slug") or "").strip()
+    text = str(output_text or "")
+    folded = text.casefold()
+    marker_matches = TASK_OUTCOME_RE.findall(text)
+    final_nonempty = next((line.strip() for line in reversed(text.splitlines()) if line.strip()), "")
+    expected_marker = {
+        "blocked": "TASK_OUTCOME: BLOCKED",
+        "not_executed": "TASK_OUTCOME: NOT_EXECUTED",
+    }.get(outcome)
+    outage = (
+        "502 upstream or external service errors" in folded
+        and "checkout" in folded
+        and ("workspace id" in folded or "workspaceid" in folded)
+    )
+    korean_nonexecution = all(
+        needle in folded
+        for needle in ("미션 파일을 읽거나", "명령 실행", "파일 변경", "수행하지 않았습니다")
+    )
+    english_nonexecution = all(
+        any(needle in folded for needle in alternatives)
+        for alternatives in (
+            ("did not read the mission", "didn't read the mission"),
+            ("did not run commands", "didn't run commands", "no commands were run"),
+            ("did not change files", "didn't change files", "no files were changed"),
+        )
+    )
+    if (
+        not run_id
+        or not slug
+        or not project_root
+        or project_root.casefold() not in folded
+        or transport not in DEVSPACE_TRANSPORTS
+        or state.get("terminal_harvested") is not True
+        or str(state.get("session_authority") or "") != "terminal"
+        or outcome not in {"blocked", "not_executed"}
+        or len(marker_matches) != 1
+        or marker_matches[0].casefold() != outcome
+        or final_nonempty != expected_marker
+        or not outage
+        or not (korean_nonexecution or english_nonexecution)
+    ):
+        return None
+    return {
+        "run_id": run_id,
+        "slug": slug,
+        "signature": "terminal-devspace-checkout-502-no-execution",
+        "transport": transport,
+        "task_outcome": outcome,
+    }
+
+
 def proven_recursive_self_observation_fresh_run_authority(
     state_path: Path,
 ) -> dict[str, Any] | None:
@@ -1763,10 +1835,11 @@ def proven_recursive_self_observation_fresh_run_authority(
         output_text = output_path.read_text(encoding="utf-8", errors="strict")
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, OracleStateError, ValueError):
         return None
+    if not isinstance(receipt, dict):
+        return None
     oracle = state.get("oracle") if isinstance(state.get("oracle"), dict) else {}
     if (
-        not isinstance(receipt, dict)
-        or receipt.get("schema") != RECURSIVE_SELF_OBSERVATION_SETTLEMENT_SCHEMA
+        receipt.get("schema") != RECURSIVE_SELF_OBSERVATION_SETTLEMENT_SCHEMA
         or receipt.get("confirmation")
         != USER_AUTHORIZED_FRESH_AFTER_RECURSIVE_SELF_OBSERVATION
         or not str(receipt.get("reason") or "").strip()
@@ -1786,6 +1859,92 @@ def proven_recursive_self_observation_fresh_run_authority(
     ):
         return None
     return {**receipt, "path": str(receipt_path), "sha256": hashlib.sha256(receipt_bytes).hexdigest()}
+
+
+def proven_terminal_devspace_nonexecution_fresh_run_authority(
+    state_path: Path,
+) -> dict[str, Any] | None:
+    """Revalidate a task-bound, append-only terminal nonexecution authority."""
+    directory = state_path.parent.resolve(strict=True)
+    receipt_path = directory / "settlements" / "terminal-devspace-nonexecution-fresh-run.json"
+    if not receipt_path.is_file() or receipt_path.is_symlink():
+        return None
+
+    def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        value: dict[str, Any] = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError(f"duplicate settlement key: {key}")
+            value[key] = item
+        return value
+
+    try:
+        receipt_bytes = receipt_path.read_bytes()
+        receipt = json.loads(
+            receipt_bytes.decode("utf-8", errors="strict"),
+            object_pairs_hook=reject_duplicate_keys,
+        )
+        state = load_state(state_path)
+        artifacts = state.get("artifacts") if isinstance(state.get("artifacts"), dict) else {}
+        output_path = Path(str(artifacts.get("output") or directory / "output.md")).resolve(strict=True)
+        transcript_path = Path(
+            str(artifacts.get("transcript") or directory / "transcript.md")
+        ).resolve(strict=True)
+        stdout_path = Path(str(artifacts.get("stdout") or directory / "stdout.log")).resolve(strict=True)
+        stderr_path = Path(str(artifacts.get("stderr") or directory / "stderr.log")).resolve(strict=True)
+        mission_path = (directory / "mission.md").resolve(strict=True)
+        output_text = output_path.read_text(encoding="utf-8", errors="strict")
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, OracleStateError, ValueError):
+        return None
+    if not isinstance(receipt, dict):
+        return None
+    oracle = state.get("oracle") if isinstance(state.get("oracle"), dict) else {}
+    mission = state.get("mission") if isinstance(state.get("mission"), dict) else {}
+    exact_paths = {
+        "output": (output_path, directory / "output.md"),
+        "transcript": (transcript_path, directory / "transcript.md"),
+        "stdout": (stdout_path, directory / "stdout.log"),
+        "stderr": (stderr_path, directory / "stderr.log"),
+        "mission": (mission_path, directory / "mission.md"),
+    }
+    if any(
+        actual != expected.resolve() or expected.is_symlink() or not actual.is_file()
+        for actual, expected in exact_paths.values()
+    ) or state_path.is_symlink() or state_path.resolve(strict=True) != (directory / "state.json"):
+        return None
+    evidence = terminal_devspace_nonexecution_evidence(state, output_text)
+    authorized_thread = str(receipt.get("authorized_source_thread_id") or "").strip().casefold()
+    if (
+        receipt.get("schema") != TERMINAL_DEVSPACE_NONEXECUTION_SETTLEMENT_SCHEMA
+        or receipt.get("confirmation")
+        != USER_AUTHORIZED_FRESH_AFTER_TERMINAL_DEVSPACE_NONEXECUTION
+        or not str(receipt.get("reason") or "").strip()
+        or SOURCE_THREAD_ID_RE.fullmatch(authorized_thread) is None
+        or receipt.get("run_id") != state.get("run_id")
+        or receipt.get("project_root") != state.get("project_root")
+        or receipt.get("slug") != oracle.get("slug")
+        or receipt.get("transport") != state.get("transport")
+        or receipt.get("task_outcome") != state.get("task_outcome")
+        or receipt.get("signature") != "terminal-devspace-checkout-502-no-execution"
+        or receipt_path.resolve(strict=True).parent.parent != directory
+        or receipt.get("state_sha256") != sha256_file(state_path)
+        or receipt.get("output_sha256") != sha256_file(output_path)
+        or receipt.get("transcript_sha256") != sha256_file(transcript_path)
+        or receipt.get("stdout_sha256") != sha256_file(stdout_path)
+        or receipt.get("stderr_sha256") != sha256_file(stderr_path)
+        or receipt.get("mission_sha256") != sha256_file(mission_path)
+        or receipt.get("mission_sha256") != mission.get("sha256")
+        or evidence is None
+        or receipt.get("auto_retry") is not False
+        or receipt.get("submission_action") != "none"
+    ):
+        return None
+    return {
+        **receipt,
+        "authorized_source_thread_id": authorized_thread,
+        "path": str(receipt_path),
+        "sha256": hashlib.sha256(receipt_bytes).hexdigest(),
+    }
 
 
 def _state_has_conversation_url(state: dict[str, Any]) -> bool:

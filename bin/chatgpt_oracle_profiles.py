@@ -176,7 +176,17 @@ def build_launch_contract(
     """
     profile = resolve_profile(mode)
     configured_regular_web_mode = WORKSPACE_CONFIG.configured_regular_web_mode()
-    configured_pro = configured_regular_web_mode == "pro" and not profile.research
+    # A durable Pro preference is explicit user authority for advisory power,
+    # never for mutation.  Latest Pro is read-only, so every write-capable mode
+    # remains on regular GPT-5.6 extra-high even when the preference is `pro`.
+    configured_pro = (
+        configured_regular_web_mode == "pro"
+        and profile.mode in {"plan", "review"}
+    )
+    configured_pro_blocked_for_write = (
+        configured_regular_web_mode == "pro"
+        and profile.mode in WRITE_CAPABLE_REGULAR_MODES
+    )
     resolved_app_name = WORKSPACE_CONFIG.normalize_app_name(
         app_name or WORKSPACE_CONFIG.configured_app_name()
     )
@@ -194,6 +204,8 @@ def build_launch_contract(
         "pro_selection_policy": (
             "host-configured-pro"
             if configured_pro and profile.mode != "pro"
+            else "write-authority-forces-regular"
+            if configured_pro_blocked_for_write
             else "explicit-only"
         ),
     }
