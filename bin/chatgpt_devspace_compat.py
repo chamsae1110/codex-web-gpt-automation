@@ -17,6 +17,16 @@ SUPPORTED_VERSION = "1.0.7"
 # old package would hide an incomplete rollback from the service health gates.
 LEGACY_LKG_VERSION = "1.0.4"
 CREATE_NO_WINDOW = 0x08000000
+NATIVE_DEPENDENCY_NAME = "better-sqlite3"
+NATIVE_DEPENDENCY_VERSION = "12.11.1"
+NATIVE_DEPENDENCY_INTEGRITY = (
+    "sha512-dq9AtApgg5PGFtBzPFSBl3HZQjHok5gaQCM6zh2Yk0aSmDCs1CbnVI8/"
+    "HgASQkNKsWFpseIO9beg5xxpYhbIfA=="
+)
+NATIVE_DEPENDENCY_RESOLVED = (
+    "https://registry.npmjs.org/better-sqlite3/-/better-sqlite3-12.11.1.tgz"
+)
+NATIVE_DEPENDENCY_INSTALL_SCRIPT = "prebuild-install || node-gyp rebuild --release"
 PATCHES = {
     "dist/artifact-tools.js": {
         "patch": "artifact-audit-readonly.patch",
@@ -119,6 +129,273 @@ def resolve_service_stop_roots() -> list[Path]:
             {"versions": [SUPPORTED_VERSION, LEGACY_LKG_VERSION]},
         )
     return list(dict.fromkeys(roots))
+
+
+def _json_object(path: Path, *, code: str) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise DevSpaceCompatError(code, f"{path.name} is unreadable", {"path": str(path)}) from exc
+    if not isinstance(value, dict):
+        raise DevSpaceCompatError(code, f"{path.name} must contain a JSON object", {"path": str(path)})
+    return value
+
+
+def validate_native_dependency(package_root: Path) -> dict[str, Any]:
+    """Bind the only approved native rebuild to an exact npm package and lock entry."""
+    root = package_root.expanduser().resolve(strict=True)
+    if package_version(root) != SUPPORTED_VERSION:
+        raise DevSpaceCompatError(
+            "DEVSPACE_NATIVE_DEPENDENCY_INVALID",
+            "native preparation accepts only the tested DevSpace package",
+            {"root": str(root), "version": package_version(root)},
+        )
+    node_modules = root.parent.parent
+    try:
+        workspace = node_modules.parent.resolve(strict=True)
+        dependency = (node_modules / NATIVE_DEPENDENCY_NAME).resolve(strict=True)
+    except OSError as exc:
+        raise DevSpaceCompatError(
+            "DEVSPACE_NATIVE_DEPENDENCY_INVALID",
+            "tested native dependency is missing from the exact npx package tree",
+            {"root": str(root), "dependency": NATIVE_DEPENDENCY_NAME},
+        ) from exc
+    if not dependency.is_relative_to(workspace):
+        raise DevSpaceCompatError(
+            "DEVSPACE_NATIVE_DEPENDENCY_INVALID",
+            "native dependency escapes the exact npx package tree",
+            {"root": str(root), "dependency": str(dependency)},
+        )
+    metadata = _json_object(
+        dependency / "package.json",
+        code="DEVSPACE_NATIVE_DEPENDENCY_INVALID",
+    )
+    lock = _json_object(workspace / "package-lock.json", code="DEVSPACE_NATIVE_LOCK_INVALID")
+    packages = lock.get("packages")
+    lock_entry = packages.get(f"node_modules/{NATIVE_DEPENDENCY_NAME}") if isinstance(packages, dict) else None
+    actual = {
+        "name": metadata.get("name"),
+        "version": metadata.get("version"),
+        "install_script": (metadata.get("scripts") or {}).get("install")
+        if isinstance(metadata.get("scripts"), dict)
+        else None,
+        "lock_version": lock_entry.get("version") if isinstance(lock_entry, dict) else None,
+        "lock_integrity": lock_entry.get("integrity") if isinstance(lock_entry, dict) else None,
+        "lock_resolved": lock_entry.get("resolved") if isinstance(lock_entry, dict) else None,
+        "lock_has_install_script": lock_entry.get("hasInstallScript")
+        if isinstance(lock_entry, dict)
+        else None,
+    }
+    expected = {
+        "name": NATIVE_DEPENDENCY_NAME,
+        "version": NATIVE_DEPENDENCY_VERSION,
+        "install_script": NATIVE_DEPENDENCY_INSTALL_SCRIPT,
+        "lock_version": NATIVE_DEPENDENCY_VERSION,
+        "lock_integrity": NATIVE_DEPENDENCY_INTEGRITY,
+        "lock_resolved": NATIVE_DEPENDENCY_RESOLVED,
+        "lock_has_install_script": True,
+    }
+    if actual != expected or lock.get("lockfileVersion") != 3:
+        raise DevSpaceCompatError(
+            "DEVSPACE_NATIVE_DEPENDENCY_INVALID",
+            "DevSpace native dependency does not match the tested lock contract",
+            {
+                "root": str(root),
+                "expected": expected,
+                "actual": actual,
+                "lockfile_version": lock.get("lockfileVersion"),
+            },
+        )
+    return {
+        "root": root,
+        "workspace": workspace,
+        "dependency": dependency,
+        "name": NATIVE_DEPENDENCY_NAME,
+        "version": NATIVE_DEPENDENCY_VERSION,
+        "integrity": NATIVE_DEPENDENCY_INTEGRITY,
+    }
+
+
+def _native_command(
+    argv: Sequence[str],
+    *,
+    cwd: Path,
+    runner: Any,
+    code: str,
+    message: str,
+    timeout_seconds: int = 180,
+) -> subprocess.CompletedProcess[str]:
+    completed = runner(
+        list(argv),
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+        timeout=timeout_seconds,
+        **_git_kwargs(),
+    )
+    if completed.returncode != 0:
+        raise DevSpaceCompatError(
+            code,
+            message,
+            {"stderr": (completed.stderr or "").strip()[-1200:]},
+        )
+    return completed
+
+
+def prepare_native_runtime(
+    *,
+    package_root: Path | None = None,
+    runner: Any = subprocess.run,
+) -> dict[str, Any]:
+    """Approve and rebuild only the tested better-sqlite3 package when required."""
+    roots = (
+        resolve_package_roots()
+        if package_root is None
+        else [package_root.expanduser().resolve(strict=True)]
+    )
+    npm = shutil.which("npm") or shutil.which("npm.cmd")
+    if not npm:
+        raise DevSpaceCompatError("DEVSPACE_NPM_MISSING", "npm is required for native preparation")
+    results: list[dict[str, Any]] = []
+    for root in roots:
+        layout = validate_native_dependency(root)
+        try:
+            native = check_native_runtime(package_root=root, runner=runner)
+        except DevSpaceCompatError as exc:
+            if exc.code != "DEVSPACE_NATIVE_BINDING_UNAVAILABLE":
+                raise
+        else:
+            results.append({
+                "root": str(root),
+                "status": "already-loadable",
+                "dependency": NATIVE_DEPENDENCY_NAME,
+                "version": NATIVE_DEPENDENCY_VERSION,
+                "integrity": NATIVE_DEPENDENCY_INTEGRITY,
+                "native_runtime": native,
+            })
+            continue
+
+        version_result = _native_command(
+            [npm, "--version"],
+            cwd=layout["workspace"],
+            runner=runner,
+            code="DEVSPACE_NPM_VERSION_UNAVAILABLE",
+            message="npm version could not be determined",
+        )
+        npm_version = (version_result.stdout or "").strip()
+        try:
+            npm_major = int(npm_version.split(".", 1)[0])
+        except ValueError as exc:
+            raise DevSpaceCompatError(
+                "DEVSPACE_NPM_VERSION_UNAVAILABLE",
+                "npm returned an invalid version",
+                {"version": npm_version},
+            ) from exc
+        if npm_major < 12:
+            raise DevSpaceCompatError(
+                "DEVSPACE_NPM_VERSION_UNSUPPORTED",
+                "bounded install-script approval requires npm 12 or newer",
+                {"version": npm_version},
+            )
+
+        policy_path = layout["workspace"] / "package.json"
+        before = _json_object(policy_path, code="DEVSPACE_NATIVE_POLICY_INVALID")
+        before_policy = before.get("allowScripts")
+        if before_policy is None:
+            before_policy = {}
+        if not isinstance(before_policy, dict):
+            raise DevSpaceCompatError(
+                "DEVSPACE_NATIVE_POLICY_INVALID",
+                "npx allowScripts policy must be a JSON object",
+                {"path": str(policy_path)},
+            )
+        target = f"{NATIVE_DEPENDENCY_NAME}@{NATIVE_DEPENDENCY_VERSION}"
+        conflicting_targets = sorted(
+            key
+            for key in before_policy
+            if key != target
+            and (key == NATIVE_DEPENDENCY_NAME or key.startswith(f"{NATIVE_DEPENDENCY_NAME}@"))
+        )
+        if conflicting_targets:
+            raise DevSpaceCompatError(
+                "DEVSPACE_NATIVE_POLICY_INVALID",
+                "existing native approval policy conflicts with the exact tested version",
+                {"target": target, "conflicts": conflicting_targets},
+            )
+        approved_now = before_policy.get(target) is not True
+        if approved_now:
+            _native_command(
+                [
+                    npm,
+                    "install-scripts",
+                    "approve",
+                    target,
+                    "--allow-scripts-pin",
+                    "--json",
+                ],
+                cwd=layout["workspace"],
+                runner=runner,
+                code="DEVSPACE_NATIVE_APPROVAL_FAILED",
+                message="bounded native install-script approval failed",
+            )
+        after = _json_object(policy_path, code="DEVSPACE_NATIVE_POLICY_INVALID")
+        after_policy = after.get("allowScripts")
+        if not isinstance(after_policy, dict) or after_policy.get(target) is not True:
+            raise DevSpaceCompatError(
+                "DEVSPACE_NATIVE_APPROVAL_SCOPE_CHANGED",
+                "exact native approval was not persisted",
+                {"target": target},
+            )
+        before_other = {key: value for key, value in before.items() if key != "allowScripts"}
+        after_other = {key: value for key, value in after.items() if key != "allowScripts"}
+        added = sorted(key for key in after_policy if key not in before_policy and key != target)
+        changed = {
+            key: value
+            for key, value in after_policy.items()
+            if key != target and key in before_policy and before_policy[key] != value
+        }
+        removed = sorted(key for key in before_policy if key != target and key not in after_policy)
+        if added or changed or removed or before_other != after_other:
+            raise DevSpaceCompatError(
+                "DEVSPACE_NATIVE_APPROVAL_SCOPE_CHANGED",
+                "native approval changed unrelated install-script policy",
+                {
+                    "added": added,
+                    "changed": changed,
+                    "removed": removed,
+                    "other_fields_changed": before_other != after_other,
+                },
+            )
+
+        _native_command(
+            [
+                npm,
+                "rebuild",
+                target,
+                "--foreground-scripts",
+                "--ignore-scripts=false",
+            ],
+            cwd=layout["workspace"],
+            runner=runner,
+            code="DEVSPACE_NATIVE_REBUILD_FAILED",
+            message="bounded better-sqlite3 rebuild failed",
+            timeout_seconds=600,
+        )
+        native = check_native_runtime(package_root=root, runner=runner)
+        results.append({
+            "root": str(root),
+            "status": "rebuilt-and-loadable",
+            "dependency": NATIVE_DEPENDENCY_NAME,
+            "version": NATIVE_DEPENDENCY_VERSION,
+            "integrity": NATIVE_DEPENDENCY_INTEGRITY,
+            "npm_version": npm_version,
+            "approval_added": approved_now,
+            "native_runtime": native,
+        })
+    return {"ok": True, "version": SUPPORTED_VERSION, "checks": results}
 
 
 def check_native_runtime(
@@ -801,6 +1078,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--package-root", type=Path)
     parser.add_argument("--confirm-service-restarted", action="store_true")
     parser.add_argument("--stop-exact-service", action="store_true")
+    parser.add_argument("--prepare-native-runtime", action="store_true")
     parser.add_argument("--check-native-runtime", action="store_true")
     parser.add_argument("--check-oauth-refresh-replay", action="store_true")
     parser.add_argument("--allow-package-absent", action="store_true")
@@ -810,6 +1088,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         selected = sum(bool(value) for value in (
             args.confirm_service_restarted,
             args.stop_exact_service,
+            args.prepare_native_runtime,
             args.check_native_runtime,
             args.check_oauth_refresh_replay,
         ))
@@ -818,7 +1097,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 "DEVSPACE_COMPAT_ACTION_CONFLICT",
                 "choose only one DevSpace compatibility action",
             )
-        if args.check_native_runtime:
+        if args.prepare_native_runtime:
+            result = prepare_native_runtime(package_root=args.package_root)
+        elif args.check_native_runtime:
             result = check_native_runtime(
                 package_root=args.package_root,
                 allow_package_absent=args.allow_package_absent,

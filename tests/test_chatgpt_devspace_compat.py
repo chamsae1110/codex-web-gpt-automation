@@ -32,6 +32,48 @@ def load_compat():
     return module
 
 
+def native_layout(tmp_path: Path, compat):
+    workspace = tmp_path / "npx"
+    package = workspace / "node_modules" / "@waishnav" / "devspace"
+    dependency = workspace / "node_modules" / "better-sqlite3"
+    package.mkdir(parents=True)
+    dependency.mkdir(parents=True)
+    (package / "package.json").write_text(
+        json.dumps({"name": "@waishnav/devspace", "version": "1.0.7"}),
+        encoding="utf-8",
+    )
+    (dependency / "package.json").write_text(
+        json.dumps({
+            "name": "better-sqlite3",
+            "version": compat.NATIVE_DEPENDENCY_VERSION,
+            "scripts": {"install": compat.NATIVE_DEPENDENCY_INSTALL_SCRIPT},
+        }),
+        encoding="utf-8",
+    )
+    (workspace / "package-lock.json").write_text(
+        json.dumps({
+            "lockfileVersion": 3,
+            "packages": {
+                "node_modules/better-sqlite3": {
+                    "version": compat.NATIVE_DEPENDENCY_VERSION,
+                    "resolved": compat.NATIVE_DEPENDENCY_RESOLVED,
+                    "integrity": compat.NATIVE_DEPENDENCY_INTEGRITY,
+                    "hasInstallScript": True,
+                },
+            },
+        }),
+        encoding="utf-8",
+    )
+    (workspace / "package.json").write_text(
+        json.dumps({
+            "dependencies": {"@waishnav/devspace": "^1.0.7"},
+            "allowScripts": {"preserved-custom@1.0.0": False},
+        }),
+        encoding="utf-8",
+    )
+    return package, workspace
+
+
 def digest(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
@@ -66,6 +108,87 @@ def test_native_runtime_probe_loads_exact_binding_and_fails_actionably(tmp_path:
         compat.check_native_runtime(package_root=package, runner=failing)
     assert failure.value.code == "DEVSPACE_NATIVE_BINDING_UNAVAILABLE"
     assert "install-scripts" in failure.value.evidence["next_action"]
+
+
+def test_native_runtime_prepare_is_exact_bounded_and_preserves_policy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    compat = load_compat()
+    package, workspace = native_layout(tmp_path, compat)
+    monkeypatch.setattr(
+        compat.shutil,
+        "which",
+        lambda name: "node.exe" if name == "node" else "npm.cmd" if name in {"npm", "npm.cmd"} else None,
+    )
+    calls: list[tuple[list[str], dict]] = []
+    rebuilt = False
+
+    def runner(argv, **kwargs):
+        nonlocal rebuilt
+        calls.append((list(argv), dict(kwargs)))
+        if argv[0] == "node.exe":
+            return SimpleNamespace(
+                returncode=0 if rebuilt else 1,
+                stdout="",
+                stderr="" if rebuilt else "Could not locate the bindings file",
+            )
+        if argv[1:] == ["--version"]:
+            return SimpleNamespace(returncode=0, stdout="12.0.2\n", stderr="")
+        if argv[1:4] == ["install-scripts", "approve", "better-sqlite3@12.11.1"]:
+            policy_path = workspace / "package.json"
+            policy = json.loads(policy_path.read_text(encoding="utf-8"))
+            policy["allowScripts"]["better-sqlite3@12.11.1"] = True
+            policy_path.write_text(json.dumps(policy), encoding="utf-8")
+            return SimpleNamespace(returncode=0, stdout='{"allowScripts": []}', stderr="")
+        if argv[1:3] == ["rebuild", "better-sqlite3@12.11.1"]:
+            rebuilt = True
+            return SimpleNamespace(returncode=0, stdout="rebuilt dependencies successfully", stderr="")
+        raise AssertionError(argv)
+
+    report = compat.prepare_native_runtime(package_root=package, runner=runner)
+
+    assert report["checks"][0]["status"] == "rebuilt-and-loadable"
+    assert report["checks"][0]["approval_added"] is True
+    policy = json.loads((workspace / "package.json").read_text(encoding="utf-8"))["allowScripts"]
+    assert policy == {
+        "preserved-custom@1.0.0": False,
+        "better-sqlite3@12.11.1": True,
+    }
+    approval = next(argv for argv, _ in calls if "install-scripts" in argv)
+    assert approval[1:] == [
+        "install-scripts",
+        "approve",
+        "better-sqlite3@12.11.1",
+        "--allow-scripts-pin",
+        "--json",
+    ]
+    rebuild = next(argv for argv, _ in calls if "rebuild" in argv)
+    assert rebuild[1:] == [
+        "rebuild",
+        "better-sqlite3@12.11.1",
+        "--foreground-scripts",
+        "--ignore-scripts=false",
+    ]
+
+
+def test_native_runtime_prepare_rejects_unvalidated_integrity_before_commands(
+    tmp_path: Path,
+) -> None:
+    compat = load_compat()
+    package, workspace = native_layout(tmp_path, compat)
+    lock_path = workspace / "package-lock.json"
+    lock = json.loads(lock_path.read_text(encoding="utf-8"))
+    lock["packages"]["node_modules/better-sqlite3"]["integrity"] = "sha512-untrusted"
+    lock_path.write_text(json.dumps(lock), encoding="utf-8")
+
+    with pytest.raises(compat.DevSpaceCompatError) as failure:
+        compat.prepare_native_runtime(
+            package_root=package,
+            runner=lambda *args, **kwargs: pytest.fail("runner must not be called"),
+        )
+
+    assert failure.value.code == "DEVSPACE_NATIVE_DEPENDENCY_INVALID"
 
 
 def test_oauth_refresh_replay_probe_is_isolated_and_fail_closed(tmp_path: Path) -> None:

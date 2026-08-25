@@ -73,7 +73,12 @@ raw `DEVNULL` output or an unbounded unredacted service log.
 Before native compatibility checks, materialize the exact pinned DevSpace
 package with the helper's non-service `--version` command. This cold-cache step
 must not use a moving package version or start, stop, or replace the live
-service; native checks and managed launch remain fail-closed after it.
+service. If npm 12 blocked the tested native binding, the next helper stage
+validates the exact DevSpace tree and lock integrity, pins approval to
+`better-sqlite3@12.11.1`, rebuilds only that dependency, and proves an in-memory
+database load. It must preserve every unrelated `allowScripts` entry and must
+never approve all scripts, change global npm policy, or downgrade Node. Native
+checks and managed launch remain fail-closed after it.
 
 Every new or managed DevSpace service launch must set
 `DEVSPACE_TOOL_MODE=full`. This retains the approved-root boundary while

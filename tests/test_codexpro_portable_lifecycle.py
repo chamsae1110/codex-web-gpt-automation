@@ -18,7 +18,13 @@ def load(name: str, path: Path):
     return module
 
 
-def test_portable_lifecycle_is_exact_inverse(tmp_path: Path) -> None:
+def test_portable_lifecycle_is_exact_inverse(tmp_path: Path, monkeypatch) -> None:
+    isolated_home = tmp_path / "host-home"
+    isolated_home.mkdir()
+    monkeypatch.setenv("HOME", str(isolated_home))
+    monkeypatch.setenv("USERPROFILE", str(isolated_home))
+    monkeypatch.setenv("APPDATA", str(isolated_home / "appdata"))
+    monkeypatch.setenv("LOCALAPPDATA", str(isolated_home / "localappdata"))
     module = load("portable_lifecycle_test", ROOT / "bin" / "codexpro_lifecycle.py")
     codex_home = tmp_path / "codex"
     prior = codex_home / "bin" / "chatgpt_oracle_state.py"

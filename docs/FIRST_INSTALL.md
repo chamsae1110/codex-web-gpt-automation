@@ -410,9 +410,10 @@ exact folder가 `allowedRoots`에 있는지만 가볍게 확인하고, config ha
 - `DEVSPACE_EXACT_ROOT_UNAVAILABLE`: Oracle/browser를 시작하지 말고 exact root부터 등록합니다.
 - local `/mcp` 실패: 터널이 아니라 DevSpace 서비스부터 복구합니다.
 - public `/mcp` 실패: 고정 터널 mapping과 OS 시작 서비스를 복구합니다.
-- `DEVSPACE_NATIVE_BINDING_UNAVAILABLE`: `npm install-scripts ls`에서 정확한 DevSpace
-  native dependency만 검토·승인한 뒤 `better-sqlite3`를 재빌드합니다. doctor가 실제
-  메모리 DB 로드에 성공하기 전에는 서비스를 시작하지 않습니다.
+- `DEVSPACE_NATIVE_BINDING_UNAVAILABLE`: setup/recover helper가 exact DevSpace tree와
+  lock integrity를 확인한 뒤 `better-sqlite3@12.11.1` 한 항목만 version-pinned 승인하고
+  targeted rebuild합니다. 다른 install script, 전역 npm 정책, Node 버전은 바꾸지 않으며
+  doctor가 실제 메모리 DB 로드에 성공하기 전에는 서비스를 시작하지 않습니다.
 - 앱이 도구를 찾지 못함: 동일 URL의 MCP/OAuth 상태를 확인합니다. 자동으로 앱을
   삭제하거나 다시 만들지 않습니다. 방금 등록·재연결했다면 `post-register`를 한 번만
   실행하고 일반 Oracle 읽기 검사를 반복합니다.
