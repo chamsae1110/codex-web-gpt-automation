@@ -144,6 +144,12 @@ instead of the layer that failed.
   output, transcript, stdout, and stderr hashes. Generic BLOCKED output,
   foreign-task adoption, active processes, or live same-task owners remain
   fail-closed. This is explicit new-run authority, never an automatic retry.
+- The same receipt may settle an exact app-tools-unavailable terminal answer
+  only when it binds the project and configured app, proves that no workspace
+  tool was exposed, no alternate connector/shell/web path was attempted, and
+  neither the mission nor AGENTS.md was read or modified. Generic tool errors
+  and ambiguous nonexecution remain fail-closed. Fresh runs must use the
+  persisted registered app name; do not replace it with a recommended default.
 
 ## Safety boundaries
 

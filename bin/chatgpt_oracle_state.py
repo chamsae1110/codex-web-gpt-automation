@@ -187,6 +187,10 @@ USER_AUTHORIZED_FRESH_AFTER_TERMINAL_DEVSPACE_NONEXECUTION = (
 TERMINAL_DEVSPACE_NONEXECUTION_SETTLEMENT_SCHEMA = (
     "codex.chatgpt.oracle-terminal-devspace-nonexecution-settlement/v1"
 )
+TERMINAL_DEVSPACE_NONEXECUTION_SIGNATURES = frozenset((
+    "terminal-devspace-checkout-502-no-execution",
+    "terminal-devspace-app-tools-unavailable-no-execution",
+))
 ORACLE_RECOVERY_STATE_RE = re.compile(r"(?im)^\s*State:\s*[a-z][a-z0-9_-]*\s*$")
 ORACLE_PROFILE_COPY_EBUSY_RE = re.compile(
     r"(?im)^(?:ERROR:\s*|User error \(browser-automation\):\s*)?"
@@ -1742,12 +1746,14 @@ def recursive_self_observation_evidence(
 def terminal_devspace_nonexecution_evidence(
     state: dict[str, Any], output_text: str
 ) -> dict[str, str] | None:
-    """Recognize one terminal DevSpace checkout outage with explicit nonexecution.
+    """Recognize a bounded terminal DevSpace failure with explicit nonexecution.
 
     This signature is intentionally narrower than a generic BLOCKED answer.  A
-    fresh run is safe only when the provider's durable terminal answer binds
-    the exact project, reports the registered-app checkout 502, and explicitly
-    says that it did not read the mission, run commands, or change files.
+    fresh run is safe only when the durable answer binds the exact project and
+    either reports the registered-app checkout 502 with explicit no-work proof,
+    or reports that the exact app exposed no workspace tools and explicitly
+    confirms that it attempted no connector/shell/web fallback and read or
+    modified neither the mission nor AGENTS.md.
     """
     run_id = str(state.get("run_id") or "").strip()
     project_root = str(state.get("project_root") or "").strip()
@@ -1780,6 +1786,31 @@ def terminal_devspace_nonexecution_evidence(
             ("did not change files", "didn't change files", "no files were changed"),
         )
     )
+    app_name = str(state.get("app_name") or "").strip().casefold()
+    korean_tools_unavailable = all(
+        needle in folded
+        for needle in (
+            "workspace 도구가 노출되어 있지 않아",
+            "열 수 없습니다",
+            "다른 workspace 커넥터·셸·웹·oracle 우회는 시도하지 않았",
+            "미션 파일이나 agents.md도 읽거나 수정하지 않았",
+        )
+    )
+    english_tools_unavailable = all(
+        any(needle in folded for needle in alternatives)
+        for alternatives in (
+            ("workspace tools are not available", "workspace tools are not exposed"),
+            ("could not open", "unable to open"),
+            ("did not try another connector", "did not attempt another connector"),
+            ("did not use the shell", "did not attempt a shell"),
+            ("did not read or modify the mission", "read or modified neither the mission"),
+        )
+    )
+    tools_unavailable = (
+        bool(app_name)
+        and app_name in folded
+        and (korean_tools_unavailable or english_tools_unavailable)
+    )
     if (
         not run_id
         or not slug
@@ -1792,14 +1823,21 @@ def terminal_devspace_nonexecution_evidence(
         or len(marker_matches) != 1
         or marker_matches[0].casefold() != outcome
         or final_nonempty != expected_marker
-        or not outage
-        or not (korean_nonexecution or english_nonexecution)
+        or not (
+            (outage and (korean_nonexecution or english_nonexecution))
+            or tools_unavailable
+        )
     ):
         return None
+    signature = (
+        "terminal-devspace-app-tools-unavailable-no-execution"
+        if tools_unavailable
+        else "terminal-devspace-checkout-502-no-execution"
+    )
     return {
         "run_id": run_id,
         "slug": slug,
-        "signature": "terminal-devspace-checkout-502-no-execution",
+        "signature": signature,
         "transport": transport,
         "task_outcome": outcome,
     }
@@ -1925,7 +1963,7 @@ def proven_terminal_devspace_nonexecution_fresh_run_authority(
         or receipt.get("slug") != oracle.get("slug")
         or receipt.get("transport") != state.get("transport")
         or receipt.get("task_outcome") != state.get("task_outcome")
-        or receipt.get("signature") != "terminal-devspace-checkout-502-no-execution"
+        or receipt.get("signature") not in TERMINAL_DEVSPACE_NONEXECUTION_SIGNATURES
         or receipt_path.resolve(strict=True).parent.parent != directory
         or receipt.get("state_sha256") != sha256_file(state_path)
         or receipt.get("output_sha256") != sha256_file(output_path)
@@ -1935,6 +1973,7 @@ def proven_terminal_devspace_nonexecution_fresh_run_authority(
         or receipt.get("mission_sha256") != sha256_file(mission_path)
         or receipt.get("mission_sha256") != mission.get("sha256")
         or evidence is None
+        or receipt.get("signature") != evidence.get("signature")
         or receipt.get("auto_retry") is not False
         or receipt.get("submission_action") != "none"
     ):

@@ -4975,6 +4975,57 @@ def test_terminal_devspace_nonexecution_settlement_is_append_only_and_task_bound
     ) is None
 
 
+def test_terminal_devspace_nonexecution_settlement_accepts_exact_app_tools_unavailable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = load_runner()
+    task_id = "11111111-1111-4111-8111-111111111111"
+    monkeypatch.setenv("CODEX_THREAD_ID", task_id)
+    run_dir, hashes = terminal_devspace_nonexecution_run(runner, tmp_path)
+    state_path = run_dir / "state.json"
+    output = run_dir / "output.md"
+    transcript = run_dir / "transcript.md"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["app_name"] = "dev"
+    exact = (
+        "이 세션에는 dev 앱이 제공하는 workspace 도구가 노출되어 있지 않아 "
+        f"지정한 {state['project_root']}를 dev checkout 모드로 열 수 없습니다. "
+        "사용자가 금지한 다른 workspace 커넥터·셸·웹·Oracle 우회는 시도하지 않았으며, "
+        "따라서 미션 파일이나 AGENTS.md도 읽거나 수정하지 않았습니다.\n"
+        "TASK_OUTCOME: BLOCKED\n"
+    )
+    output.write_text(exact, encoding="utf-8")
+    transcript.write_text(exact, encoding="utf-8")
+    runner.STATE.write_json_atomic(state_path, state)
+    hashes.update({
+        "expected_state_sha256": runner.STATE.sha256_file(state_path),
+        "expected_output_sha256": runner.STATE.sha256_file(output),
+        "expected_transcript_sha256": runner.STATE.sha256_file(transcript),
+    })
+
+    dry = runner.settle_terminal_devspace_nonexecution_fresh_run(
+        run_dir,
+        confirmation=runner.STATE.USER_AUTHORIZED_FRESH_AFTER_TERMINAL_DEVSPACE_NONEXECUTION,
+        reason="user authorized a configured-app canary after exact no-tool evidence",
+        dry_run=True,
+        **hashes,
+    )
+    assert dry["settlement_payload"]["signature"] == (
+        "terminal-devspace-app-tools-unavailable-no-execution"
+    )
+    settled = runner.settle_terminal_devspace_nonexecution_fresh_run(
+        run_dir,
+        confirmation=runner.STATE.USER_AUTHORIZED_FRESH_AFTER_TERMINAL_DEVSPACE_NONEXECUTION,
+        reason="user authorized a configured-app canary after exact no-tool evidence",
+        **hashes,
+    )
+    proof = runner.STATE.proven_terminal_devspace_nonexecution_fresh_run_authority(state_path)
+
+    assert settled["safe_for_fresh_run"] is True
+    assert proof is not None
+    assert proof["signature"] == "terminal-devspace-app-tools-unavailable-no-execution"
+
+
 def test_terminal_devspace_nonexecution_settlement_rejects_generic_blocker_and_foreign_task(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -2860,7 +2860,7 @@ def settle_terminal_devspace_nonexecution_fresh_run(
     dry_run: bool = False,
     process_alive: Callable[[int], bool] = process_is_alive,
 ) -> dict[str, Any]:
-    """Append authority for a terminal DevSpace 502 that executed no task work."""
+    """Append authority for a bounded terminal DevSpace failure with no task work."""
     if (
         confirmation.strip().casefold()
         != STATE.USER_AUTHORIZED_FRESH_AFTER_TERMINAL_DEVSPACE_NONEXECUTION
@@ -2954,7 +2954,7 @@ def settle_terminal_devspace_nonexecution_fresh_run(
     if evidence is None:
         raise OracleRunError(
             "TERMINAL_DEVSPACE_NONEXECUTION_EVIDENCE_REQUIRED",
-            "terminal output lacks the bounded DevSpace checkout 502 and explicit nonexecution proof",
+            "terminal output lacks bounded DevSpace failure and explicit nonexecution proof",
         )
     active_pids = [pid for pid in run_owned_process_ids(directory, state) if process_alive(pid)]
     if active_pids:
