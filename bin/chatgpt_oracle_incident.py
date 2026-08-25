@@ -201,10 +201,22 @@ def build_packet(run_dir: Path, *, reporter_role: str = REPORTER_ROLE) -> dict[s
     terminal_nonexecution_authority = (
         STATE.proven_terminal_devspace_nonexecution_fresh_run_authority(state_path)
     )
+    read_route_refresh_authority = (
+        STATE.proven_terminal_devspace_read_route_refresh_fresh_run_authority(
+            state_path
+        )
+    )
     if (
-        terminal_nonexecution_authority is not None
-        and terminal_nonexecution_authority.get("authorized_source_thread_id")
-        == evaluated_from_thread
+        (
+            terminal_nonexecution_authority is not None
+            and terminal_nonexecution_authority.get("authorized_source_thread_id")
+            == evaluated_from_thread
+        )
+        or (
+            read_route_refresh_authority is not None
+            and read_route_refresh_authority.get("authorized_source_thread_id")
+            == evaluated_from_thread
+        )
     ):
         owners = STATE.unresolved_project_sessions(
             directory.parent,
@@ -227,7 +239,21 @@ def build_packet(run_dir: Path, *, reporter_role: str = REPORTER_ROLE) -> dict[s
         == evaluated_from_thread
         and not owners
     )
-    fresh_run_authority = terminal_nonexecution_authority or recursive_authority
+    read_route_refresh_fresh_safe = (
+        str(verdict["signature"])
+        == STATE.TERMINAL_DEVSPACE_READ_ROUTE_REFRESH_SIGNATURE
+        and read_route_refresh_authority is not None
+        and read_route_refresh_authority.get("signature")
+        == str(verdict["signature"])
+        and read_route_refresh_authority.get("authorized_source_thread_id")
+        == evaluated_from_thread
+        and not owners
+    )
+    fresh_run_authority = (
+        read_route_refresh_authority
+        or terminal_nonexecution_authority
+        or recursive_authority
+    )
     return {
         "schema": SCHEMA,
         "run_dir": str(directory),
@@ -254,14 +280,17 @@ def build_packet(run_dir: Path, *, reporter_role: str = REPORTER_ROLE) -> dict[s
             scope=ownership_scope,
         ),
         # Pre-submit proof remains the normal fresh-run authority. The only
-        # terminal exception is a task-bound append-only receipt for a durable
-        # DevSpace checkout 502 answer that explicitly proves no task work ran.
+        # terminal exceptions are exact task-bound append-only receipts.
         "safe_for_fresh_run": (
             (
                 ownership_scope == "same-task"
                 and (
-                (bucket in {DIAGNOSE.PRE_SUBMIT_HOST, DIAGNOSE.PRE_SUBMIT_UI} and not owners)
-                or recursive_fresh_safe
+                    (
+                        bucket in {DIAGNOSE.PRE_SUBMIT_HOST, DIAGNOSE.PRE_SUBMIT_UI}
+                        and not owners
+                    )
+                    or recursive_fresh_safe
+                    or read_route_refresh_fresh_safe
                 )
             )
             or terminal_nonexecution_fresh_safe
@@ -574,6 +603,12 @@ def validate_packet(packet: dict[str, Any]) -> dict[str, Any]:
                 proof = STATE.proven_terminal_devspace_nonexecution_fresh_run_authority(state_path)
                 if proof is not None and proof.get("authorized_source_thread_id") != evaluator:
                     proof = None
+            elif signature == STATE.TERMINAL_DEVSPACE_READ_ROUTE_REFRESH_SIGNATURE:
+                proof = STATE.proven_terminal_devspace_read_route_refresh_fresh_run_authority(
+                    state_path
+                )
+                if proof is not None and proof.get("authorized_source_thread_id") != evaluator:
+                    proof = None
             else:
                 proof = None
             claimed = packet.get("fresh_run_authority")
@@ -584,7 +619,7 @@ def validate_packet(packet: dict[str, Any]) -> dict[str, Any]:
             ):
                 raise IncidentError(
                     "INCIDENT_FRESH_RUN_AUTHORITY_INVALID",
-                    "terminal nonexecution requires a revalidated, exact append-only authority receipt",
+                    "terminal fresh-run authority requires a revalidated, exact append-only receipt",
                 )
     return packet
 

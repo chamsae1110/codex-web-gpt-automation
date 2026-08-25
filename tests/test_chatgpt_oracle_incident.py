@@ -610,6 +610,105 @@ def test_terminal_devspace_nonexecution_authority_releases_only_the_authorized_t
     assert foreign_packet["safe_for_fresh_run"] is False
 
 
+def test_terminal_devspace_read_route_refresh_authority_releases_one_probe(
+    tmp_path: Path,
+) -> None:
+    module = load()
+    task_id = DEFAULT_EVALUATOR
+    project_root = tmp_path / "project"
+    escaped_root = str(project_root).replace("\\", "\\\\")
+    output = (
+        "* 앱: `dev`\n"
+        "* Workspace ID: `ws_a0770e8338`\n"
+        f"* 정확한 루트: `{escaped_root}`\n"
+        "* 모드: `checkout`\n"
+        "* 적용 `AGENTS.md`: 전체 확인 완료\n"
+        "* 미션 파일: 전체 확인 완료\n"
+        "* 보고서 첫 Markdown heading: `# Example`\n"
+        "* 저장소 쓰기 작업: 없음\n"
+        "* 금지된 Oracle controller/run 관련 파일·상태·프로세스: 검사하거나 호출하지 않음\n"
+        "현재 `dev` 앱이 이 workspace에서 노출한 도구에 `read_chunk`가 없으며, "
+        "`chunk` 관련 도구가 반환되지 않았습니다.\n"
+        "따라서 다음 단계인 정확히 한 번의 `git status --short --branch` 명령도 실행하지 않았습니다.\n"
+        "* 명령 실행: **안 함**\n"
+        "* exit code: **미확인**\n"
+        "* command output: **없음**\n"
+        "TASK_OUTCOME: BLOCKED\n"
+    )
+    run_dir = write_run(
+        tmp_path,
+        "readrouteblocked",
+        status="attention_required",
+        output=output,
+        session_authority="terminal",
+        terminal_harvested=True,
+        source_thread_id=task_id,
+    )
+    mission = run_dir / "mission.md"
+    mission.write_text(
+        "Call `read_chunk` from `offsetBytes=0` through `eof=true`.\n"
+        "Run exactly one command: `git status --short --branch`.\n"
+        "Run no other command. Do not create, edit, delete, rename, stage, commit, switch, build, or test.\n"
+        "If any required operation fails, report the concrete blocker and stop.\n",
+        encoding="utf-8",
+    )
+    state_path = run_dir / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state.update({
+        "transport": "devspace",
+        "app_name": "dev",
+        "profile": {
+            "model": "gpt-5.6",
+            "model_strategy": "select",
+            "thinking_time": "extra-high",
+        },
+        "task_outcome_contract": "v1",
+        "mission": {"sha256": module.STATE.sha256_file(mission)},
+    })
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    before = module.validate_packet(module.build_packet(run_dir))
+    assert before["signature"] == (
+        module.STATE.TERMINAL_DEVSPACE_READ_ROUTE_REFRESH_SIGNATURE
+    )
+    assert before["safe_for_fresh_run"] is False
+
+    receipt_path = (
+        run_dir / "settlements" / "terminal-devspace-read-route-refresh-fresh-run.json"
+    )
+    receipt_path.parent.mkdir()
+    receipt_path.write_text(json.dumps({
+        "schema": module.STATE.TERMINAL_DEVSPACE_READ_ROUTE_REFRESH_SETTLEMENT_SCHEMA,
+        "confirmation": module.STATE.USER_AUTHORIZED_FRESH_AFTER_DEVSPACE_READ_ROUTE_REFRESH,
+        "reason": "user refreshed the configured app tools and completed post-register",
+        "authorized_source_thread_id": task_id,
+        "run_id": state["run_id"],
+        "project_root": state["project_root"],
+        "slug": state["oracle"]["slug"],
+        "transport": state["transport"],
+        "task_outcome": state["task_outcome"],
+        "app_name": state["app_name"],
+        "workspace_id": "ws_a0770e8338",
+        "signature": module.STATE.TERMINAL_DEVSPACE_READ_ROUTE_REFRESH_SIGNATURE,
+        "retry_ordinal": 1,
+        "state_sha256": module.STATE.sha256_file(state_path),
+        "output_sha256": module.STATE.sha256_file(run_dir / "output.md"),
+        "transcript_sha256": module.STATE.sha256_file(run_dir / "transcript.md"),
+        "stdout_sha256": module.STATE.sha256_file(run_dir / "stdout.log"),
+        "stderr_sha256": module.STATE.sha256_file(run_dir / "stderr.log"),
+        "mission_sha256": module.STATE.sha256_file(mission),
+        "auto_retry": False,
+        "submission_action": "none",
+        "authorized_at": "2026-08-25T00:00:00Z",
+    }), encoding="utf-8")
+
+    after = module.validate_packet(module.build_packet(run_dir))
+
+    assert after["safe_for_fresh_run"] is True
+    assert after["fresh_run_authority"]["authorized_source_thread_id"] == task_id
+    assert after["fresh_run_authority"]["retry_ordinal"] == 1
+
+
 def test_packet_build_requires_the_exact_persisted_run(tmp_path: Path) -> None:
     module = load()
     empty = tmp_path / "no-run"

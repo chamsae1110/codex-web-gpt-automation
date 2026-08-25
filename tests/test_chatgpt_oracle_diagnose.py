@@ -951,6 +951,61 @@ def test_terminal_devspace_app_tools_unavailable_has_its_own_bounded_signature(
     )
 
 
+def test_terminal_devspace_read_chunk_exposure_failure_has_bounded_signature(
+    tmp_path: Path,
+) -> None:
+    module = load()
+    state_root = tmp_path / "oracle-state"
+    project_root = state_root / "project"
+    escaped_root = str(project_root).replace("\\", "\\\\")
+    output = (
+        "* 앱: `dev`\n"
+        "* Workspace ID: `ws_a0770e8338`\n"
+        f"* 정확한 루트: `{escaped_root}`\n"
+        "* 모드: `checkout`\n"
+        "* 적용 `AGENTS.md`: 전체 확인 완료\n"
+        "* 미션 파일: 전체 확인 완료\n"
+        "* 보고서 첫 Markdown heading: `# Example`\n"
+        "* 저장소 쓰기 작업: 없음\n"
+        "* 금지된 Oracle controller/run 관련 파일·상태·프로세스: 검사하거나 호출하지 않음\n"
+        "현재 `dev` 앱이 이 workspace에서 노출한 도구에 `read_chunk`가 없으며, "
+        "`chunk` 관련 도구가 반환되지 않았습니다.\n"
+        "따라서 다음 단계인 정확히 한 번의 `git status --short --branch` 명령도 실행하지 않았습니다.\n"
+        "* 명령 실행: **안 함**\n"
+        "* exit code: **미확인**\n"
+        "* command output: **없음**\n"
+        "TASK_OUTCOME: BLOCKED\n"
+    )
+    run_dir = write_run(
+        state_root,
+        "r" * 12,
+        status="attention_required",
+        output=output,
+        session_authority="terminal",
+        terminal_harvested=True,
+        task_outcome="blocked",
+    )
+    state_path = run_dir / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state.update({
+        "transport": "devspace",
+        "app_name": "dev",
+        "profile": {
+            "model": "gpt-5.6",
+            "model_strategy": "select",
+            "thinking_time": "extra-high",
+        },
+    })
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    verdict = module.diagnose(state_root)["unresolved_runs"][0]
+
+    assert verdict["bucket"] == "terminal-task-not-executed"
+    assert verdict["signature"] == (
+        "terminal-devspace-read-chunk-unavailable-after-read-only-probe"
+    )
+
+
 def test_recursive_self_observation_outranks_foreign_connector_search_evidence(
     tmp_path: Path,
 ) -> None:

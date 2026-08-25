@@ -232,11 +232,16 @@ def classify_run(
         return {"bucket": ACTIVE, "signature": "explicitly-abandoned"}
     if outcome in {"not_executed", "blocked"} and has_output:
         evidence_text = "\n".join((stdout_text, transcript_text, output_text))
+        read_route_refresh = STATE.terminal_devspace_read_route_refresh_evidence(
+            state, output_text
+        )
         terminal_nonexecution = STATE.terminal_devspace_nonexecution_evidence(
             state, output_text
         )
         if STATE.recursive_self_observation_evidence(state, output_text) is not None:
             signature = "post-submit-recursive-self-observation"
+        elif read_route_refresh is not None:
+            signature = str(read_route_refresh["signature"])
         elif terminal_nonexecution is not None:
             signature = str(terminal_nonexecution["signature"])
         elif "OAuth token request failed" in evidence_text and "503" in evidence_text:

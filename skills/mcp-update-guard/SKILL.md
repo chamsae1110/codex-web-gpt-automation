@@ -150,6 +150,16 @@ instead of the layer that failed.
   neither the mission nor AGENTS.md was read or modified. Generic tool errors
   and ambiguous nonexecution remain fail-closed. Fresh runs must use the
   persisted registered app name; do not replace it with a recommended default.
+- A separate one-use `settle-terminal-devspace-read-route-refresh` receipt may
+  release the first regular qualification canary only after the user manually
+  refreshes the configured app tools and the managed post-register procedure is
+  ready. The terminal answer must bind the exact app/root/workspace, prove that
+  open/read succeeded but `read_chunk` alone was unavailable, and explicitly
+  prove that no command or write ran. State, mission, output, transcript,
+  stdout, and stderr remain hash-bound. The receipt is same-task, append-only,
+  and limited to one fresh probe per task/project; generic BLOCKED answers,
+  foreign/live runs, ambiguous command/write evidence, or a repeated exposure
+  failure remain fail-closed.
 
 ## Safety boundaries
 
