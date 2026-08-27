@@ -39,6 +39,9 @@ def test_qualified_pro_requires_explicit_opt_in_and_uses_readonly_devspace() -> 
     assert "`pro-attachment` remains an explicit, read-only route" in flat
     assert "never an automatic fallback" in flat
     assert "There is no new agbrowse,\nCodexPro" in value
+    assert "GPT-5.6 Pro path excludes agbrowse from creation, dispatch, verification, and fallback" in flat
+    assert "separate public-web search/browser QA" in flat
+    assert "exact recovery of an already persisted legacy run" in flat
     handoff = text(HANDOFF)
     assert "allow_pro: true" in handoff
     assert "`pro-devspace-readonly`" in handoff

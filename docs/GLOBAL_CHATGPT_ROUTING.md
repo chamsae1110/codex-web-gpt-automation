@@ -104,6 +104,9 @@ historical or explicitly archived exact task-bound parent uses bounded restore
 and re-archive. A before-composer restore failure goes directly to explicit
 user-confirmed no-submission settlement and must not be harvested. Any URL
 drift or unverified transition fails closed without fallback.
+The GPT-5.6 Pro path does not create, dispatch through, verify with, or fall
+back to agbrowse. The installed agbrowse tool remains available only to its
+separate public-web search/browser QA path and exact legacy recovery.
 The follow-up command requires the exact terminal parent run directory, a
 project-contained UTF-8 mission,
 and a unique round key. Raw Oracle follow-up options remain blocked. Each round

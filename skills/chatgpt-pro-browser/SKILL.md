@@ -19,6 +19,9 @@ instead.
 
 Oracle is the only backend for a new Pro run. There is no new agbrowse,
 CodexPro, in-app Browser, custom CDP/Playwright, or `@chrome` fallback.
+The GPT-5.6 Pro path excludes agbrowse from creation, dispatch, verification,
+and fallback. Keep agbrowse installed only for separate public-web
+search/browser QA and exact recovery of an already persisted legacy run.
 
 ## Qualified default route
 

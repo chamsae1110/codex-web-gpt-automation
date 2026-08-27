@@ -14,6 +14,11 @@ owns all file creation, edits, removals, and commands. Explicit
 and is never an automatic fallback. Persisted legacy `pro-devspace` write runs
 retain their exact authority only during recovery.
 
+For GPT-5.6 Pro specifically, exclude agbrowse from creation, dispatch,
+verification, and fallback. Retain the installed agbrowse tool only for the
+separate public-web search/browser QA workflows and exact persisted legacy-run
+recovery that own it.
+
 `chatgpt_oracle_dispatch.py` supports exactly `direct`, `plan`, `review`, `edit`,
 `orchestrator`, `deep-research`, `manual`, and `pro`. `manual` is a supported
 `manual-no-launch` profile, not a new submission route. `answer` in
