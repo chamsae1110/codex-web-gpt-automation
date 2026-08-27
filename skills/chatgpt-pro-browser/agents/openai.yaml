@@ -1,6 +1,6 @@
 interface:
   display_name: "ChatGPT Pro Browser"
-  short_description: "Run explicitly requested read-only DevSpace Pro advice or review through Oracle"
+  short_description: "Run explicitly requested full-access, agentic GPT-5.6 Sol Pro work through Oracle"
   default_prompt: "$chatgpt-pro-browser C:\\project\\pro-mission.md"
 policy:
   allow_implicit_invocation: false

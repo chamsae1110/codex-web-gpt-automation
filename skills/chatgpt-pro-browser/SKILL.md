@@ -1,21 +1,21 @@
 ---
 name: chatgpt-pro-browser
-description: Use for an explicitly requested ChatGPT Pro design, advice, or review through Oracle, including bounded follow-up rounds in the same conversation. New qualified Pro uses read-only DevSpace.
+description: Use for explicitly requested GPT-5.6 Sol Pro work through Oracle, including agentic coding, commands, tests, network and browser/CDP verification, design, advice, review, and bounded follow-up rounds. New qualified Pro uses full-access DevSpace under the mission and project rules.
 ---
 
 # ChatGPT Pro through Oracle
 
 ## Standalone scope
 
-This is the standalone read-only Pro conversation route. It may produce a
-design, advice, research finding, review, or decision. After each durable
-answer it returns control to Codex and stops; only an explicit user request may
-add another bounded round to that same conversation. It never starts a
-review-to-implementation chain, authors a
-follow-on implementation stage, or invokes `chatgpt-pro-plan-handoff` on its
-own. It also never requires or automatically launches Web Multi; that remains
-a separate explicit user request. If the user asks for comprehensive mode, use `chatgpt-pro-plan-handoff`
-instead.
+This is the standalone full-access Pro conversation route. It may design,
+advise, review, implement, debug, test, inspect live browser state, or complete
+another mission-owned task. It owns the complete agentic loop: inspect, plan,
+execute, test, inspect the result, adapt, and verify. When implementation is
+requested, it does not stop at advice while safe authorized work remains.
+After each durable completed answer it returns control to Codex; only an
+explicit user request may add another bounded round to that same conversation.
+It never invokes `chatgpt-pro-plan-handoff` or Web Multi on its own. If the user
+asks for comprehensive mode, use `chatgpt-pro-plan-handoff` instead.
 
 Oracle is the only backend for a new Pro run. There is no new agbrowse,
 CodexPro, in-app Browser, custom CDP/Playwright, or `@chrome` fallback.
@@ -45,14 +45,24 @@ changed config is revalidated. Failure returns
 `DEVSPACE_EXACT_ROOT_UNAVAILABLE` before Oracle or a browser is created and
 points to the complete root-preserving setup preview.
 
-Pro reads the mission and applicable `AGENTS.md` chain completely. Within the
-exact root it is read-only and limited to design, advice, or review: it must not
-create, edit, or remove files or run commands. A regular `GPT-5.6`
-`extra-high` DevSpace stage owns any required mutation or command. Repository
-safety rules remain authoritative. Pro must not change accounts, app settings,
-or external state. It may
+Pro reads the mission and applicable `AGENTS.md` chain completely. It uses the
+maximum DevSpace capabilities available for that mission: project-file reads
+and mutations, shell commands and tests, network access, and browser or Chrome
+DevTools/CDP verification. Project-file mutations stay inside the exact root
+unless the mission or applicable project rules explicitly authorize a named
+outside target. Repository safety rules and explicit approval boundaries for
+destructive, credential, account, deployment, publication, purchase, or other
+external-state actions remain authoritative. Pro may
 not substitute a parent, child, similarly named, active, or shell-boundary
 workspace, and may retry only the same root once after a timeout.
+Repository safety rules remain authoritative.
+
+For a user-owned loopback Chrome CDP endpoint, use the installed
+`.codex/bin/chatgpt_chrome_cdp.mjs` helper when project-native tooling is not
+more appropriate. It supports target/version listing, DOM or JavaScript
+evaluation, and arbitrary browser- or page-level CDP method calls. Browser
+navigation, input, downloads, or state mutation still require the mission and
+applicable project rules to authorize them.
 
 ## Explicit attachment evidence route
 
@@ -65,9 +75,9 @@ attachment path and SHA-256, and never infer attachments from prose.
 
 1. Resolve and hash-validate the tested Oracle compatibility contract.
 2. Bind the same task-scoped normalized-project mutex used by regular Oracle work.
-3. Build a short UTF-8 mission that states the exact root, question, read-only
-   design/advice/review authority, and any evidence limitations. Route any
-   required file mutation or command to a regular `GPT-5.6` `extra-high` stage.
+3. Build a short UTF-8 mission that states the exact root, objective, full
+   mission-owned action authority, acceptance checks, and any evidence or
+   irreversible-action limitations.
 4. Use a fresh Oracle slug and require Oracle model and transport evidence
    before accepting a send.
 
@@ -82,7 +92,7 @@ python "$env:USERPROFILE\.codex\bin\chatgpt_oracle_dispatch.py" --mode pro --pro
 Add `--dry-run` only when previewing a newly changed automation/configuration,
 debugging a manifest, or when the user explicitly asks for a preview. Do not
 run a routine preview immediately before the same live dispatch. New `pro`
-work uses read-only DevSpace; attachment work uses only the separate explicit
+work uses full-access DevSpace; attachment work uses only the separate explicit
 evidence contract.
 
 ## Same-conversation follow-up
@@ -90,8 +100,9 @@ evidence contract.
 When the user explicitly wants continued discussion, do not create a new Pro
 conversation and do not loosen the raw Oracle argument allowlist. The exact
 parent must be owned by the current Codex task, terminal `EXECUTED`, bound to
-`pro-devspace-readonly`, and retain valid ownership/browser receipts plus the
-canonical conversation URL. Put the next read-only question in a UTF-8 mission
+`pro-devspace` or a persisted `pro-devspace-readonly` parent, and retain valid
+ownership/browser receipts plus the canonical conversation URL. Put the next
+mission-owned question or execution step in a UTF-8 mission
 inside the same project, then preview the internal lifecycle:
 
 ```powershell
@@ -107,7 +118,7 @@ or writable transport, artifact tamper, missing receipt, or a changed/unproven
 conversation fails closed. Never inject raw `--followup`,
 `--browser-follow-up`, or `session`; recovery observes only and cannot send a
 round; uncertainty never authorizes a replacement prompt.
-New read-only Pro parents normalize default `archive=auto` to `never`; no user
+New DevSpace Pro parents normalize default `archive=auto` to `never`; no user
 archive-setting action is required. Explicit `archive=always` is a single-turn
 choice. Only historical or explicitly archived parents use the bounded exact
 restore-and-rearchive compatibility path.

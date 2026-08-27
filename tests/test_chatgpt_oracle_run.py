@@ -127,6 +127,20 @@ def test_version_resolution_recovers_from_npx_failure_with_exact_cached_package(
         run_factory=failed_npx,
         cache_resolver=lambda command: "oracle 0.17.1",
     )
+
+
+def pro_full_access_manifest(tmp_path: Path, **extra) -> Path:
+    return manifest(
+        tmp_path,
+        transport="pro-devspace",
+        app_name="DevSpace",
+        model="gpt-5.6-sol",
+        model_strategy="select",
+        thinking_time="heavy",
+        research="off",
+        task_outcome_contract="v1",
+        **extra,
+    )
     assert resolved == "oracle 0.17.1"
     assert len(calls) == 1
 
@@ -1209,31 +1223,20 @@ def test_pro_devspace_dry_run_uses_readonly_handoff_without_file_transport(tmp_p
     assert preflight_calls == [True]
 
 
-def test_new_writable_pro_manifest_is_rejected_before_layout_or_browser(tmp_path: Path) -> None:
+def test_new_full_access_pro_manifest_is_accepted_with_maximum_tools(tmp_path: Path) -> None:
     runner = load_runner()
-    manifest_path = manifest(
-        tmp_path,
-        transport="pro-devspace",
-        app_name="DevSpace",
-        model="gpt-5.6-sol",
-        model_strategy="select",
-        thinking_time="heavy",
-        research="off",
-        task_outcome_contract="v1",
-    )
+    result = execute_run(runner, pro_full_access_manifest(tmp_path), dry_run=True)
 
-    with pytest.raises(runner.OracleRunError) as exc:
-        runner.execute_run(manifest_path, dry_run=True)
-
-    assert exc.value.code == "PRO_WRITABLE_TRANSPORT_FROZEN"
-    assert exc.value.evidence == {
-        "transport": "pro-devspace",
-        "pro_transport": "pro-devspace-readonly",
-        "write_transport": "devspace",
-        "write_model": "gpt-5.6",
-        "write_thinking_time": "extra-high",
-    }
-    assert not (tmp_path.parent / f"{tmp_path.name}-host-state" / "runs").exists()
+    prompt = result["argv"][result["argv"].index("--prompt") + 1]
+    assert result["transport"] == "pro-devspace"
+    assert result["argv"][result["argv"].index("--model") + 1] == "gpt-5.6-sol"
+    assert result["argv"][result["argv"].index("--browser-thinking-time") + 1] == "heavy"
+    assert "run shell commands and tests" in prompt
+    assert "network access" in prompt
+    assert "browser or Chrome DevTools/CDP verification" in prompt
+    assert ".codex/bin/chatgpt_chrome_cdp.mjs" in prompt
+    assert "inspect, plan, execute, test, inspect the result, adapt, and verify" in prompt
+    assert "Perform read-only work only" not in prompt
 
 
 def test_d_coin_missing_exact_root_blocks_before_oracle_or_run_creation(tmp_path: Path) -> None:

@@ -27,15 +27,16 @@ def test_new_regular_modes_route_only_to_oracle_devspace() -> None:
     assert "app picker" not in value.casefold()
 
 
-def test_qualified_pro_requires_explicit_opt_in_and_uses_readonly_devspace() -> None:
+def test_qualified_pro_requires_explicit_opt_in_and_uses_full_access_devspace() -> None:
     value = text(PRO)
     flat = " ".join(value.split())
     assert "Oracle is the only backend for a new Pro run" in flat
     assert "Pro is quota-limited" in flat
     assert "never infer Pro from task difficulty" in flat
     assert "exact absolute project root" in flat
-    assert "read-only and limited to design, advice, or review" in flat
-    assert "regular `GPT-5.6` `extra-high` DevSpace stage owns any required mutation or command" in flat
+    assert "maximum DevSpace capabilities available for that mission" in flat
+    assert "shell commands and tests, network access, and browser or Chrome DevTools/CDP verification" in flat
+    assert "complete agentic loop" in flat
     assert "`pro-attachment` remains an explicit, read-only route" in flat
     assert "never an automatic fallback" in flat
     assert "There is no new agbrowse,\nCodexPro" in value
@@ -44,20 +45,21 @@ def test_qualified_pro_requires_explicit_opt_in_and_uses_readonly_devspace() -> 
     assert "exact recovery of an already persisted legacy run" in flat
     handoff = text(HANDOFF)
     assert "allow_pro: true" in handoff
-    assert "`pro-devspace-readonly`" in handoff
-    assert "regular `GPT-5.6` `extra-high` DevSpace stage" in handoff
+    assert "`pro-devspace` full-access" in handoff
+    assert "complete the full agentic loop" in handoff
     assert "`pro-attachment`" in handoff
     assert "read-only immutable/external-evidence" in handoff
-    assert "Persisted legacy `pro-devspace`" in handoff
+    assert "attachment route remains read-only" in handoff
 
 
-def test_qualified_pro_has_exact_root_readonly_authority() -> None:
+def test_qualified_pro_has_exact_root_full_access_authority() -> None:
     value = text(PRO)
     flat = " ".join(value.split())
     assert "applicable `AGENTS.md` chain completely" in flat
     assert "Repository safety rules remain authoritative" in flat
-    assert "must not create, edit, or remove files or run commands" in flat
-    assert "must not change accounts, app settings, or external state" in flat
+    assert "Project-file mutations stay inside the exact root" in flat
+    assert "destructive, credential, account, deployment, publication, purchase" in flat
+    assert ".codex/bin/chatgpt_chrome_cdp.mjs" in flat
 
 
 def test_qualified_pro_fails_closed_when_devspace_tools_are_not_exposed() -> None:
@@ -73,8 +75,8 @@ def test_qualified_pro_fails_closed_when_devspace_tools_are_not_exposed() -> Non
 def test_pro_stops_without_required_web_multi_or_auto_handoff() -> None:
     value = text(PRO)
     flat = " ".join(value.split())
-    assert "never requires or automatically launches Web Multi" in flat
-    assert "separate explicit user request" in flat
+    assert "never invokes `chatgpt-pro-plan-handoff` or Web Multi on its own" in flat
+    assert "only an explicit user request may add another bounded round" in flat
     assert "WEB_MULTI_NEEDED: YES|NO" not in value
 
 
@@ -169,8 +171,8 @@ def test_install_inventory_contains_new_active_runtime_and_keeps_legacy_recovery
     assert manifest["routing"] == {
         "new_work_engine": "oracle",
         "regular_workspace_transport": "devspace",
-        "pro_transport": "oracle-devspace-readonly-explicit",
-        "historical_pro_devspace": "persisted-run-recovery-only",
+        "pro_transport": "oracle-devspace-full-access-explicit",
+        "historical_pro_readonly": "persisted-run-recovery-only",
         "pro_attachment_transport": "oracle-attachment-readonly-explicit",
         "agbrowse": "persisted-run-recovery-only",
         "codexpro": "persisted-run-recovery-only",
@@ -209,8 +211,8 @@ def test_english_readme_maps_modes_to_the_same_oracle_routes() -> None:
     assert "comprehensive mode" in value
     assert "Web Multi-GPT" in value
     assert "Pro is quota-limited, never auto-selected" in value
-    assert "Oracle + read-only DevSpace" in value
-    assert "regular `GPT-5.6` `extra-high` DevSpace stage performs any file creation" in value
+    assert "Oracle + full-access DevSpace" in value
+    assert "browser/CDP verification, and iterative agentic coding" in value
     assert "never resubmits the task" in value
 
 
@@ -231,10 +233,10 @@ def test_agent_metadata_exposes_oracle_active_routes() -> None:
     runtime = text(ROOT / "skills" / "chatgpt-oracle-runtime" / "agents" / "openai.yaml")
     assert "Oracle and DevSpace" in thinking
     assert "parallel Oracle GPT sessions" in multi
-    assert "read-only DevSpace" in pro
+    assert "full-access, agentic GPT-5.6 Sol Pro" in pro
     assert "allow_implicit_invocation: false" in pro
-    assert "read-only Pro" in designer and "read/write Pro" not in designer
-    assert "read-only Pro" in runtime and "read/write Pro" not in runtime
+    assert "full-access agentic Pro" in designer
+    assert "full-access agentic Pro" in runtime
 
 
 def test_question_designer_preserves_explicit_readonly_attachment_route() -> None:
@@ -244,10 +246,11 @@ def test_question_designer_preserves_explicit_readonly_attachment_route() -> Non
     assert "attachment evidence is a persisted-legacy recovery concern, not a new-work route" not in value
 
 
-def test_standalone_pro_never_transitions_into_comprehensive_implementation() -> None:
+def test_standalone_pro_owns_agentic_execution_without_auto_comprehensive_transition() -> None:
     pro = text(PRO)
-    assert "standalone read-only Pro conversation route" in pro
-    assert "After each durable\nanswer it returns control to Codex and stops" in pro
-    assert "only an explicit user request may\nadd another bounded round to that same conversation" in pro
-    assert "never starts a\nreview-to-implementation chain" in pro
-    assert "If the user asks for comprehensive mode, use `chatgpt-pro-plan-handoff`" in pro
+    assert "standalone full-access Pro conversation route" in pro
+    assert "complete agentic loop" in pro
+    assert "does not stop at advice while safe authorized work remains" in pro
+    assert "only an\nexplicit user request may add another bounded round" in pro
+    assert "never invokes `chatgpt-pro-plan-handoff` or Web Multi on its own" in pro
+    assert "If the user asks for comprehensive mode, use `chatgpt-pro-plan-handoff`" in " ".join(pro.split())

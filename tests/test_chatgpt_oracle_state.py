@@ -258,6 +258,19 @@ def test_readonly_pro_auto_archive_normalizes_to_never_for_followup(tmp_path: Pa
     assert automatic.archive == "never"
     assert explicit_single_turn.archive == "always"
 
+    full_access = state.load_manifest(manifest(
+        tmp_path,
+        mission.resolve(),
+        app_name="codex",
+        transport="pro-devspace",
+        model="gpt-5.6-sol",
+        model_strategy="select",
+        thinking_time="heavy",
+        archive="auto",
+        task_outcome_contract="v1",
+    ))
+    assert full_access.archive == "never"
+
     ordinary_mission = tmp_path / "ordinary.md"
     ordinary_mission.write_text("ordinary", encoding="utf-8")
     ordinary = state.load_manifest(manifest(
@@ -311,7 +324,7 @@ def test_pro_manifest_is_attachment_only_and_hashes_exact_files(tmp_path: Path) 
     assert payload["attachments"][1]["sha256"] == state.sha256_file(packet.resolve())
 
 
-def test_historical_writable_pro_stays_loadable_and_current_pro_is_readonly(tmp_path: Path) -> None:
+def test_current_full_access_pro_and_persisted_readonly_pro_are_both_supported(tmp_path: Path) -> None:
     state = load_state()
     mission = tmp_path / "mission.md"
     mission.write_text("implement the change", encoding="utf-8")
@@ -336,7 +349,11 @@ def test_historical_writable_pro_stays_loadable_and_current_pro_is_readonly(tmp_
     assert f"Then read and execute the mission file: {mission.resolve()}." in prompt
     assert "Do not open the mission directory, a parent, a child" in prompt
     assert prompt.index(str(tmp_path.resolve())) < prompt.index(str(mission.resolve()))
-    assert "create, edit, and remove mission-owned files and run commands" in prompt
+    assert "run shell commands and tests" in prompt
+    assert "network access" in prompt
+    assert "browser or Chrome DevTools/CDP verification" in prompt
+    assert ".codex/bin/chatgpt_chrome_cdp.mjs" in prompt
+    assert "inspect, plan, execute, test, inspect the result, adapt, and verify" in prompt
     assert "Put every citation, footnote, and Markdown reference definition before" in prompt
     assert "as the final nonempty line; append nothing after it." in prompt
     assert prompt.index("as the final nonempty line; append nothing after it.") < prompt.index(

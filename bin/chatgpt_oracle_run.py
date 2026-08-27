@@ -1576,18 +1576,6 @@ def execute_run(
         platform_name=platform_name,
         bind_runtime_task=True,
     )
-    if str(config.transport or "").strip().casefold() == "pro-devspace":
-        raise OracleRunError(
-            "PRO_WRITABLE_TRANSPORT_FROZEN",
-            "new writable Pro DevSpace runs are disabled; use pro-devspace-readonly for Pro advice or a regular GPT-5.6 extra-high DevSpace run for writes",
-            {
-                "transport": config.transport,
-                "pro_transport": "pro-devspace-readonly",
-                "write_transport": "devspace",
-                "write_model": "gpt-5.6",
-                "write_thinking_time": "extra-high",
-            },
-        )
     validate_oracle_attachment_sizes(config)
     layout = STATE.create_layout(config, run_id=config.requested_run_id)
     transport_mission_path = layout.run_dir / "mission.md"
@@ -3436,14 +3424,14 @@ def _require_followup_parent(parent_run_dir: Path) -> tuple[dict[str, Any], dict
         )
     profile = state.get("profile") if isinstance(state.get("profile"), dict) else {}
     if (
-        str(state.get("transport") or "") != "pro-devspace-readonly"
+        not STATE.is_pro_devspace_transport(str(state.get("transport") or ""))
         or str(profile.get("model") or "").casefold() != "gpt-5.6-sol"
         or str(profile.get("model_strategy") or "") != "select"
         or str(profile.get("thinking_time") or "") != "heavy"
     ):
         raise OracleRunError(
             "FOLLOWUP_PARENT_PROFILE_FORBIDDEN",
-            "follow-up is limited to terminal GPT-5.6 Sol/Pro pro-devspace-readonly parents",
+            "follow-up is limited to terminal GPT-5.6 Sol/Pro DevSpace parents",
         )
     ownership = STATE.proven_ownership_receipt(state_path)
     browser = STATE.proven_browser_identity_receipt(state_path)
@@ -3501,7 +3489,7 @@ def _followup_manifest_payload(
         "mission_path": str(mission_path),
         "app_name": parent.get("app_name"),
         "mode": parent.get("mode"),
-        "transport": "pro-devspace-readonly",
+        "transport": parent.get("transport"),
         "run_root": str(Path(str(parent.get("mission", {}).get("transport_path") or "")).parent.parent),
         "oracle_command": (parent.get("oracle") or {}).get("command"),
         "submit_mutex_timeout_seconds": 30,

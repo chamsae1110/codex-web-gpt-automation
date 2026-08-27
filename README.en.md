@@ -122,10 +122,10 @@ new exact folder. Do not inspect or automate ChatGPT app settings per task.
 | Plan through final gate | comprehensive mode | Staged web workflow |
 | Minimize local model cost | `ultra-economy` | Luna Max command + separate web stages |
 | Codex Ultra-style web delegation | `ultra-gpt` | Web plan/review + parallel isolated-worktree writers + merge/verification; optional SHA-bound closed audit |
-| Explicitly requested Pro work | `pro` | GPT-5.6 Sol Pro + read-only DevSpace design, advice, or review |
+| Explicitly requested Pro work | `pro` | GPT-5.6 Sol Pro + full-access DevSpace agentic coding, tests, and browser/CDP verification |
 
 Natural-language aliases use the same routes: `orchestrator` / orchestrator and
-`deep-research` / deep research. Regular web work defaults to the highest supported non-Pro reasoning tier. Pro is quota-limited, never auto-selected, and runs only after an explicit request. Every new qualified Pro run uses Oracle + read-only DevSpace for design, advice, or review. A regular `GPT-5.6` `extra-high` DevSpace stage performs any file creation, edit, removal, or command. Explicit `pro-attachment` remains a separate read-only immutable-evidence route and is never an automatic fallback. Persisted legacy `pro-devspace` write runs retain their exact original authority only during recovery.
+`deep-research` / deep research. Regular web work defaults to the highest supported non-Pro reasoning tier. Pro is quota-limited, never auto-selected, and runs only after an explicit request or durable explicit Pro preference. Every new qualified Pro run uses Oracle + full-access DevSpace for mission-owned file mutation, commands/tests, network, browser/CDP verification, and iterative agentic coding. Explicit `pro-attachment` remains a separate read-only immutable-evidence route and is never an automatic fallback. Persisted read-only runs retain their exact original authority during recovery.
 
 See [Global Routing](docs/GLOBAL_CHATGPT_ROUTING.md) for selection rules,
 [Ultra Economy Mode](docs/ULTRA_ECONOMY_MODE.md), and
@@ -152,8 +152,8 @@ Remove `--dry-run` only when live execution is authorized.
 - Allow one active or uncertain Oracle workflow per Codex-task/project pair. Different tasks may run concurrently at the same root under separate ownership and must never recover, harvest, or stop each other.
 - Qualify the exact root before the first DevSpace submission for a new project.
 - Regular web work defaults to the highest supported non-Pro reasoning tier. Pro requires explicit opt-in and is never an automatic upgrade.
-- New explicit Pro is read-only inside the exact root and is limited to design, advice, or review. A regular `GPT-5.6` `extra-high` DevSpace stage performs mission-authorized writes, removals, and commands; persisted legacy `pro-devspace` write runs preserve their original authority only during exact recovery.
-- Continued discussion in the same read-only Pro conversation uses only an internal follow-up round against a task-bound terminal parent. Every round re-proves the unchanged conversation and records mission/state/output/transcript hashes; raw Oracle follow-up injection and new-conversation fallback remain forbidden.
+- New explicit Pro uses full-access DevSpace inside the exact root, including mission-owned writes, removals, commands/tests, network, browser/CDP verification, and the complete inspect-plan-execute-test-inspect-adapt-verify loop.
+- Continued work in the same Pro conversation uses only an internal follow-up round against a task-bound terminal `pro-devspace` or persisted `pro-devspace-readonly` parent and preserves that parent's authority. Every round re-proves the unchanged conversation and records mission/state/output/transcript hashes; raw Oracle follow-up injection and new-conversation fallback remain forbidden.
 - Post-submit failure recovers the existing slug and URL and never resubmits the task.
 - If Oracle saved official terminal output and completed metadata but the outer state transition was missed, only the owner task may use hash-bound `settle-saved-output`. A proven reserved-versus-observed CDP port mismatch seals a separate v2 browser identity receipt so the exact conversation remains eligible as a follow-up parent. A run already reconciled by v1.19.5 may be migrated only with owner-only `seal-saved-output-browser-identity`; ordinary recovery authority is not relaxed.
 - Browser or local-process exit alone is not evidence that web work failed.

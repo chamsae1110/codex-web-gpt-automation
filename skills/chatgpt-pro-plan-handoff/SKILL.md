@@ -1,6 +1,6 @@
 ---
 name: chatgpt-pro-plan-handoff
-description: Run staged work with explicitly authorized read-only DevSpace Pro design, advice, or review and Oracle-based regular comprehensive stages.
+description: Run staged work with explicitly authorized full-access GPT-5.6 Sol Pro stages and Oracle-based comprehensive planning, review, implementation, and verification.
 ---
 
 # Pro and comprehensive handoff
@@ -8,11 +8,11 @@ description: Run staged work with explicitly authorized read-only DevSpace Pro d
 Pro uses Oracle and is quota-limited. A standard comprehensive workflow may
 select it only when its manifest has `allow_pro: true` after an explicit user
 request; regular work remains at the highest supported non-Pro reasoning tier.
-Every new qualified `GPT-5.6 Sol` Pro stage uses `pro-devspace-readonly`
-read-only DevSpace at the exact project root for design, advice, or review and
-must not create, edit, or
-remove files or run commands. A regular `GPT-5.6` `extra-high` DevSpace stage
-owns all such work under the repository safety policy. Explicit
+Every new qualified `GPT-5.6 Sol` Pro stage uses `pro-devspace` full-access
+DevSpace at the exact project root. It may create, edit, or remove mission-owned
+files, run commands and tests, use network access, inspect browser/CDP state,
+and complete the full agentic loop under the mission and repository safety
+policy. Explicit
 `pro-attachment` remains a separate read-only immutable/external-evidence
 route and is never an automatic fallback. Persisted legacy `pro-devspace`
 write runs retain their exact authority only during recovery. CodexPro and all
@@ -69,9 +69,8 @@ bound `codex.chatgpt.oracle-stage-result/v1` receipt. The host validates
 workflow/stage/attempt/input hashes, UTF-8 paths, output hashes, PASS status,
 and the transition; it never rewrites the semantic prompt.
 
-An explicitly authorized new Pro stage runs through Oracle with read-only
-DevSpace for design, advice, or review. Any resulting file mutation or command
-belongs to a regular `GPT-5.6` `extra-high` stage. Pro returns one strict
+An explicitly authorized new Pro stage runs through Oracle with full-access
+DevSpace and mission-owned authority. Pro returns one strict
 identity-bound JSON envelope containing its output and next-mission text. The
 host mechanically preserves those strings as UTF-8 files and computes the
 standard receipt; it does not summarize or rewrite them.
@@ -80,8 +79,8 @@ When a plan explicitly selects `pro-attachment`, its next mission declares one
 closed `[PRO_ATTACHMENT_CONTRACT]` block for immutable/external evidence. The
 host attaches only the declared project-contained regular non-symlink files
 and validates optional SHA-256 values; it never discovers attachments from
-prose. New DevSpace Pro remains read-only, and regular non-Pro DevSpace stages
-perform any required mutation or command.
+prose. The attachment route remains read-only; normal DevSpace Pro stages use
+their mission-owned full-access authority.
 
 Plan receipts should use `PLAN_READY`. For compatibility, `completed` is
 accepted only when the plan receipt is otherwise a fully ready, blocker-free,
@@ -123,9 +122,7 @@ must never create a `workflow-retryN` replacement. The revision budget and
 remaining critical finding set are persisted in the workflow state for
 operator visibility. Only final web PASS plus a zero-exit local gate can
 complete. An explicitly authorized new Pro selection launches the qualified
-read-only DevSpace design/advice/review stage and waits for a bound receipt;
-the plan sends mutations and commands to a regular `GPT-5.6` `extra-high`
-stage. Missing receipt/output,
+full-access DevSpace stage and waits for a bound receipt. Missing receipt/output,
 crash, or ambiguity returns attention-required without a replacement submit.
 Regular-stage `--browser-timeout` is a browser observation window, not a work
 termination deadline. At 4,800 seconds comprehensive mode performs a caution

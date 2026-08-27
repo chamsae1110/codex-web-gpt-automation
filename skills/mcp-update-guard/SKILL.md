@@ -22,10 +22,11 @@ preserve unrelated local customizations.
    - regular modes, Deep Research, comprehensive stages, and Web Multi use
      Oracle plus the manually registered DevSpace app;
     - regular web work defaults to the highest supported non-Pro reasoning tier;
-      only explicit user opt-in selects new qualified Pro with `GPT-5.6 Sol` at
-      the Pro effort and read-only DevSpace for design, advice, or review. A
-      regular `GPT-5.6` `extra-high` DevSpace stage performs file mutations and
-      commands. Explicit `pro-attachment` remains a separate read-only
+      only explicit user opt-in or a durable explicit Pro preference selects new
+      qualified Pro with `GPT-5.6 Sol` at the Pro effort and full-access
+      DevSpace. Pro may perform mission-owned file mutations, commands, tests,
+      network and browser/CDP verification, and the full agentic coding loop.
+      Explicit `pro-attachment` remains a separate read-only
       immutable/external-evidence route and is never an automatic fallback;
       persisted legacy `pro-devspace` write runs retain their exact authority
       only during recovery;

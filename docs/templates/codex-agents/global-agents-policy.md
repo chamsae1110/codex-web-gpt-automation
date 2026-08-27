@@ -28,15 +28,15 @@
 
 - Ownership is bound to the originating Codex task plus the exact run, not to the project root alone. Different tasks may run concurrently at the same root with separate task-scoped mutexes, slugs, dynamic CDP ports, browser profiles, conversations, and receipts. Only the same task's unresolved run blocks its next submission.
 - A foreign task may be listed for diagnosis but must never be adopted, recovered, harvested, followed up, canceled, or stopped. Never infer a legacy-unbound owner from the project root, newest run, Chrome window, or timestamp.
-- A same-conversation read-only Pro round may use only the runner's internal `followup` command against a task-bound terminal `pro-devspace-readonly` parent. Raw `--followup`, `--browser-follow-up`, and `session` injection stay forbidden. New read-only Pro parents normalize default `archive=auto` to `never`; explicit `always` is a single-turn choice. A historical or explicitly archived exact parent may be restored only through the bounded compatibility path for that round and must be re-archived afterward. If restoration fails before the composer, do not harvest; preserve the run and require explicit user no-submission confirmation before exact settlement. Each round must prove the unchanged conversation, archive transition, and append hash-bound reservation/result receipts; an unproven or changed conversation fails closed without a replacement prompt.
+- A same-conversation Pro round may use only the runner's internal `followup` command against a task-bound terminal `pro-devspace` or persisted `pro-devspace-readonly` parent. Raw `--followup`, `--browser-follow-up`, and `session` injection stay forbidden. New DevSpace Pro parents normalize default `archive=auto` to `never`; explicit `always` is a single-turn choice. Each round preserves its parent's authority and must prove the unchanged conversation, archive transition, and append hash-bound reservation/result receipts; an unproven or changed conversation fails closed without a replacement prompt.
 
 ## Web GPT model and Pro authority
 
 - Default ordinary web work to `gpt-5.6` with `extra-high`, the highest supported non-Pro reasoning tier. Never select or upgrade to Pro automatically.
 - Treat Pro as quota-limited and explicit-only. Use `GPT-5.6 Sol` at the Pro effort only after the user explicitly requests Pro; a standard comprehensive workflow additionally requires `allow_pro: true`.
-- Every new explicit Pro run uses the `pro-devspace-readonly` route as read-only DevSpace for design, advice, or review. It must not create, edit, or remove files or run commands; a regular `GPT-5.6` `extra-high` DevSpace stage owns those actions under the applicable `AGENTS.md` and repository safety rules.
+- Every new explicit Pro run uses the `pro-devspace` full-access route with mission-owned file mutation, commands/tests, network, browser/CDP verification, and an inspect-plan-execute-test-inspect-adapt-verify loop under the applicable `AGENTS.md`, repository rules, and explicit irreversible-action boundaries.
 - Pro must not alter accounts, ChatGPT app settings, or external state. Explicit `pro-attachment` remains a separate read-only immutable/external-evidence route and is never an automatic fallback.
-- Preserve persisted legacy `pro-devspace` write and `pro-devspace-readonly` runs with their original authority and transport during exact recovery; never reinterpret historical authority.
+- Preserve persisted `pro-devspace` and `pro-devspace-readonly` runs with their recorded authority and transport during exact recovery; never reinterpret historical authority.
 
 ## Ultra GPT mode
 

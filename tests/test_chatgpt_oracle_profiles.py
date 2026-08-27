@@ -59,7 +59,7 @@ def test_deep_research_is_only_a_mode_flag() -> None:
 
 
 @pytest.mark.parametrize("mode", ["plan", "review"])
-def test_durable_host_pro_opt_in_upgrades_advisory_modes_without_losing_task_kind(
+def test_durable_host_pro_opt_in_upgrades_modes_without_losing_task_kind(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
 ) -> None:
     monkeypatch.setenv("CODEX_CHATGPT_REGULAR_WEB_MODE", "pro")
@@ -70,20 +70,22 @@ def test_durable_host_pro_opt_in_upgrades_advisory_modes_without_losing_task_kin
 
     assert contract["mode"] == mode
     assert contract["task_kind"] == mode
-    assert contract["route"] == "oracle-pro-devspace-readonly"
+    assert contract["route"] == "oracle-pro-devspace"
     assert contract["model"] == "gpt-5.6-sol"
     assert contract["reasoning_level"] == "Pro"
     assert contract["thinking_time"] == "heavy"
     assert contract["configured_regular_web_mode"] == "pro"
     assert contract["pro_selection_policy"] == "host-configured-pro"
-    assert contract["action_authority"] == "read-only"
+    assert contract["action_authority"] == "mission-owned-full-access"
+    assert contract["agentic_execution"] is True
+    assert contract["execution_loop"] == "inspect-plan-execute-test-inspect-adapt-verify"
     assert contract["composer_prompt"].startswith(
-        f"@DevSpace Read and analyze the read-only mission file: {mission}."
+        f"@DevSpace Read and execute the mission file: {mission}."
     )
 
 
 @pytest.mark.parametrize("mode", ["direct", "edit", "orchestrator"])
-def test_durable_host_pro_opt_in_never_upgrades_write_capable_modes(
+def test_durable_host_pro_opt_in_upgrades_write_capable_modes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
 ) -> None:
     monkeypatch.setenv("CODEX_CHATGPT_REGULAR_WEB_MODE", "pro")
@@ -93,11 +95,12 @@ def test_durable_host_pro_opt_in_never_upgrades_write_capable_modes(
         mode, mission_path=(tmp_path / "mission.md").resolve()
     )
 
-    assert contract["route"] == "oracle-devspace"
-    assert contract["reasoning_level"] == "Very High"
-    assert contract["thinking_time"] == "extra-high"
-    assert contract["action_authority"] == "mission-scoped-write"
-    assert contract["pro_selection_policy"] == "write-authority-forces-regular"
+    assert contract["route"] == "oracle-pro-devspace"
+    assert contract["model"] == "gpt-5.6-sol"
+    assert contract["reasoning_level"] == "Pro"
+    assert contract["thinking_time"] == "heavy"
+    assert contract["action_authority"] == "mission-owned-full-access"
+    assert contract["pro_selection_policy"] == "host-configured-pro"
 
 
 def test_durable_host_pro_opt_in_does_not_replace_deep_research(
@@ -187,23 +190,27 @@ def test_pro_attachment_includes_mission_once_and_regular_rejects_attachments(tm
     assert exc.value.code == "REGULAR_ATTACHMENTS_FORBIDDEN"
 
 
-def test_pro_is_explicit_readonly_devspace_without_attachments(tmp_path: Path) -> None:
+def test_pro_is_explicit_full_access_devspace_without_attachments(tmp_path: Path) -> None:
     profiles = load_profiles()
     mission = (tmp_path / "mission.md").resolve()
     contract = profiles.build_launch_contract("pro", mission_path=mission)
 
-    assert contract["route"] == "oracle-pro-devspace-readonly"
+    assert contract["route"] == "oracle-pro-devspace"
     assert contract["app_name"] == "DevSpace"
     assert contract["model"] == "gpt-5.6-sol"
     assert contract["model_strategy"] == "select"
     assert contract["thinking_time"] == "heavy"
     assert contract["research"] is False
     assert contract["attachments"] == []
-    assert contract["action_authority"] == "read-only"
-    assert contract["write_handoff"] == "regular-gpt-5.6-extra-high-devspace"
-    assert contract["composer_prompt"].startswith(f"@DevSpace Read and analyze the read-only mission file: {mission}.")
-    assert "without creating, editing, deleting, or renaming files" in contract["composer_prompt"]
-    assert "separate regular GPT-5.6 extra-high DevSpace stage" in contract["composer_prompt"]
+    assert contract["action_authority"] == "mission-owned-full-access"
+    assert "write_handoff" not in contract
+    assert contract["agentic_execution"] is True
+    assert contract["execution_loop"] == "inspect-plan-execute-test-inspect-adapt-verify"
+    assert contract["composer_prompt"].startswith(f"@DevSpace Read and execute the mission file: {mission}.")
+    assert "shell commands and tests" in contract["composer_prompt"]
+    assert "browser or Chrome DevTools/CDP verification" in contract["composer_prompt"]
+    assert ".codex/bin/chatgpt_chrome_cdp.mjs" in contract["composer_prompt"]
+    assert "inspect, plan, execute, test, inspect the result, adapt, and verify" in contract["composer_prompt"]
     with pytest.raises(profiles.OracleProfileError) as exc:
         profiles.build_launch_contract("pro", mission_path=mission, attachment_paths=[mission])
     assert exc.value.code == "PRO_DEVSPACE_ATTACHMENTS_FORBIDDEN"

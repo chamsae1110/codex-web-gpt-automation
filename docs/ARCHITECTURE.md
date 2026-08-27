@@ -38,11 +38,11 @@ when configuration changes.
 Every run records the project, mission bytes, transport, model, effort, and
 artifact identity. Regular web work defaults to the highest supported non-Pro
 reasoning tier. New Pro is an explicit, quota-aware opt-in for exact-root,
-read-only DevSpace design, advice, or review. A regular `GPT-5.6` `extra-high`
-DevSpace stage performs every file creation, edit, removal, and command.
+full-access DevSpace agentic work: mission-owned file changes, commands/tests,
+network, browser/CDP verification, and iterative implementation.
 Explicit attachment mode remains a separate read-only immutable-evidence
-contract, not an automatic fallback. Persisted legacy `pro-devspace` write
-runs preserve their exact original authority only during recovery.
+contract, not an automatic fallback. Persisted `pro-devspace-readonly` runs
+preserve their exact original authority during recovery.
 
 ## Recoverable lifecycle
 

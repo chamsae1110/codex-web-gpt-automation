@@ -1204,18 +1204,25 @@ def _pro_stage_mission(
     if config.get("workflow_profile") == ULTRA_ECONOMY_PROFILE:
         protocol += (
             "\n[ULTRA_ECONOMY_DESIGN_CONTRACT]\n"
-            "You are the mandatory architecture and design owner. Remain read-only and produce the complete, "
+            "You are the mandatory architecture and design owner. Use commands, tests, network, and browser/CDP "
+            "inspection when they improve the evidence, and produce the complete, "
             "implementation-ready design. The next mission must target a separate review session, which must "
             "repair the design and author the implementation mission. Implementation and final web verification "
             "must remain separate later sessions. Do not ask the local Luna commander to perform project analysis, "
             "implementation, or semantic review.\n"
         )
     protocol += (
-        "\n[PRO_READ_ONLY_AUTHORITY]\n"
-        "This Pro stage is advisory and read-only. Do not create, edit, delete, or rename project files; do not "
-        "run commands or change settings, accounts, or external state. Return analysis and an implementation-ready "
-        "next mission only. A separate regular GPT-5.6 extra-high DevSpace implementation stage owns all writes "
-        "and commands.\n"
+        "\n[PRO_FULL_ACCESS_AUTHORITY]\n"
+        "This explicitly authorized Pro stage has maximum mission-authorized DevSpace capability. It may inspect, "
+        "create, edit, delete, or rename mission-owned project files; run commands and tests; use network access; "
+        "and perform browser or Chrome DevTools/CDP verification. For a user-owned loopback Chrome CDP endpoint, "
+        "the installed helper at the current user's .codex/bin/chatgpt_chrome_cdp.mjs may list targets, evaluate "
+        "DOM/JavaScript, or call arbitrary CDP methods as authorized by the mission. Keep project file mutations inside the exact root "
+        "unless the mission or repository rules explicitly authorize a named outside target. Obey explicit approval "
+        "boundaries for destructive, credential, account, deployment, publication, purchase, or other external-state "
+        "actions. Own the complete agentic loop for the assigned role: inspect, plan, execute, test, inspect the "
+        "result, adapt, and verify. Do not stop at advice while safe mission-authorized work remains. Return the "
+        "required stage result and next mission after completing the assigned role.\n"
     )
     target.write_text(body.rstrip() + protocol, encoding="utf-8")
     return target, receipt, input_sha
@@ -1253,7 +1260,7 @@ def _oracle_manifest(
             payload["transport"] = "pro-attachment-only"
             payload["attachments"] = [str(mission), *(str(item) for item in pro_attachments)]
         else:
-            payload["transport"] = "pro-devspace-readonly"
+            payload["transport"] = "pro-devspace"
             payload["app_name"] = config["app_name"]
             payload["task_outcome_contract"] = "v1"
     else:

@@ -1,18 +1,22 @@
 ---
 name: chatgpt-oracle-runtime
-description: "Current Oracle runtime path for new ChatGPT work: regular modes use highest-tier non-Pro DevSpace, and explicitly requested qualified Pro uses read-only DevSpace for design, advice, or review."
+description: "Current Oracle runtime path for new ChatGPT work: regular modes use highest-tier non-Pro DevSpace, and explicitly requested GPT-5.6 Sol Pro uses full-access DevSpace with agentic coding, commands, tests, network, and browser/CDP verification."
 ---
 
 # ChatGPT Oracle Runtime
 
 This is the only active browser path for all new GPT work. CodexPro and
 agbrowse are frozen for exact legacy recovery only. Regular modes use DevSpace;
-every explicitly requested new qualified Pro run uses the same app read-only
-for design, advice, or review. A regular `GPT-5.6` `extra-high` DevSpace stage
-owns all file creation, edits, removals, and commands. Explicit
+every explicitly requested new qualified Pro run uses the same app with the
+maximum mission-authorized capability. It may create, edit, and remove files;
+run commands and tests; use network access; inspect live browser/CDP state; and
+iterate through inspect, plan, execute, test, inspect the result, adapt, and
+verify. For user-owned loopback Chrome, the installed
+`.codex/bin/chatgpt_chrome_cdp.mjs` helper exposes target listing,
+DOM/JavaScript evaluation, and arbitrary CDP method calls. Explicit
 `pro-attachment` remains a separate read-only immutable/external-evidence route
-and is never an automatic fallback. Persisted legacy `pro-devspace` write runs
-retain their exact authority only during recovery.
+and is never an automatic fallback. Persisted `pro-devspace-readonly` runs
+retain their exact authority during recovery.
 
 For GPT-5.6 Pro specifically, exclude agbrowse from creation, dispatch,
 verification, and fallback. Retain the installed agbrowse tool only for the
@@ -32,10 +36,9 @@ It must not substitute a parent, child, active workspace, or shell boundary
 workaround. Regular routes default to `gpt-5.6` with `extra-high`, the highest
 supported non-Pro reasoning tier, and never auto-upgrade to Pro. Only explicit
 `pro` mode selects `GPT-5.6 Sol` at the Pro effort and the
-`pro-devspace-readonly` transport. It uses read-only DevSpace at the same exact
-root for design, advice, or review and must not perform file
-mutations or commands; a regular `GPT-5.6` `extra-high` stage owns those
-actions. Explicit `pro-attachment` is limited to its read-only immutable or
+`pro-devspace` transport. It uses full-access DevSpace at the same exact root
+under the mission and repository rules. Explicit `pro-attachment` is limited
+to its read-only immutable or
 external evidence contract and is never an automatic fallback.
 Never infer Pro from task difficulty, invent xhigh, or silently downgrade.
 
@@ -56,7 +59,7 @@ Require schema `codex.chatgpt.oracle-run/v1` with:
 - `mission_path`: absolute UTF-8 regular file inside the project.
 - `app_name`: one-line app name, without a leading `@`, for regular routes.
 - `task_kind: pro`; new qualified Pro uses the same configured app name (default
-  `codex`) and read-only DevSpace. Persisted legacy attachment records retain
+  `codex`) and full-access DevSpace. Persisted legacy attachment records retain
   their original attachment metadata only during exact recovery.
 - `mode`: `browser`.
 - Optional `run_root`, `oracle_command`, `oracle_args`, `thinking_time`,
@@ -113,12 +116,12 @@ exact slug, process liveness, artifact progress, known conversation binding,
 and terminal evidence, then keeps waiting on the same process. It never kills,
 fails, releases, or replaces a run because that threshold elapsed.
 
-## Read-only Pro follow-up round
+## Pro follow-up round
 
-When the user explicitly asks to continue one already-terminal read-only Pro
+When the user explicitly asks to continue one already-terminal DevSpace Pro
 discussion, use only the internal follow-up lifecycle. The parent must belong
 to the current Codex task, be terminal `EXECUTED`, use
-`pro-devspace-readonly`, retain valid ownership/browser receipts and the exact
+`pro-devspace` or a persisted `pro-devspace-readonly` parent, retain valid ownership/browser receipts and the exact
 canonical conversation URL, and pass all stored mission/output identity
 checks. Preview before sending:
 
@@ -130,11 +133,11 @@ After explicit live authority, remove only `--dry-run`. Each round gets a new
 Oracle run and slug but must reopen the same ChatGPT conversation. The runner
 writes append-only `followup-rounds/<round-key>.json` and
 `followup-rounds/<round-key>.result.json` receipts. A foreign or legacy-unbound
-parent, duplicate round key, writable/attachment transport, missing or changed
+parent, duplicate round key, non-Pro/attachment transport, missing or changed
 conversation, tampered artifact, or uncertain identity fails closed. Never
 inject raw `--followup`, `--browser-follow-up`, or `session`; never use recovery
 to send a question; never create a replacement conversation after uncertainty.
-New read-only Pro parents normalize default `archive=auto` to `never`, so do not
+New DevSpace Pro parents normalize default `archive=auto` to `never`, so do not
 manually unarchive them or change ChatGPT settings. Explicit `archive=always`
 means single-turn archival. Historical archived parents use only the bounded
 exact-conversation compatibility restore and are re-archived afterward.

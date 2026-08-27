@@ -64,7 +64,7 @@ def test_regular_high_is_forwarded_as_the_visible_high_tier(tmp_path: Path) -> N
     assert value["thinking_time"] == "extended"
 
 
-def test_host_configured_pro_compiles_advisory_mode_to_readonly_sol_pro_devspace(
+def test_host_configured_pro_compiles_mode_to_full_access_sol_pro_devspace(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("CODEX_CHATGPT_REGULAR_WEB_MODE", "pro")
@@ -83,13 +83,13 @@ def test_host_configured_pro_compiles_advisory_mode_to_readonly_sol_pro_devspace
     value = json.loads(target.read_text(encoding="utf-8"))
     assert result["contract"]["pro_selection_policy"] == "host-configured-pro"
     assert value["task_kind"] == "review"
-    assert value["transport"] == "pro-devspace-readonly"
+    assert value["transport"] == "pro-devspace"
     assert value["model"] == "gpt-5.6-sol"
     assert value["thinking_time"] == "heavy"
     assert value["task_outcome_contract"] == "v1"
 
 
-def test_host_configured_pro_keeps_write_mode_on_regular_devspace(
+def test_host_configured_pro_uses_full_access_sol_pro_for_write_mode(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("CODEX_CHATGPT_REGULAR_WEB_MODE", "pro")
@@ -106,10 +106,10 @@ def test_host_configured_pro_keeps_write_mode_on_regular_devspace(
     )
 
     value = json.loads(target.read_text(encoding="utf-8"))
-    assert result["contract"]["pro_selection_policy"] == "write-authority-forces-regular"
-    assert value["transport"] == "devspace"
-    assert value["model"] == "gpt-5.6"
-    assert value["thinking_time"] == "extra-high"
+    assert result["contract"]["pro_selection_policy"] == "host-configured-pro"
+    assert value["transport"] == "pro-devspace"
+    assert value["model"] == "gpt-5.6-sol"
+    assert value["thinking_time"] == "heavy"
 
 
 def test_configured_app_name_is_forwarded_to_manifest_and_composer(tmp_path: Path) -> None:
@@ -187,7 +187,7 @@ def test_pro_attachment_compiles_attachment_only_oracle_and_manual_never_launche
 def test_pro_defaults_to_devspace_without_attachments(tmp_path: Path) -> None:
     module = load()
     mission = tmp_path / "mission.md"
-    mission.write_text("read only", encoding="utf-8")
+    mission.write_text("full access", encoding="utf-8")
     target = tmp_path / "pro-devspace.json"
 
     result = module.compile_manifest(
@@ -195,8 +195,8 @@ def test_pro_defaults_to_devspace_without_attachments(tmp_path: Path) -> None:
     )
 
     value = json.loads(target.read_text(encoding="utf-8"))
-    assert result["contract"]["route"] == "oracle-pro-devspace-readonly"
-    assert value["transport"] == "pro-devspace-readonly"
+    assert result["contract"]["route"] == "oracle-pro-devspace"
+    assert value["transport"] == "pro-devspace"
     assert value["app_name"] == "DevSpace"
     assert value["model"] == "gpt-5.6-sol"
     assert value["model_strategy"] == "select"

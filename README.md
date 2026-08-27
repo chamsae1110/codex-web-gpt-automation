@@ -124,7 +124,7 @@ ChatGPT 앱 `codex` 등록은 준비가 끝난 뒤 **최초 한 번 수동 등�
 | 계획부터 최종 gate까지 | comprehensive mode | 단계별 웹 워크플로 |
 | 로컬 비용 최소화 | `ultra-economy` | Luna Max 지휘 + 분리 웹 단계 |
 | Codex Ultra식 웹 분업 | `ultra-gpt` | 웹 planner/reviewer + 병렬 격리 worktree 구현 + merger/검증; 필요할 때 선택형 SHA 폐쇄 감사 |
-| 명시 요청한 Pro 작업 | `pro` | GPT-5.6 Sol Pro + 읽기 전용 DevSpace 설계·자문·검토 |
+| 명시 요청한 Pro 작업 | `pro` | GPT-5.6 Sol Pro + 전체 권한 DevSpace 에이전트 코딩·테스트·브라우저/CDP 검증 |
 
 자세한 선택 기준은 [전역 라우팅](docs/GLOBAL_CHATGPT_ROUTING.md),
 [초절약모드](docs/ULTRA_ECONOMY_MODE.md),
@@ -151,8 +151,8 @@ python "$env:USERPROFILE\.codex\bin\chatgpt_oracle_dispatch.py" `
 - 같은 Codex task와 프로젝트 조합에는 활성 또는 불확실한 Oracle 작업을 하나만 둡니다. 서로 다른 task는 같은 프로젝트에서도 별도 소유권으로 동시에 실행할 수 있으며 서로의 실행을 복구·수확·중단하지 않습니다.
 - 새 프로젝트의 첫 DevSpace 제출 전에 exact root 등록을 확인합니다.
 - 일반 웹 작업은 최고 지원 비-Pro 추론 강도가 기본입니다. Pro는 횟수 제한이 있으므로 사용자가 명시적으로 요청할 때만 선택하며 자동 승격하지 않습니다.
-- 명시적으로 선택한 신규 Pro는 exact root에서 설계·자문·검토만 수행하는 읽기 전용 DevSpace를 사용합니다. 파일 생성·수정·삭제나 명령 실행은 최고 지원 비-Pro `GPT-5.6` `extra-high` regular DevSpace 단계가 맡습니다. 저장된 legacy `pro-devspace` 쓰기 실행은 정확한 복구 때에만 원래 권한을 보존합니다.
-- 같은 읽기 전용 Pro 대화를 이어갈 때는 task-bound terminal parent에 내부 `followup` 라운드만 추가합니다. 신규 `pro-devspace-readonly` 부모의 기본 `archive=auto`는 `never`로 정규화되어 후속 입력창을 보존합니다. 명시적으로 보관했거나 과거에 자동 보관된 부모만 exact conversation URL의 제한된 복원을 사용합니다. 복원이 composer 전에 실패하면 harvest하지 않고 exact run을 보존한 채 사용자 미제출 확인 후 `settle-no-submission`으로 정산합니다. 각 라운드는 같은 conversation과 보관 전이를 다시 증명하고 mission/state/output/transcript hash 영수증을 남기며, raw Oracle follow-up 인자나 새 대화 fallback은 허용하지 않습니다.
+- 명시적으로 선택한 신규 Pro는 exact root에서 `pro-devspace` 전체 권한을 사용합니다. 미션이 허용한 파일 생성·수정·삭제, 명령·테스트, 네트워크, 사용자 소유 Chrome CDP 검증과 조사→계획→실행→테스트→결과 확인→수정→검증 루프를 직접 수행합니다. 프로젝트 규칙과 불가역 외부 작업의 명시적 승인 경계는 그대로 적용됩니다.
+- 같은 Pro 대화를 이어갈 때는 task-bound terminal `pro-devspace` 또는 저장된 `pro-devspace-readonly` parent에 내부 `followup` 라운드만 추가하고 부모 권한을 그대로 보존합니다. 신규 DevSpace Pro 부모의 기본 `archive=auto`는 `never`로 정규화됩니다. 각 라운드는 같은 conversation과 보관 전이를 다시 증명하고 mission/state/output/transcript hash 영수증을 남기며, raw Oracle follow-up 인자나 새 대화 fallback은 허용하지 않습니다.
 - 제출 후 오류는 기존 실행 신원으로 정확히 복구하며, 저장된 slug와 대화
   URL만 회수하고 자동 재제출하지 않습니다.
 - Oracle이 공식 `output.md`와 완료 메타를 이미 저장했지만 외부 state 전이만

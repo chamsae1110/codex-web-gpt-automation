@@ -472,7 +472,7 @@ def load_manifest(
     if transport not in {"devspace", *PRO_TRANSPORTS}:
         raise OracleStateError(
             "TRANSPORT_INVALID",
-            "transport must be devspace, pro-devspace-readonly, pro-attachment-only, or historical pro-devspace",
+            "transport must be devspace, pro-devspace, pro-devspace-readonly, or pro-attachment-only",
         )
     app_name_raw = str(payload.get("app_name") or "").strip().lstrip("@").strip()
     if is_devspace_transport(transport):
@@ -617,7 +617,7 @@ def load_manifest(
     # default/auto case to `never`; an explicit `always` remains a deliberate
     # single-turn choice and archived historical parents retain their exact
     # state for bounded compatibility recovery.
-    if is_pro_readonly_transport(transport) and archive == "auto":
+    if is_pro_devspace_transport(transport) and archive == "auto":
         archive = "never"
     task_outcome_contract = str(payload.get("task_outcome_contract") or "legacy").strip().casefold()
     if task_outcome_contract not in {"legacy", "v1"}:
@@ -768,9 +768,16 @@ def composer_prompt(
             "Do not open the mission directory, a parent, a child, or the active workspace as a substitute. "
             f"Then read and execute the mission file: {effective_path}. "
             "Read the mission and applicable AGENTS.md fully first. "
-            "You may inspect, create, edit, and remove mission-owned files and run commands inside that exact root as "
-            "required by the mission. Obey all repository safety rules. Do not change accounts, app settings, or external "
-            "state unless the mission explicitly authorizes that action. "
+            "Use the maximum DevSpace capabilities available for the mission. You may inspect, create, edit, and remove "
+            "mission-owned files; run shell commands and tests; use network access; and perform browser or Chrome "
+            "DevTools/CDP verification. For a user-owned loopback Chrome CDP endpoint, the installed helper at the "
+            "current user's .codex/bin/chatgpt_chrome_cdp.mjs may list targets, evaluate DOM/JavaScript, or call arbitrary "
+            "CDP methods as authorized by the mission. Keep project file mutations inside the exact root unless the mission or applicable "
+            "repository rules explicitly authorize a named outside target. Obey all repository safety rules and explicit "
+            "approval boundaries for destructive, credential, account, deployment, publication, purchase, or other "
+            "external-state actions. Own the complete agentic coding loop: inspect, plan, execute, test, inspect the "
+            "result, adapt, and verify. When the mission requests implementation, do not stop at advice or a handoff "
+            "while safe authorized work remains. "
             "Put every citation, footnote, and Markdown reference definition before the outcome marker. "
             "End the final response with exactly one of TASK_OUTCOME: EXECUTED, TASK_OUTCOME: NOT_EXECUTED, or "
             "TASK_OUTCOME: BLOCKED as the final nonempty line; append nothing after it."
@@ -1070,7 +1077,7 @@ def _validate_followup_reservation_for_child(
         or parent_state.get("session_authority") != "terminal"
         or parent_state.get("terminal_harvested") is not True
         or parent_state.get("task_outcome") != "executed"
-        or parent_state.get("transport") != "pro-devspace-readonly"
+        or not is_pro_devspace_transport(str(parent_state.get("transport") or ""))
         or parent_profile.get("model") != "gpt-5.6-sol"
         or parent_profile.get("model_strategy") != "select"
         or parent_profile.get("thinking_time") != "heavy"
@@ -3544,7 +3551,7 @@ def _followup_no_submission_evidence(
     if (
         state.get("status") not in {"attention_required", "failed"}
         or state.get("session_authority") not in {"submitted_unknown", "pre_submit"}
-        or state.get("transport") != "pro-devspace-readonly"
+        or not is_pro_devspace_transport(str(state.get("transport") or ""))
         or state.get("mode") != "browser"
         or state.get("transport_status") not in {"failed", "not_submitted_user_confirmed"}
         or profile.get("model") != "gpt-5.6-sol"

@@ -26,7 +26,12 @@ def load_runner():
     return module
 
 
-def make_parent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+def make_parent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    transport: str = "pro-devspace-readonly",
+):
     runner = load_runner()
     project = tmp_path / "project"
     project.mkdir()
@@ -42,7 +47,7 @@ def make_parent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     manifest.write_text(json.dumps({
         "schema": "codex.chatgpt.oracle-run/v1",
         "project_root": str(project), "mission_path": str(mission), "app_name": "codex",
-        "mode": "browser", "transport": "pro-devspace-readonly", "run_root": str(run_root),
+        "mode": "browser", "transport": transport, "run_root": str(run_root),
         "oracle_command": ["oracle"], "model": "gpt-5.6-sol", "model_strategy": "select",
         "thinking_time": "heavy", "research": "off", "task_outcome_contract": "v1",
         "source_thread_id": OWNER,
@@ -915,8 +920,11 @@ def rewrite_settlement_as_official_followup_v1(child, runner, *, mutate=None) ->
     return recorded
 
 
-def test_followup_dry_run_is_same_task_and_same_conversation_without_writes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    runner, layout, mission = make_parent(tmp_path, monkeypatch)
+@pytest.mark.parametrize("transport", ["pro-devspace-readonly", "pro-devspace"])
+def test_followup_dry_run_preserves_parent_authority_and_conversation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, transport: str
+) -> None:
+    runner, layout, mission = make_parent(tmp_path, monkeypatch, transport=transport)
 
     result = runner.followup_run(layout.run_dir, mission_path=mission, round_key="round-1", dry_run=True)
 
@@ -933,6 +941,7 @@ def test_followup_dry_run_is_same_task_and_same_conversation_without_writes(tmp_
         archive_contract=result["round_receipt_plan"]["parent"]["archive_contract"],
     )
     assert payload["archive"] == "always"
+    assert payload["transport"] == transport
 
 
 def test_followup_archived_parent_url_mismatch_fails_before_child_artifacts(
@@ -1005,7 +1014,7 @@ def test_followup_child_binding_is_append_only_and_exact(tmp_path: Path, monkeyp
     ("foreign", "FOREIGN_TASK_SESSION"),
     ("legacy", "FOLLOWUP_PARENT_LEGACY_UNBOUND"),
     ("nonterminal", "FOLLOWUP_PARENT_NOT_EXECUTED"),
-    ("writable", "FOLLOWUP_PARENT_PROFILE_FORBIDDEN"),
+    ("regular", "FOLLOWUP_PARENT_PROFILE_FORBIDDEN"),
     ("attachment", "FOLLOWUP_PARENT_PROFILE_FORBIDDEN"),
     ("missing-url", "FOLLOWUP_PARENT_CONVERSATION_INVALID"),
     ("tamper-output", "FOLLOWUP_PARENT_ARTIFACT_INVALID"),
@@ -1027,8 +1036,8 @@ def test_followup_rejects_foreign_or_nonqualifying_parent(
         elif mutation == "nonterminal":
             state["status"] = "running"
             state["terminal_harvested"] = False
-        elif mutation == "writable":
-            state["transport"] = "pro-devspace"
+        elif mutation == "regular":
+            state["transport"] = "devspace"
         elif mutation == "attachment":
             state["transport"] = "pro-attachment-only"
         elif mutation == "missing-url":

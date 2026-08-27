@@ -71,8 +71,8 @@ def test_apply_preserves_existing_config_and_policy_and_is_idempotent(tmp_path: 
     assert "%LOCALAPPDATA%\\Codex\\Sources" in global_policy
     assert "Default ordinary web work to `gpt-5.6` with `extra-high`" in global_policy
     assert "Treat Pro as quota-limited and explicit-only" in global_policy
-    assert "Every new explicit Pro run uses the `pro-devspace-readonly` route" in global_policy
-    assert "Preserve persisted legacy `pro-devspace` write" in global_policy
+    assert "Every new explicit Pro run uses the `pro-devspace` full-access route" in global_policy
+    assert "Preserve persisted `pro-devspace` and `pro-devspace-readonly` runs" in global_policy
     assert "GPT-5.6 Luna" in global_policy and "must be `max`" in global_policy
     assert "<model>_<reasoning>_<task>" in global_policy
     assert module.doctor(home, source_root=ROOT)["ok"] is True

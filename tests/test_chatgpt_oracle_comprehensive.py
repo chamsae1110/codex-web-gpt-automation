@@ -99,7 +99,7 @@ def test_ultra_economy_dry_run_starts_with_explicit_pro_design(tmp_path: Path, m
     assert result["workflow_profile"] == "ultra-economy"
     assert seen["model"] == "gpt-5.6-sol"
     assert seen["thinking_time"] == "heavy"
-    assert seen["transport"] == "pro-devspace-readonly"
+    assert seen["transport"] == "pro-devspace"
 
 
 def test_standard_workflow_cannot_skip_plan_with_initial_pro(tmp_path: Path) -> None:
@@ -414,9 +414,9 @@ def test_explicit_pro_stage_runs_readonly_devspace_and_materializes_bound_receip
         stage = next(item for item in ("plan", "pro", "review", "implementation", "final-web-gate") if f"stage={item}\n" in text)
         stages.append(stage)
         if stage == "pro":
-            assert "[PRO_READ_ONLY_AUTHORITY]" in text
-            assert "separate regular GPT-5.6 extra-high DevSpace implementation stage" in text
-            assert payload["transport"] == "pro-devspace-readonly"
+            assert "[PRO_FULL_ACCESS_AUTHORITY]" in text
+            assert "browser or Chrome DevTools/CDP verification" in text
+            assert payload["transport"] == "pro-devspace"
             assert payload["task_outcome_contract"] == "v1"
             assert payload["model"] == "gpt-5.6-sol"
             assert payload["app_name"] == "DevSpace"
@@ -1930,7 +1930,7 @@ def test_regular_manifest_never_attaches_pro_packets_and_default_pro_uses_readon
     default_pro = json.loads(module._oracle_manifest(
         config, mission, tmp_path / "legacy-pro", "d" * 32, stage="pro"
     ).read_text(encoding="utf-8"))
-    assert default_pro["transport"] == "pro-devspace-readonly"
+    assert default_pro["transport"] == "pro-devspace"
     assert default_pro["task_outcome_contract"] == "v1"
     assert default_pro["app_name"] == config["app_name"]
     assert "attachments" not in default_pro

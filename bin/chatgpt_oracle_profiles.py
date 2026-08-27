@@ -40,7 +40,7 @@ PRO_COMPOSER_PROMPT = (
     "Read the attached prompt/instructions and all attached files, then provide read-only analysis only. "
     "Do not create, edit, delete, or rename files; do not run commands or change settings, accounts, or external state."
 )
-PRO_DEVSPACE_COMPOSER_PREFIX = "Read and analyze the read-only mission file"
+PRO_DEVSPACE_COMPOSER_PREFIX = "Read and execute the mission file"
 
 
 class OracleProfileError(ValueError):
@@ -135,14 +135,21 @@ def composer_handoff(mission_path: str | Path, app_name: str | None = None) -> s
 
 
 def pro_devspace_composer_handoff(mission_path: str | Path, app_name: str | None = None) -> str:
-    """The qualified Pro DevSpace handoff, restricted to read-only advisory work."""
+    """The qualified Pro DevSpace handoff with maximum mission-authorized tools."""
     mission = _absolute_mission_path(mission_path)
     return (
         f"@{WORKSPACE_CONFIG.normalize_app_name(app_name or WORKSPACE_CONFIG.configured_app_name())} {PRO_DEVSPACE_COMPOSER_PREFIX}: {mission}. "
         "Use only the exact project root recorded there; read the mission and applicable AGENTS.md fully first. "
-        "Inspect and reason over project evidence without creating, editing, deleting, or renaming files and without "
-        "running commands or changing settings, accounts, or external state. If the requested task requires writes or "
-        "commands, return an implementation-ready handoff for a separate regular GPT-5.6 extra-high DevSpace stage."
+        "Use the maximum DevSpace capabilities available for the mission, including file reads and mutations, shell "
+        "commands and tests, network access, and browser or Chrome DevTools/CDP verification. Keep project file "
+        "mutations inside that exact root unless the mission or applicable repository rules explicitly authorize a "
+        "named outside target. For a user-owned loopback Chrome CDP endpoint, the installed helper at the current "
+        "user's .codex/bin/chatgpt_chrome_cdp.mjs may list targets, evaluate DOM/JavaScript, or call arbitrary CDP "
+        "methods as authorized by the mission. "
+        "Obey the mission, applicable AGENTS.md, and explicit approval boundaries for "
+        "destructive, credential, account, deployment, publication, purchase, or other external-state actions. "
+        "Own the complete agentic loop: inspect, plan, execute, test, inspect the result, adapt, and verify. When "
+        "the mission requests implementation, do not stop at advice or a handoff while safe authorized work remains."
     )
 
 
@@ -176,16 +183,11 @@ def build_launch_contract(
     """
     profile = resolve_profile(mode)
     configured_regular_web_mode = WORKSPACE_CONFIG.configured_regular_web_mode()
-    # A durable Pro preference is explicit user authority for advisory power,
-    # never for mutation.  Latest Pro is read-only, so every write-capable mode
-    # remains on regular GPT-5.6 extra-high even when the preference is `pro`.
+    # A durable Pro preference is explicit user authority for the full Pro
+    # DevSpace capability. Deep Research remains its own distinct route.
     configured_pro = (
         configured_regular_web_mode == "pro"
-        and profile.mode in {"plan", "review"}
-    )
-    configured_pro_blocked_for_write = (
-        configured_regular_web_mode == "pro"
-        and profile.mode in WRITE_CAPABLE_REGULAR_MODES
+        and profile.mode in {"direct", "plan", "review", "edit", "orchestrator"}
     )
     resolved_app_name = WORKSPACE_CONFIG.normalize_app_name(
         app_name or WORKSPACE_CONFIG.configured_app_name()
@@ -204,8 +206,6 @@ def build_launch_contract(
         "pro_selection_policy": (
             "host-configured-pro"
             if configured_pro and profile.mode != "pro"
-            else "write-authority-forces-regular"
-            if configured_pro_blocked_for_write
             else "explicit-only"
         ),
     }
@@ -247,7 +247,7 @@ def build_launch_contract(
                 "Pro DevSpace runs must not attach files",
             )
         result.update({
-            "route": "oracle-pro-devspace-readonly",
+            "route": "oracle-pro-devspace",
             "app_policy": "prompt-mention-only",
             "attachment_policy": "forbidden",
             "app_name": resolved_app_name,
@@ -255,8 +255,9 @@ def build_launch_contract(
             "model_strategy": "select",
             "reasoning_level": "Pro",
             "thinking_time": "heavy",
-            "action_authority": "read-only",
-            "write_handoff": "regular-gpt-5.6-extra-high-devspace",
+            "action_authority": "mission-owned-full-access",
+            "agentic_execution": True,
+            "execution_loop": "inspect-plan-execute-test-inspect-adapt-verify",
             "mission_path": str(mission),
             "composer_prompt": pro_devspace_composer_handoff(mission, resolved_app_name),
         })

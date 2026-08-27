@@ -25,12 +25,14 @@ Use this routing in the Codex global `AGENTS.md` after installing the package.
   only after an explicit user request; selecting Ultra Economy Mode is itself
   an explicit Pro-design request.
 - Every new qualified Pro run uses Oracle, `GPT-5.6 Sol` at the Pro effort, the
-  `pro-devspace-readonly` transport, and the manually registered DevSpace app.
-  It binds the exact project root but is
-  read-only and limited to design, advice, or review; it must not create, edit,
-  or remove files or run commands. A regular `GPT-5.6` `extra-high` DevSpace
-  stage owns those actions. Repository safety rules remain authoritative; Pro
-  never changes accounts, app settings, or external state. One-time app qualification is sufficient: do not inspect app
+  `pro-devspace` transport, and the manually registered DevSpace app. It binds
+  the exact project root and uses maximum mission-authorized capability: file
+  reads and mutations, commands/tests, network, browser/CDP verification, and
+  the inspect-plan-execute-test-inspect-adapt-verify loop. Repository safety
+  rules and explicit irreversible-action boundaries remain authoritative.
+  The installed `.codex/bin/chatgpt_chrome_cdp.mjs` helper exposes loopback CDP
+  target listing, DOM/JavaScript evaluation, and arbitrary CDP method calls.
+  One-time app qualification is sufficient: do not inspect app
   settings or picker state per run.
 - Qualified Pro output uses the v1 task-outcome marker. Exit zero and a durable
   answer do not count as success when DevSpace exposed no callable tools or the
@@ -46,8 +48,8 @@ Use this routing in the Codex global `AGENTS.md` after installing the package.
   Generic and legacy runs keep upstream completion behavior.
 - Explicit `pro-attachment` remains a separate read-only route for immutable or
   external evidence and is never an automatic fallback from a qualified Pro
-  DevSpace run. Persisted legacy `pro-devspace` write runs retain their exact
-  original authority only during recovery.
+  DevSpace run. Persisted `pro-devspace-readonly` runs retain their exact
+  original authority during recovery.
 - Existing persisted agbrowse runs remain recovery-only. There is no new
   agbrowse submission path and no Oracle-to-agbrowse fallback.
 - Oracle run ownership is scoped by Codex task plus exact run identity, not by
@@ -68,8 +70,7 @@ Use this routing in the Codex global `AGENTS.md` after installing the package.
   receipt. Local Codex owns transport, immutable identity, host safety, and one
   final deterministic gate rather than rewriting web output.
 - An optional comprehensive Pro stage is available only after explicit opt-in
-  and uses read-only DevSpace for design, advice, or review. Its plan gives any
-  mutation or command to a regular `GPT-5.6` `extra-high` stage. A separately
+  and uses full-access DevSpace for its mission-owned agentic role. A separately
   explicit immutable-evidence boundary may select `pro-attachment`. The Pro route returns one strict
   identity-bound JSON envelope whose output and next-mission strings the host
   materializes byte-for-byte.
@@ -95,11 +96,12 @@ Use this routing in the Codex global `AGENTS.md` after installing the package.
 ## Standalone Pro versus comprehensive
 
 `chatgpt-pro-browser` is the visible standalone Pro skill. It submits one
-explicitly requested, qualified read-only DevSpace Pro design, advice, or
-review session, saves the durable result, returns it to the calling Codex task,
-and stops unless the user explicitly requests a bounded follow-up round in the
-same conversation. New read-only Pro parents normalize default `archive=auto`
-to `never`. That round must use the internal runner `followup` command; only a
+explicitly requested, qualified full-access DevSpace Pro session that may own
+agentic coding, commands/tests, network, and browser/CDP verification, saves
+the durable verified result, and returns it to the calling Codex task unless
+the user explicitly requests a bounded follow-up round in the same conversation.
+New DevSpace Pro parents normalize default `archive=auto` to `never`. That round
+must use the internal runner `followup` command and preserve the parent's authority; only a
 historical or explicitly archived exact task-bound parent uses bounded restore
 and re-archive. A before-composer restore failure goes directly to explicit
 user-confirmed no-submission settlement and must not be harvested. Any URL
@@ -111,8 +113,7 @@ The follow-up command requires the exact terminal parent run directory, a
 project-contained UTF-8 mission,
 and a unique round key. Raw Oracle follow-up options remain blocked. Each round
 gets a new Oracle run/slug but must prove the unchanged ChatGPT conversation
-and append hash-bound reservation/result receipts. It never starts
-implementation, edits files, or runs commands. A
+and append hash-bound reservation/result receipts. A
 separately explicit immutable-evidence request may use `pro-attachment`.
 Standalone Pro does not require a Web Multi decision and never launches Web
 Multi automatically; Web Multi remains a separate explicit user request.
