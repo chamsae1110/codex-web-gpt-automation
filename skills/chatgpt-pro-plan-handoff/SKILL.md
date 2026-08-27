@@ -12,7 +12,14 @@ Every new qualified `GPT-5.6 Sol` Pro stage uses `pro-devspace` full-access
 DevSpace at the exact project root. It may create, edit, or remove mission-owned
 files, run commands and tests, use network access, inspect browser/CDP state,
 and complete the full agentic loop under the mission and repository safety
-policy. Explicit
+policy. The workflow's explicit Pro authorization is standing permission for
+routine stage launches, bound prompt submission, exact configured DevSpace
+app-use approval, and mission-owned actions. Each conversation approval is
+remembered and recorded automatically; do not pause again between ordinary
+authorized stages. Credentials, account or app-setting changes, destructive
+cleanup, deployment, publication, purchases, and other irreversible external
+actions remain separate unless the workflow manifest explicitly authorizes
+them. Explicit
 `pro-attachment` remains a separate read-only immutable/external-evidence
 route and is never an automatic fallback. Persisted legacy `pro-devspace`
 write runs retain their exact authority only during recovery. CodexPro and all

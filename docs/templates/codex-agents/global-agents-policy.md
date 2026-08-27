@@ -35,6 +35,7 @@
 - Default ordinary web work to `gpt-5.6` with `extra-high`, the highest supported non-Pro reasoning tier. Never select or upgrade to Pro automatically.
 - Treat Pro as quota-limited and explicit-only. Use `GPT-5.6 Sol` at the Pro effort only after the user explicitly requests Pro; a standard comprehensive workflow additionally requires `allow_pro: true`.
 - Every new explicit Pro run uses the `pro-devspace` full-access route with mission-owned file mutation, commands/tests, network, browser/CDP verification, and an inspect-plan-execute-test-inspect-adapt-verify loop under the applicable `AGENTS.md`, repository rules, and explicit irreversible-action boundaries.
+- The explicit Pro request is standing authorization for routine browser launch or attachment, bound prompt submission, exact configured DevSpace app-use approval with conversation memory, and mission-owned actions. Record the approval and do not ask again; credentials, account/app-setting changes, destructive cleanup, deployment, publication, purchases, and other irreversible external actions remain separate unless explicitly included in the mission.
 - Pro must not alter accounts, ChatGPT app settings, or external state. Explicit `pro-attachment` remains a separate read-only immutable/external-evidence route and is never an automatic fallback.
 - Preserve persisted `pro-devspace` and `pro-devspace-readonly` runs with their recorded authority and transport during exact recovery; never reinterpret historical authority.
 

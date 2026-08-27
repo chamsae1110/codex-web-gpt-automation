@@ -57,6 +57,17 @@ not substitute a parent, child, similarly named, active, or shell-boundary
 workspace, and may retry only the same root once after a timeout.
 Repository safety rules remain authoritative.
 
+The user's explicit request to run Pro is standing authorization for the
+ordinary mechanics of that exact mission: launch or attach to the managed
+browser, submit the bound prompt, select the configured DevSpace app, approve
+the exact named-app use modal with "Remember in this conversation", and perform
+mission-owned file, command, test, network, browser, and CDP actions. The runner
+records that conversation-scoped approval and must not ask the user again for
+those routine actions. This standing authorization does not cover credentials,
+account or app-setting changes, destructive cleanup, deployment, publication,
+purchases, or another irreversible external action unless the mission
+explicitly authorizes it.
+
 For a user-owned loopback Chrome CDP endpoint, use the installed
 `.codex/bin/chatgpt_chrome_cdp.mjs` helper when project-native tooling is not
 more appropriate. It supports target/version listing, DOM or JavaScript
@@ -109,7 +120,9 @@ inside the same project, then preview the internal lifecycle:
 python "$env:USERPROFILE\.codex\bin\chatgpt_oracle_run.py" followup --parent-run-dir <TERMINAL_PARENT_RUN_DIR> --mission-path <FOLLOWUP_MISSION> --round-key <UNIQUE_ROUND_KEY> --dry-run
 ```
 
-Remove only `--dry-run` after the preview and explicit send authority. The
+The explicit user request for that follow-up is its live send authority. After
+the internal validation preview succeeds, remove only `--dry-run` and do not
+ask for another routine permission. The
 child gets a new Oracle run/slug and dynamic CDP port but must reopen the exact
 same ChatGPT conversation. Append-only reservation and result receipts bind
 the round mission, child state, output/transcript hashes, task owner, and

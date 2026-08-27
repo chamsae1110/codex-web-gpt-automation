@@ -18,6 +18,15 @@ DOM/JavaScript evaluation, and arbitrary CDP method calls. Explicit
 and is never an automatic fallback. Persisted `pro-devspace-readonly` runs
 retain their exact authority during recovery.
 
+An explicit Pro request is standing authorization for the exact run's routine
+launch, prompt submission, configured DevSpace selection, conversation-scoped
+named-app approval, and mission-owned file, command, test, network, browser,
+and CDP operations. The runner checks "Remember in this conversation", records
+the approval, and continues without asking again. Separate authorization is
+still required for credentials, accounts or app settings, destructive cleanup,
+deployment, publication, purchases, and other irreversible external actions
+not already explicit in the mission.
+
 For GPT-5.6 Pro specifically, exclude agbrowse from creation, dispatch,
 verification, and fallback. Retain the installed agbrowse tool only for the
 separate public-web search/browser QA workflows and exact persisted legacy-run
@@ -129,7 +138,8 @@ checks. Preview before sending:
 python skills/chatgpt-oracle-runtime/scripts/run_chatgpt_oracle.py followup --parent-run-dir C:\absolute\parent-run --mission-path C:\project\followup-round.md --round-key round-2 --dry-run
 ```
 
-After explicit live authority, remove only `--dry-run`. Each round gets a new
+The explicit follow-up request is live authority for that round. After the
+internal preview passes, remove only `--dry-run` without asking again. Each round gets a new
 Oracle run and slug but must reopen the same ChatGPT conversation. The runner
 writes append-only `followup-rounds/<round-key>.json` and
 `followup-rounds/<round-key>.result.json` receipts. A foreign or legacy-unbound

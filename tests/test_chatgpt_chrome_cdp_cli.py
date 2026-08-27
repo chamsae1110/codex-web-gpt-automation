@@ -53,6 +53,7 @@ def test_help_documents_full_generic_cdp_surface() -> None:
     assert "list" in result.stdout
     assert "eval" in result.stdout
     assert "call" in result.stdout
+    assert "approve-app-use" in result.stdout
     assert "--browser" in result.stdout
 
 
@@ -79,3 +80,25 @@ def test_loopback_version_and_target_listing() -> None:
     assert json.loads(version.stdout)["Browser"] == "MockChrome/1"
     assert targets.returncode == 0
     assert json.loads(targets.stdout)[0]["id"] == "page-1"
+
+
+def test_app_use_approval_requires_an_exact_app_name() -> None:
+    server = ThreadingHTTPServer(("127.0.0.1", 0), CdpHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    endpoint = f"http://127.0.0.1:{server.server_port}"
+    try:
+        result = run_cli(
+            "approve-app-use",
+            "--endpoint",
+            endpoint,
+            "--target-id",
+            "page-1",
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert result.returncode == 1
+    assert json.loads(result.stderr)["error"]["code"] == "APP_NAME_REQUIRED"

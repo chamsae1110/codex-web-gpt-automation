@@ -1713,6 +1713,7 @@ def test_durable_terminal_recovery_stops_only_the_owned_observer_before_audit() 
     runner = load_runner()
     exited = threading.Event()
     probes = 0
+    approval_probes = 0
     actions: list[str] = []
 
     class BlockingProcess:
@@ -1738,16 +1739,82 @@ def test_durable_terminal_recovery_stops_only_the_owned_observer_before_audit() 
         actions.append("terminate-owned-tree")
         exited.set()
 
+    def approve_permission() -> bool:
+        nonlocal approval_probes
+        approval_probes += 1
+        return approval_probes >= 2
+
     result = runner.wait_for_oracle_process(
         process,
         4800,
         terminal_harvest_probe=terminal_probe,
         terminate_owned_process=terminate_owned,
+        permission_approval_probe=approve_permission,
         terminal_probe_interval_seconds=0.01,
     )
 
     assert result == 143
     assert actions == ["terminate-owned-tree"]
+    assert approval_probes == 2
+
+
+def test_explicit_pro_invocation_records_exact_app_use_preapproval(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = load_runner()
+    state_path = tmp_path / "state.json"
+    state_path.write_text("{}", encoding="utf-8")
+    layout = type("Layout", (), {"run_dir": tmp_path, "state_path": state_path})()
+    calls: list[tuple[list[str], dict]] = []
+    receipts: dict[Path, dict] = {}
+
+    def fake_run(command, **kwargs):
+        calls.append((list(command), kwargs))
+        payload = {"state": "approved", "appName": "DevSpace", "remembered": True}
+        return subprocess.CompletedProcess(command, 0, stdout=json.dumps(payload), stderr="")
+
+    monkeypatch.setattr(
+        runner.STATE,
+        "load_state",
+        lambda _path: {
+            "run_id": "run-1",
+            "ownership": {"source_thread_id": "thread-1"},
+            "mission": {"sha256": "a" * 64},
+        },
+    )
+    monkeypatch.setattr(
+        runner.STATE,
+        "write_json_atomic",
+        lambda path, payload: receipts.__setitem__(Path(path), payload),
+    )
+
+    approved = runner.approve_preauthorized_pro_app_use(
+        layout,
+        cdp_port=19222,
+        app_name="DevSpace",
+        run_factory=fake_run,
+        node_executable="node-test",
+    )
+
+    assert approved is True
+    assert calls[0][0] == [
+        "node-test",
+        str(runner.CHROME_CDP_HELPER_PATH),
+        "approve-app-use",
+        "--endpoint",
+        "http://127.0.0.1:19222",
+        "--url-contains",
+        "https://chatgpt.com/",
+        "--app-name",
+        "DevSpace",
+        "--timeout-ms",
+        "5000",
+    ]
+    receipt = receipts[tmp_path / "app-use-preapproval-receipt.json"]
+    assert receipt["authority"] == "explicit-qualified-pro-invocation"
+    assert receipt["app_name"] == "DevSpace"
+    assert receipt["remembered_in_conversation"] is True
 
 
 def test_windows_terminal_cleanup_targets_the_popen_owned_tree() -> None:

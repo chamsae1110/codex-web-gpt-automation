@@ -128,6 +128,57 @@ async function expression(options) {
   return options.expression;
 }
 
+function appUseApprovalExpression(appName) {
+  const encodedAppName = JSON.stringify(appName);
+  return `(async () => {
+    const appName = ${encodedAppName};
+    const normalize = (value) => String(value || "").replace(/\\s+/g, " ").trim();
+    const visible = (element) => {
+      if (!(element instanceof Element)) return false;
+      const style = getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      return style.display !== "none" && style.visibility !== "hidden" && rect.width > 0 && rect.height > 0;
+    };
+    const accessibleName = (element) => normalize(
+      element.getAttribute("aria-label") || element.innerText || element.textContent
+    );
+    const pageText = normalize(document.body && document.body.innerText);
+    const englishPrompt = "Allow ChatGPT to use " + appName + "?";
+    const koreanPrompt = "ChatGPT가 " + appName + "을(를) 사용하도록 허용할까요?";
+    if (!pageText.includes(englishPrompt) && !pageText.includes(koreanPrompt)) {
+      return { state: "absent", appName };
+    }
+    const checkboxes = [...document.querySelectorAll('input[type="checkbox"], [role="checkbox"]')]
+      .filter(visible)
+      .filter((element) => {
+        const label = element.closest("label");
+        const name = normalize(accessibleName(element) + " " + (label ? accessibleName(label) : ""));
+        return name.includes("Remember in this conversation") || name.includes("이 대화에 기억");
+      });
+    const buttons = [...document.querySelectorAll('button, [role="button"]')]
+      .filter(visible)
+      .filter((element) => new Set(["Allow", "허용하기"]).has(accessibleName(element)));
+    if (checkboxes.length !== 1 || buttons.length !== 1) {
+      return {
+        state: "ambiguous",
+        appName,
+        checkboxCount: checkboxes.length,
+        buttonCount: buttons.length,
+      };
+    }
+    const checkbox = checkboxes[0];
+    const checked = checkbox instanceof HTMLInputElement
+      ? checkbox.checked
+      : checkbox.getAttribute("aria-checked") === "true";
+    if (!checked) {
+      checkbox.click();
+      await new Promise((resolve) => requestAnimationFrame(() => resolve()));
+    }
+    buttons[0].click();
+    return { state: "approved", appName, remembered: true };
+  })()`;
+}
+
 async function sendCdp(webSocketUrl, method, methodParams, timeout) {
   if (typeof WebSocket !== "function") {
     fail("WEBSOCKET_UNAVAILABLE", "this Node runtime does not expose the standard WebSocket client");
@@ -177,6 +228,7 @@ function usage() {
   chatgpt_chrome_cdp.mjs list [--endpoint http://127.0.0.1:PORT]
   chatgpt_chrome_cdp.mjs eval [target selector] (--expression JS | --expression-file PATH)
   chatgpt_chrome_cdp.mjs call [target selector | --browser] --method CDP.METHOD [--params JSON | --params-file PATH]
+  chatgpt_chrome_cdp.mjs approve-app-use [target selector] --app-name NAME
 
 Target selectors: --target-id ID | --url-contains TEXT
 Common options: --endpoint URL --timeout-ms N
@@ -221,6 +273,25 @@ async function main(argv) {
     if (!options.method) fail("METHOD_REQUIRED", "call requires --method");
     const result = await sendCdp(webSocketUrl, options.method, await params(options), timeout);
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    return;
+  }
+  if (command === "approve-app-use") {
+    const appName = String(options["app-name"] || "").trim();
+    if (!appName) fail("APP_NAME_REQUIRED", "approve-app-use requires --app-name");
+    const evaluated = await sendCdp(webSocketUrl, "Runtime.evaluate", {
+      expression: appUseApprovalExpression(appName),
+      awaitPromise: true,
+      returnByValue: true,
+      userGesture: true,
+    }, timeout);
+    const value = evaluated && evaluated.result && evaluated.result.value;
+    if (!value || typeof value !== "object") {
+      fail("APP_APPROVAL_RESULT_INVALID", "app-use approval evaluation returned no structured result");
+    }
+    if (value.state === "ambiguous") {
+      fail("APP_USE_APPROVAL_CONTROL_AMBIGUOUS", "exact app approval controls are ambiguous", value);
+    }
+    process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
     return;
   }
   fail("COMMAND_UNSUPPORTED", `unsupported command: ${command}`);

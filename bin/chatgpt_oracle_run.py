@@ -21,6 +21,7 @@ STATE_PATH = Path(__file__).resolve().with_name("chatgpt_oracle_state.py")
 COMPAT_PATH = Path(__file__).resolve().with_name("chatgpt_oracle_compat.py")
 DEVSPACE_COMPAT_PATH = Path(__file__).resolve().with_name("chatgpt_devspace_compat.py")
 DEVSPACE_PREFLIGHT_PATH = Path(__file__).resolve().with_name("chatgpt_devspace_preflight.py")
+CHROME_CDP_HELPER_PATH = Path(__file__).resolve().with_name("chatgpt_chrome_cdp.mjs")
 
 
 def load_state_module():
@@ -225,6 +226,7 @@ def wait_for_oracle_process(
     terminal_harvest_probe: Callable[[], bool] | None = None,
     terminate_owned_process: Callable[[Any], None] | None = None,
     runtime_identity_probe: Callable[[], Any] | None = None,
+    permission_approval_probe: Callable[[], bool] | None = None,
     terminal_probe_interval_seconds: float = 1.0,
 ) -> int:
     """Wait for one exact Oracle process; time alone never ends the wait."""
@@ -243,13 +245,23 @@ def wait_for_oracle_process(
         )
     watcher_stop = threading.Event()
     watcher: threading.Thread | None = None
-    if terminal_harvest_probe is not None and terminate_owned_process is not None:
+    if (
+        permission_approval_probe is not None
+        or (terminal_harvest_probe is not None and terminate_owned_process is not None)
+    ):
         def watch_terminal_harvest() -> None:
+            permission_approved = False
             while not watcher_stop.is_set():
                 try:
                     if runtime_identity_probe is not None:
                         runtime_identity_probe()
-                    if terminal_harvest_probe():
+                    if permission_approval_probe is not None and not permission_approved:
+                        permission_approved = bool(permission_approval_probe())
+                    if (
+                        terminal_harvest_probe is not None
+                        and terminate_owned_process is not None
+                        and terminal_harvest_probe()
+                    ):
                         terminate_owned_process(process)
                         return
                 except (OSError, RuntimeError, ValueError, TypeError, KeyError):
@@ -260,7 +272,7 @@ def wait_for_oracle_process(
 
         watcher = threading.Thread(
             target=watch_terminal_harvest,
-            name="oracle-terminal-harvest-watcher",
+            name="oracle-runtime-watcher",
             daemon=True,
         )
         watcher.start()
@@ -282,6 +294,68 @@ def wait_for_oracle_process(
         watcher_stop.set()
         if watcher is not None:
             watcher.join(timeout=max(1.0, terminal_probe_interval_seconds * 2))
+
+
+def approve_preauthorized_pro_app_use(
+    layout: Any,
+    *,
+    cdp_port: int,
+    app_name: str,
+    run_factory: Callable[..., Any] = subprocess.run,
+    node_executable: str | None = None,
+    helper_path: Path = CHROME_CDP_HELPER_PATH,
+) -> bool:
+    """Approve only the exact configured app modal for an explicit Pro run."""
+    normalized_app_name = str(app_name or "").strip()
+    if not normalized_app_name or not helper_path.is_file():
+        return False
+    node = node_executable or shutil.which("node")
+    if not node:
+        return False
+    command = [
+        node,
+        str(helper_path),
+        "approve-app-use",
+        "--endpoint",
+        f"http://127.0.0.1:{cdp_port}",
+        "--url-contains",
+        "https://chatgpt.com/",
+        "--app-name",
+        normalized_app_name,
+        "--timeout-ms",
+        "5000",
+    ]
+    try:
+        completed = run_factory(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+            shell=False,
+        )
+        if int(getattr(completed, "returncode", 1)) != 0:
+            return False
+        payload = json.loads(str(getattr(completed, "stdout", "") or ""))
+    except (OSError, subprocess.SubprocessError, TypeError, ValueError, json.JSONDecodeError):
+        return False
+    if payload.get("state") != "approved" or payload.get("appName") != normalized_app_name:
+        return False
+    state = STATE.load_state(layout.state_path)
+    receipt = {
+        "schema": "codex.chatgpt.pro-app-use-preapproval/v1",
+        "authority": "explicit-qualified-pro-invocation",
+        "scope": "exact-conversation-configured-app-use",
+        "run_id": state.get("run_id"),
+        "source_thread_id": (state.get("ownership") or {}).get("source_thread_id"),
+        "mission_sha256": (state.get("mission") or {}).get("sha256"),
+        "app_name": normalized_app_name,
+        "cdp_port": cdp_port,
+        "remembered_in_conversation": payload.get("remembered") is True,
+        "recorded_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+    STATE.write_json_atomic(layout.run_dir / "app-use-preapproval-receipt.json", receipt)
+    return True
 
 
 def exact_run_is_durably_terminal(layout: Any) -> bool:
@@ -1797,6 +1871,15 @@ def execute_run(
                     status_audit_seconds=status_audit_seconds,
                     prior_observations=prior_audit_observations,
                 )
+                permission_approval_probe = (
+                    lambda: approve_preauthorized_pro_app_use(
+                        layout,
+                        cdp_port=cdp_port,
+                        app_name=str(config.app_name),
+                    )
+                    if config.transport == "pro-devspace" and config.app_name
+                    else None
+                )
                 if not config.parallel_parent_id:
                     exit_code = wait_for_oracle_process(
                         process,
@@ -1807,6 +1890,7 @@ def execute_run(
                             owned, platform_name=platform_name
                         ),
                         runtime_identity_probe=lambda: STATE.capture_browser_identity_receipt(layout.state_path),
+                        permission_approval_probe=permission_approval_probe,
                     )
             if config.parallel_parent_id:
                 exit_code = wait_for_oracle_process(
@@ -1818,6 +1902,7 @@ def execute_run(
                         owned, platform_name=platform_name
                     ),
                     runtime_identity_probe=lambda: STATE.capture_browser_identity_receipt(layout.state_path),
+                    permission_approval_probe=permission_approval_probe,
                 )
     except Exception as exc:
         code = f"{exc.code}: " if isinstance(exc, OracleRunError) else ""
