@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""Lightweight first-use exact-root qualification for DevSpace transports."""
+"""Lightweight first-use project-root qualification for DevSpace transports."""
 
 import hashlib
 import json
@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 
-QUALIFICATION_SCHEMA = "codex.chatgpt.devspace-root-qualification/v1"
+QUALIFICATION_SCHEMA = "codex.chatgpt.devspace-root-qualification/v2"
 
 
 class DevSpacePreflightError(RuntimeError):
@@ -24,6 +24,20 @@ class DevSpacePreflightError(RuntimeError):
 
 def _path_key(path: Path) -> str:
     return os.path.normcase(os.path.normpath(str(path)))
+
+
+def _contains_path(boundary: Path, candidate: Path) -> bool:
+    """Return whether candidate is boundary itself or a real descendant.
+
+    commonpath avoids sibling-prefix confusion such as ``Coin`` versus
+    ``Coin-copy`` and returns ValueError for paths on different Windows drives.
+    """
+    boundary_key = _path_key(boundary)
+    candidate_key = _path_key(candidate)
+    try:
+        return os.path.commonpath((boundary_key, candidate_key)) == boundary_key
+    except ValueError:
+        return False
 
 
 def _registration_url(bootstrap_path: Path) -> str | None:
@@ -94,7 +108,7 @@ def ensure_exact_root_qualified(
     bootstrap_path: Path | None = None,
     json_loader: Callable[[str], Any] = json.loads,
 ) -> dict[str, Any]:
-    """Qualify an exact root from local config, caching by config byte hash.
+    """Qualify a project root within an approved boundary, caching by config hash.
 
     This is deliberately not an endpoint, OAuth, ChatGPT-app, or read probe.
     The first use parses the current allowedRoots.  Later uses reuse the receipt
@@ -167,12 +181,13 @@ def ensure_exact_root_qualified(
             {"missing_root": str(root), "config_path": str(config_file), **action},
         ) from exc
 
-    exact = next((item for item in configured_roots if _path_key(item) == _path_key(root)), None)
-    if exact is None:
+    boundaries = [item for item in configured_roots if item.is_dir() and _contains_path(item, root)]
+    allowed_root = max(boundaries, key=lambda item: len(item.parts), default=None)
+    if allowed_root is None:
         action = _next_action(root, configured_roots, registration_url=registration_url)
         raise DevSpacePreflightError(
             "DEVSPACE_EXACT_ROOT_UNAVAILABLE",
-            "the exact project root is not registered in DevSpace allowedRoots",
+            "the exact project root is outside all DevSpace allowedRoots",
             {
                 "missing_root": str(root),
                 "configured_roots": [str(item) for item in configured_roots],
@@ -185,7 +200,7 @@ def ensure_exact_root_qualified(
         "schema": QUALIFICATION_SCHEMA,
         "qualified": True,
         "project_root": str(root),
-        "allowed_root": str(exact),
+        "allowed_root": str(allowed_root),
         "config_path": str(config_file),
         "config_sha256": config_sha256,
         "qualified_at": datetime.now(timezone.utc).isoformat(),

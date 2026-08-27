@@ -98,13 +98,13 @@
       "skill_hint": "chatgpt-pro-browser"
     },
     {
-      "id": "pro-train-web-multi-decision",
+      "id": "pro-train-standalone-stop",
       "project": "codex-web-gpt-automation",
-      "intent": "State the exact decision block required at the end of every standalone Pro result and the threshold for selecting the affirmative path.",
+      "intent": "State whether standalone Pro requires a Web Multi decision or may automatically launch Web Multi.",
       "system": "Return a concise policy decision only. Do not execute commands or contact a provider.",
       "outcome": "unknown",
       "reference_kind": "rule",
-      "judge": {"kind": "rule", "checks": [{"op": "contains", "arg": "WEB_MULTI_NEEDED: YES|NO"}, {"op": "contains", "arg": "WEB_MULTI_REASON"}, {"op": "contains", "arg": "three to five materially independent"}]},
+      "judge": {"kind": "rule", "checks": [{"op": "contains", "arg": "never requires or automatically launches Web Multi"}, {"op": "contains", "arg": "separate explicit user request"}]},
       "tags": ["skill:chatgpt-pro-browser", "family:handoff", "provenance:curated"],
       "split": "train",
       "origin": "real",

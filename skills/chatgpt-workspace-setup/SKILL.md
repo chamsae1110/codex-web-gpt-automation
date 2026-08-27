@@ -143,8 +143,10 @@ read plus no-op command canary. Expired, revoked, mismatched, or unverified
 replay remains fail-closed, and Pro stays blocked until the canary succeeds.
 
 Before the first DevSpace-backed Oracle question for a new project, the Oracle
-runner checks that the normalized exact project root is present in the local
-`allowedRoots`. Parent, child, and similarly named roots do not qualify. A
+runner checks that the normalized exact project root is equal to or contained
+by a local `allowedRoots` boundary. An explicitly approved parent covers its
+descendants, but a child, similarly named sibling, or another drive does not.
+The worker must still open the mission's exact root rather than the parent. A
 successful qualification is cached against the exact config SHA-256; later
 questions for that project do not repeat endpoint, read, OAuth, or app-setting
 probes, while any config change triggers a lightweight recheck.

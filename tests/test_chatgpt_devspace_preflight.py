@@ -69,8 +69,27 @@ def test_first_exact_root_qualification_is_cached_until_config_changes(tmp_path:
     assert changed.value.code == "DEVSPACE_EXACT_ROOT_UNAVAILABLE"
 
 
-@pytest.mark.parametrize("registered_kind", ["parent", "child", "similar"])
-def test_parent_child_or_similar_root_never_qualifies_exact_project(
+def test_registered_parent_boundary_qualifies_exact_project(tmp_path: Path) -> None:
+    module = load_module()
+    boundary = tmp_path / "workspace"
+    project = boundary / "Coin"
+    project.mkdir(parents=True)
+    config = tmp_path / "config.json"
+    write_config(config, [boundary])
+
+    result = module.ensure_exact_root_qualified(
+        project,
+        config_path=config,
+        qualification_root=tmp_path / "qualifications",
+        bootstrap_path=tmp_path / "missing-bootstrap.json",
+    )
+
+    assert result["project_root"] == str(project.resolve())
+    assert result["allowed_root"] == str(boundary.resolve())
+
+
+@pytest.mark.parametrize("registered_kind", ["child", "similar"])
+def test_child_or_similar_root_never_qualifies_exact_project(
     tmp_path: Path,
     registered_kind: str,
 ) -> None:
@@ -96,6 +115,26 @@ def test_parent_child_or_similar_root_never_qualifies_exact_project(
     assert exc.value.code == "DEVSPACE_EXACT_ROOT_UNAVAILABLE"
     assert exc.value.evidence["missing_root"] == str(project.resolve())
     assert exc.value.evidence["configured_roots"] == [str(registered.resolve())]
+
+
+def test_nearest_registered_parent_boundary_is_recorded(tmp_path: Path) -> None:
+    module = load_module()
+    broad = tmp_path / "workspace"
+    narrow = broad / "team"
+    project = narrow / "Coin"
+    project.mkdir(parents=True)
+    config = tmp_path / "config.json"
+    write_config(config, [broad, narrow])
+
+    result = module.ensure_exact_root_qualified(
+        project,
+        config_path=config,
+        qualification_root=tmp_path / "qualifications",
+        bootstrap_path=tmp_path / "missing-bootstrap.json",
+    )
+
+    assert result["project_root"] == str(project.resolve())
+    assert result["allowed_root"] == str(narrow.resolve())
 
 
 def test_missing_root_error_includes_registration_and_preserves_existing_roots(tmp_path: Path) -> None:

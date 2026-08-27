@@ -1244,7 +1244,7 @@ def test_d_coin_missing_exact_root_blocks_before_oracle_or_run_creation(tmp_path
         calls.append("qualification")
         raise runner.DEVSPACE_PREFLIGHT.DevSpacePreflightError(
             "DEVSPACE_EXACT_ROOT_UNAVAILABLE",
-            "the exact project root is not registered in DevSpace allowedRoots",
+            "the exact project root is outside all DevSpace allowedRoots",
             {
                 "missing_root": r"D:\Coin",
                 "registration_url": "https://device.tailnet.ts.net/mcp",

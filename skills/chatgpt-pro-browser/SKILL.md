@@ -13,7 +13,8 @@ answer it returns control to Codex and stops; only an explicit user request may
 add another bounded round to that same conversation. It never starts a
 review-to-implementation chain, authors a
 follow-on implementation stage, or invokes `chatgpt-pro-plan-handoff` on its
-own. If the user asks for comprehensive mode, use `chatgpt-pro-plan-handoff`
+own. It also never requires or automatically launches Web Multi; that remains
+a separate explicit user request. If the user asks for comprehensive mode, use `chatgpt-pro-plan-handoff`
 instead.
 
 Oracle is the only backend for a new Pro run. There is no new agbrowse,
@@ -30,12 +31,16 @@ register, repair, select, or otherwise verify ChatGPT app/settings state on
 each run.
 
 Before the first qualified Pro submission for a new project, the local runner
-must verify that the normalized exact root is present in DevSpace
-`allowedRoots`. A parent, child, or similarly named root is not sufficient.
-The result is cached by exact config hash, so later questions in the same
-project do not repeat endpoint/read probes; a changed config is revalidated.
-Failure returns `DEVSPACE_EXACT_ROOT_UNAVAILABLE` before Oracle or a browser is
-created and points to the complete root-preserving setup preview.
+must verify that the normalized exact root is equal to or contained by one
+DevSpace `allowedRoots` boundary. A deliberately approved parent therefore
+covers all of its descendant projects, while a child, a similarly named
+sibling, or a path on another drive does not. The web worker must still open
+the mission's exact project root; the parent is only a permission boundary and
+is never a workspace substitute. The result is cached by exact config hash, so
+later questions in the same project do not repeat endpoint/read probes; a
+changed config is revalidated. Failure returns
+`DEVSPACE_EXACT_ROOT_UNAVAILABLE` before Oracle or a browser is created and
+points to the complete root-preserving setup preview.
 
 Pro reads the mission and applicable `AGENTS.md` chain completely. Within the
 exact root it is read-only and limited to design, advice, or review: it must not
@@ -53,25 +58,6 @@ evidence or artifacts that DevSpace cannot read. It is never an automatic
 fallback from a DevSpace failure. Build only the declared packet, bind every
 attachment path and SHA-256, and never infer attachments from prose.
 
-## Required Web Multi decision
-
-Every standalone Pro result ends with this exact decision block:
-
-```text
-WEB_MULTI_NEEDED: YES|NO
-WEB_MULTI_REASON: evidence-based reason tied to the decision and alternatives
-```
-
-Pro chooses `YES` only when three to five materially independent regular GPT
-sessions are likely to add decision-relevant alternatives or evidence. Their
-mission carries the same project maximum-context evidence and the durable Pro answer,
-assigns stable lane order, and synthesis/judge criteria. After a durable Pro
-answer says `WEB_MULTI_NEEDED: YES`, Codex starts that ready-to-run Web Multi-GPT Very
-High mission automatically without a routine user
-choice. It waits for the exact Pro session to be terminal first and preserves
-the same-task project serialization contract. A different Codex task owns a separate run namespace and may proceed concurrently. Choose `NO` for a trivial, single-answer, or purely mechanical question. This optional advisory handoff
-does not turn the standalone Pro result into a review-to-implementation chain.
-
 ## Preflight and completion
 
 1. Resolve and hash-validate the tested Oracle compatibility contract.
@@ -82,15 +68,19 @@ does not turn the standalone Pro result into a review-to-implementation chain.
 4. Use a fresh Oracle slug and require Oracle model and transport evidence
    before accepting a send.
 
-The public dispatcher entry points are:
+For an ordinary explicit Pro request, call the live dispatcher directly. It
+performs root, manifest, mutex, Oracle-version, and compatibility validation
+before creating a browser or submitting a prompt:
 
 ```powershell
-python "$env:USERPROFILE\.codex\bin\chatgpt_oracle_dispatch.py" --mode pro --project-root <ROOT> --mission-path <MISSION> --manifest-output <MANIFEST> --dry-run
+python "$env:USERPROFILE\.codex\bin\chatgpt_oracle_dispatch.py" --mode pro --project-root <ROOT> --mission-path <MISSION> --manifest-output <MANIFEST>
 ```
 
-Remove `--dry-run` only after the manifest, project mutex, Oracle version, and
-compatibility hashes pass preflight. New `pro` work uses read-only DevSpace;
-attachment work uses only the separate explicit evidence contract.
+Add `--dry-run` only when previewing a newly changed automation/configuration,
+debugging a manifest, or when the user explicitly asks for a preview. Do not
+run a routine preview immediately before the same live dispatch. New `pro`
+work uses read-only DevSpace; attachment work uses only the separate explicit
+evidence contract.
 
 ## Same-conversation follow-up
 

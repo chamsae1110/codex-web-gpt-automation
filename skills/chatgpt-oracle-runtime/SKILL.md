@@ -35,10 +35,13 @@ external evidence contract and is never an automatic fallback.
 Never infer Pro from task difficulty, invent xhigh, or silently downgrade.
 
 On the first DevSpace-backed submission for a new project, the runner checks
-exact equality with local DevSpace `allowedRoots` before creating the Oracle
-run directory or browser session. It caches success against the config hash
-and rechecks only after config changes. This is a local root guard, not a
-repeated endpoint/read probe or ChatGPT app/settings inspection.
+that its exact root is equal to or contained by a local DevSpace
+`allowedRoots` boundary before creating the Oracle run directory or browser
+session. An approved parent can cover all descendant projects, but the worker
+must still open the mission's exact root and may not substitute that parent.
+The runner caches success against the config hash and rechecks only after
+config changes. This is a local root guard, not a repeated endpoint/read probe
+or ChatGPT app/settings inspection.
 
 ## Manifest
 
@@ -57,16 +60,22 @@ Require schema `codex.chatgpt.oracle-run/v1` with:
 
 ## Run
 
-Preview first:
+For a newly changed automation/configuration, an unfamiliar manifest, or an
+explicit preview request, inspect the exact launch without opening a browser:
 
 ```powershell
 python skills/chatgpt-oracle-runtime/scripts/run_chatgpt_oracle.py run --manifest C:\absolute\oracle-job.json --dry-run
 ```
 
-The preview must include final argv, prompt first line, absolute mission path, SHA-256, and artifact paths without launching Oracle or a browser.
-Use this wrapper preview only. Do not substitute Oracle's own browser `--dry-run`, because a supported Oracle current/LKG runtime may still enter browser preflight.
+The preview must include final argv, prompt first line, absolute mission path,
+SHA-256, and artifact paths without launching Oracle or a browser. Use this
+wrapper preview only. Do not substitute Oracle's own browser `--dry-run`,
+because a supported Oracle current/LKG runtime may still enter browser
+preflight.
 
-Execute only after an explicit live-run request:
+For an ordinary already-supported manifest with explicit live-run authority,
+execute directly; the live runner performs the same fail-closed validation
+before browser creation, so do not precede it with a duplicate routine preview:
 
 ```powershell
 python skills/chatgpt-oracle-runtime/scripts/run_chatgpt_oracle.py run --manifest C:\absolute\oracle-job.json

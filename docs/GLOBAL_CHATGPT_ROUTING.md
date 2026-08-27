@@ -110,10 +110,9 @@ and a unique round key. Raw Oracle follow-up options remain blocked. Each round
 gets a new Oracle run/slug but must prove the unchanged ChatGPT conversation
 and append hash-bound reservation/result receipts. It never starts
 implementation, edits files, or runs commands. A
-separately explicit immutable-evidence request may use `pro-attachment`. Its required
-`WEB_MULTI_NEEDED` decision may start the ready-to-run advisory Web Multi stage
-after the exact Pro session is terminal; that advisory still returns to the
-calling Codex task rather than implementing.
+separately explicit immutable-evidence request may use `pro-attachment`.
+Standalone Pro does not require a Web Multi decision and never launches Web
+Multi automatically; Web Multi remains a separate explicit user request.
 
 `chatgpt-pro-plan-handoff` owns comprehensive mode. Only that staged runner may
 place an optional Pro decision between plan and review and continue afterward

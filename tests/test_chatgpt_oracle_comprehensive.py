@@ -804,7 +804,7 @@ def test_exact_root_preflight_exception_settles_before_layout_without_resubmissi
         attempts += 1
         raise module.RUNNER.OracleRunError(
             "DEVSPACE_EXACT_ROOT_UNAVAILABLE",
-            "the exact project root is not registered in DevSpace allowedRoots",
+            "the exact project root is outside all DevSpace allowedRoots",
             {"missing_root": str(tmp_path)},
         )
 

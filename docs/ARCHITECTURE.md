@@ -27,11 +27,13 @@ flowchart LR
 
 ## Guarded submission
 
-Before a new project sends its first DevSpace-backed question, the normalized
-project root must exactly match one current `allowedRoots` entry. Parent,
-child, same-name, or other-drive paths are not substitutes. The qualification
-is cached against the DevSpace config hash and repeated only when configuration
-changes.
+Before a new project sends its first DevSpace-backed question, its normalized
+exact root must be equal to or contained by one current `allowedRoots`
+boundary. An approved parent covers descendant projects, but the worker still
+opens the mission's exact project root; a child, sibling-prefix, or other-drive
+path is neither a permission match nor a workspace substitute. The
+qualification is cached against the DevSpace config hash and repeated only
+when configuration changes.
 
 Every run records the project, mission bytes, transport, model, effort, and
 artifact identity. Regular web work defaults to the highest supported non-Pro

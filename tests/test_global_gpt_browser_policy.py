@@ -67,16 +67,19 @@ def test_qualified_pro_fails_closed_when_devspace_tools_are_not_exposed() -> Non
     assert "do not loop, manipulate ChatGPT app settings" in flat
 
 
-def test_pro_requires_an_evidence_based_web_multi_decision_and_auto_handoff() -> None:
+def test_pro_stops_without_required_web_multi_or_auto_handoff() -> None:
     value = text(PRO)
-    assert "WEB_MULTI_NEEDED: YES|NO" in value
-    assert "WEB_MULTI_REASON: evidence-based reason" in value
-    assert "three to five materially independent" in value
-    assert "ready-to-run Web Multi-GPT Very\nHigh mission" in value
-    assert "same project maximum-context evidence and the durable Pro answer" in value
-    assert "stable lane order, and synthesis/judge criteria" in value
-    assert "automatically without a routine user\nchoice" in value
-    assert "trivial, single-answer, or purely mechanical question" in value
+    flat = " ".join(value.split())
+    assert "never requires or automatically launches Web Multi" in flat
+    assert "separate explicit user request" in flat
+    assert "WEB_MULTI_NEEDED: YES|NO" not in value
+
+
+def test_supported_pro_live_run_skips_duplicate_routine_preview() -> None:
+    value = text(PRO)
+    flat = " ".join(value.split())
+    assert "call the live dispatcher directly" in flat
+    assert "Do not run a routine preview immediately before the same live dispatch" in flat
 
 
 def test_deep_research_uses_oracle_deep_without_silent_fallback() -> None:

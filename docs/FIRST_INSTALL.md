@@ -391,9 +391,11 @@ python onboard.py status `
 ```
 
 `ready: true`여야 최초 질문을 제출합니다. 새 프로젝트에서는 첫 Oracle 질문 전에
-exact folder가 `allowedRoots`에 있는지만 가볍게 확인하고, config hash가 그대로면
-후속 질문마다 endpoint·앱 설정을 다시 검사하지 않습니다. parent, child, 비슷한
-이름의 폴더는 exact root를 대신할 수 없습니다.
+exact folder가 `allowedRoots` 경계와 같거나 그 아래에 있는지만 가볍게 확인하고,
+config hash가 그대로면 후속 질문마다 endpoint·앱 설정을 다시 검사하지 않습니다.
+명시적으로 허용한 parent는 모든 하위 프로젝트를 포괄하지만, Oracle은 항상 미션의
+exact root를 열어야 하며 parent를 작업공간으로 대신 사용할 수 없습니다. child,
+비슷한 이름의 sibling, 다른 드라이브는 허용 경계로 인정하지 않습니다.
 
 ## 변경별 재연결 기준
 
@@ -407,7 +409,7 @@ exact folder가 `allowedRoots`에 있는지만 가볍게 확인하고, config ha
 
 ## 장애 시 중단 위치
 
-- `DEVSPACE_EXACT_ROOT_UNAVAILABLE`: Oracle/browser를 시작하지 말고 exact root부터 등록합니다.
+- `DEVSPACE_EXACT_ROOT_UNAVAILABLE`: Oracle/browser를 시작하지 말고 exact root 또는 이를 포괄할 승인된 상위 경계를 등록합니다.
 - local `/mcp` 실패: 터널이 아니라 DevSpace 서비스부터 복구합니다.
 - public `/mcp` 실패: 고정 터널 mapping과 OS 시작 서비스를 복구합니다.
 - `DEVSPACE_NATIVE_BINDING_UNAVAILABLE`: setup/recover helper가 exact DevSpace tree와

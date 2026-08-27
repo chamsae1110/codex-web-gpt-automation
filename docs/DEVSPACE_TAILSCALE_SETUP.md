@@ -77,12 +77,15 @@ Oracle composer names the exact project root before the mission path so a
 mission directory cannot be mistaken for the workspace root.
 
 Before the first DevSpace-backed Oracle question in a new project, the runner
-checks that the normalized exact folder is present in local `allowedRoots`.
-Parent, child, and similarly named folders do not qualify. Success is cached
-against the DevSpace config SHA-256, so later questions for the same project do
-not repeat endpoint/read or ChatGPT app checks; changing the config triggers a
-lightweight revalidation. A missing exact root returns
-`DEVSPACE_EXACT_ROOT_UNAVAILABLE` before Oracle or a browser session exists.
+checks that the normalized exact folder is equal to or contained by a local
+`allowedRoots` boundary. An intentionally approved parent covers all of its
+descendants, while a child, similarly named sibling, or another drive does not.
+The Oracle worker still opens the mission's exact project root rather than the
+parent boundary. Success is cached against the DevSpace config SHA-256, so
+later questions for the same project do not repeat endpoint/read or ChatGPT app
+checks; changing the config triggers a lightweight revalidation. A root outside
+every approved boundary returns `DEVSPACE_EXACT_ROOT_UNAVAILABLE` before Oracle
+or a browser session exists.
 
 ## Read-only diagnosis
 
