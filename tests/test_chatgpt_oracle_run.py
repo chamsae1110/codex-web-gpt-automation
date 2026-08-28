@@ -5096,6 +5096,90 @@ def test_terminal_devspace_nonexecution_settlement_accepts_exact_app_tools_unava
     assert proof["signature"] == "terminal-devspace-app-tools-unavailable-no-execution"
 
 
+def test_terminal_devspace_nonexecution_settlement_accepts_exact_core_identity_preflight_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = load_runner()
+    task_id = "11111111-1111-4111-8111-111111111111"
+    monkeypatch.setenv("CODEX_THREAD_ID", task_id)
+    run_dir, hashes = terminal_devspace_nonexecution_run(runner, tmp_path)
+    state_path = run_dir / "state.json"
+    output = run_dir / "output.md"
+    transcript = run_dir / "transcript.md"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["app_name"] = "Chat On Steroids Core"
+    source_mission = Path(state["project_root"]) / "work" / "mission.md"
+    source_mission.parent.mkdir(parents=True)
+    source_mission.write_bytes((run_dir / "mission.md").read_bytes())
+    state["mission"]["path"] = str(source_mission)
+    state["ownership"] = {"mission_sha256": state["mission"]["sha256"]}
+    exact = (
+        "Chat On Steroids Core로 정확한 미션 경로를 직접 읽으려 했으나 거부되었습니다.\n\n"
+        "CALLER_IDENTITY_REQUIRED: a dormant worker chat still belongs to its prime history, "
+        "and the connector could not prove this call belongs to a different conversation. "
+        "No local tool was run. Restore the browser-extension identity path and retry.\n\n"
+        "로컬 도구가 실행되지 않았으므로, 미션 파일이나 `AGENTS.md`를 읽지 않았고 "
+        "프로젝트 파일 변경, 명령 실행, 테스트도 하지 않았습니다. "
+        "다른 앱이나 대체 경로를 사용하지 않고 중단했습니다.\n\n"
+        "TASK_OUTCOME: BLOCKED\n"
+    )
+    output.write_text(exact, encoding="utf-8")
+    transcript.write_text(exact, encoding="utf-8")
+    runner.STATE.write_json_atomic(state_path, state)
+    hashes.update({
+        "expected_state_sha256": runner.STATE.sha256_file(state_path),
+        "expected_output_sha256": runner.STATE.sha256_file(output),
+        "expected_transcript_sha256": runner.STATE.sha256_file(transcript),
+    })
+
+    dry = runner.settle_terminal_devspace_nonexecution_fresh_run(
+        run_dir,
+        confirmation=runner.STATE.USER_AUTHORIZED_FRESH_AFTER_TERMINAL_DEVSPACE_NONEXECUTION,
+        reason="user authorized one immutable retry after repairing exact Core identity provisioning",
+        dry_run=True,
+        **hashes,
+    )
+    assert dry["safe_for_fresh_run"] is True
+    assert dry["auto_retry"] is False
+    assert dry["submission_action"] == "none"
+    assert dry["settlement_payload"]["signature"] == (
+        "terminal-core-caller-identity-unavailable-no-execution"
+    )
+
+    for missing in (
+        "No local tool was run.",
+        "미션 파일이나 `AGENTS.md`를 읽지 않았고 ",
+        "다른 앱이나 대체 경로를 사용하지 않고 중단했습니다.",
+    ):
+        weakened = exact.replace(missing, "")
+        output.write_text(weakened, encoding="utf-8")
+        hashes["expected_output_sha256"] = runner.STATE.sha256_file(output)
+        with pytest.raises(runner.OracleRunError) as rejected:
+            runner.settle_terminal_devspace_nonexecution_fresh_run(
+                run_dir,
+                confirmation=runner.STATE.USER_AUTHORIZED_FRESH_AFTER_TERMINAL_DEVSPACE_NONEXECUTION,
+                reason="this incomplete evidence must remain blocked",
+                dry_run=True,
+                **hashes,
+            )
+        assert rejected.value.code == "TERMINAL_DEVSPACE_NONEXECUTION_EVIDENCE_REQUIRED"
+
+    output.write_text(exact, encoding="utf-8")
+    hashes["expected_output_sha256"] = runner.STATE.sha256_file(output)
+    state["mission"]["path"] = str(tmp_path.parent / "different-project" / "mission.md")
+    runner.STATE.write_json_atomic(state_path, state)
+    hashes["expected_state_sha256"] = runner.STATE.sha256_file(state_path)
+    with pytest.raises(runner.OracleRunError) as wrong_project:
+        runner.settle_terminal_devspace_nonexecution_fresh_run(
+            run_dir,
+            confirmation=runner.STATE.USER_AUTHORIZED_FRESH_AFTER_TERMINAL_DEVSPACE_NONEXECUTION,
+            reason="a different source project must remain blocked",
+            dry_run=True,
+            **hashes,
+        )
+    assert wrong_project.value.code == "TERMINAL_DEVSPACE_NONEXECUTION_EVIDENCE_REQUIRED"
+
+
 def test_terminal_devspace_nonexecution_settlement_rejects_generic_blocker_and_foreign_task(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

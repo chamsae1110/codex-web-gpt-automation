@@ -190,6 +190,7 @@ TERMINAL_DEVSPACE_NONEXECUTION_SETTLEMENT_SCHEMA = (
 TERMINAL_DEVSPACE_NONEXECUTION_SIGNATURES = frozenset((
     "terminal-devspace-checkout-502-no-execution",
     "terminal-devspace-app-tools-unavailable-no-execution",
+    "terminal-core-caller-identity-unavailable-no-execution",
 ))
 USER_AUTHORIZED_FRESH_AFTER_DEVSPACE_READ_ROUTE_REFRESH = (
     "user-authorized-fresh-run-after-devspace-read-route-refresh"
@@ -1919,9 +1920,10 @@ def terminal_devspace_nonexecution_evidence(
     This signature is intentionally narrower than a generic BLOCKED answer.  A
     fresh run is safe only when the durable answer binds the exact project and
     either reports the registered-app checkout 502 with explicit no-work proof,
-    or reports that the exact app exposed no workspace tools and explicitly
-    confirms that it attempted no connector/shell/web fallback and read or
-    modified neither the mission nor AGENTS.md.
+    reports that the exact app exposed no workspace tools, or records the exact
+    Core caller-identity preflight refusal.  Both app cases must explicitly
+    confirm that no alternate connector/shell/web path ran and that neither the
+    mission nor AGENTS.md was read or modified.
     """
     run_id = str(state.get("run_id") or "").strip()
     project_root = str(state.get("project_root") or "").strip()
@@ -1955,6 +1957,22 @@ def terminal_devspace_nonexecution_evidence(
         )
     )
     app_name = str(state.get("app_name") or "").strip().casefold()
+    mission = state.get("mission") if isinstance(state.get("mission"), dict) else {}
+    ownership = state.get("ownership") if isinstance(state.get("ownership"), dict) else {}
+    mission_source = str(mission.get("path") or "").strip()
+    mission_sha256 = str(mission.get("sha256") or "").strip().casefold()
+    core_project_bound = False
+    try:
+        project_path = Path(project_root).expanduser().resolve(strict=True)
+        source_path = Path(mission_source).expanduser().resolve(strict=True)
+        core_project_bound = (
+            (source_path == project_path or project_path in source_path.parents)
+            and re.fullmatch(r"[0-9a-f]{64}", mission_sha256) is not None
+            and str(ownership.get("mission_sha256") or "").strip().casefold()
+            == mission_sha256
+        )
+    except OSError:
+        core_project_bound = False
     korean_tools_unavailable = all(
         needle in folded
         for needle in (
@@ -1979,11 +1997,50 @@ def terminal_devspace_nonexecution_evidence(
         and app_name in folded
         and (korean_tools_unavailable or english_tools_unavailable)
     )
+    core_identity_refusal = all(
+        needle in folded
+        for needle in (
+            "caller_identity_required: a dormant worker chat still belongs to its prime history",
+            "the connector could not prove this call belongs to a different conversation",
+            "no local tool was run",
+            "restore the browser-extension identity path and retry",
+        )
+    )
+    korean_core_nonexecution = all(
+        needle in folded
+        for needle in (
+            "로컬 도구가 실행되지 않았으므로",
+            "미션 파일이나 `agents.md`를 읽지 않았고",
+            "프로젝트 파일 변경",
+            "명령 실행",
+            "테스트",
+            "다른 앱이나 대체 경로를 사용하지 않고 중단",
+        )
+    )
+    english_core_nonexecution = all(
+        any(needle in folded for needle in alternatives)
+        for alternatives in (
+            ("no local tool was run", "no local tools were run"),
+            ("did not read the mission", "didn't read the mission"),
+            ("did not read agents.md", "didn't read agents.md"),
+            ("no project files were changed", "did not change project files"),
+            ("no commands were run", "did not run commands"),
+            ("no tests were run", "did not run tests"),
+            ("no alternate app", "did not try another app"),
+            ("no fallback", "did not try another path"),
+        )
+    )
+    core_identity_unavailable = (
+        app_name == "chat on steroids core"
+        and app_name in folded
+        and core_project_bound
+        and core_identity_refusal
+        and (korean_core_nonexecution or english_core_nonexecution)
+    )
     if (
         not run_id
         or not slug
         or not project_root
-        or project_root.casefold() not in folded
         or transport not in DEVSPACE_TRANSPORTS
         or state.get("terminal_harvested") is not True
         or str(state.get("session_authority") or "") != "terminal"
@@ -1992,15 +2049,25 @@ def terminal_devspace_nonexecution_evidence(
         or marker_matches[0].casefold() != outcome
         or final_nonempty != expected_marker
         or not (
-            (outage and (korean_nonexecution or english_nonexecution))
-            or tools_unavailable
+            (
+                project_root.casefold() in folded
+                and (
+                    (outage and (korean_nonexecution or english_nonexecution))
+                    or tools_unavailable
+                )
+            )
+            or core_identity_unavailable
         )
     ):
         return None
     signature = (
-        "terminal-devspace-app-tools-unavailable-no-execution"
-        if tools_unavailable
-        else "terminal-devspace-checkout-502-no-execution"
+        "terminal-core-caller-identity-unavailable-no-execution"
+        if core_identity_unavailable
+        else (
+            "terminal-devspace-app-tools-unavailable-no-execution"
+            if tools_unavailable
+            else "terminal-devspace-checkout-502-no-execution"
+        )
     )
     return {
         "run_id": run_id,
