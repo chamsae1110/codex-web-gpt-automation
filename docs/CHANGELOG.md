@@ -5,6 +5,7 @@
 - Refuse a Chat On Steroids Core Pro submission before run creation unless the exact persistent Chrome listener was launched with the configured profile, port, and stable extension mirror.
 - Ship a verified controller launcher that preserves incompatible live browsers and never rewrites `DevToolsActivePort`.
 - Recognize only the exact repeated `CALLER_IDENTITY_PENDING` terminal no-execution result for same-task, hash-bound settlement.
+- Accept the exact English repeated-read wording emitted by the current Pro terminal answer while keeping weakened or ambiguous variants locked.
 
 ## 1.20.1 - Assign and gate upstream runtime promotion
 

@@ -5852,6 +5852,77 @@ def test_terminal_devspace_nonexecution_settlement_accepts_current_core_identity
     assert duplicate.value.code == "TERMINAL_DEVSPACE_NONEXECUTION_EVIDENCE_REQUIRED"
 
 
+def test_terminal_devspace_nonexecution_settlement_accepts_exact_english_core_identity_pending(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = load_runner()
+    task_id = "11111111-1111-4111-8111-111111111111"
+    monkeypatch.setenv("CODEX_THREAD_ID", task_id)
+    run_dir, hashes = terminal_devspace_nonexecution_run(runner, tmp_path)
+    state_path = run_dir / "state.json"
+    output = run_dir / "output.md"
+    transcript = run_dir / "transcript.md"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["app_name"] = "Chat On Steroids Core"
+    source_mission = Path(state["project_root"]) / "work" / "mission.md"
+    source_mission.parent.mkdir(parents=True)
+    source_mission.write_bytes((run_dir / "mission.md").read_bytes())
+    state["mission"]["path"] = str(source_mission)
+    state["ownership"] = {"mission_sha256": state["mission"]["sha256"]}
+    exact = (
+        "Chat On Steroids Core could not read the required mission file:\n\n"
+        f"`{source_mission}`\n\n"
+        "The identical Core read call was attempted twice, as required. Both attempts returned the same connector "
+        "error before any local tool execution:\n\n"
+        "> `CALLER_IDENTITY_PENDING: the connector returned without running a local tool so the browser extension "
+        "can bind this exact ChatGPT request. Retry the identical call once; ambiguous or dormant-worker ownership "
+        "will remain blocked.`\n\n"
+        "Because the exact mission file could not be read through Chat On Steroids Core, no repository files were "
+        "inspected or modified and no mission operations were performed.\n\n"
+        "TASK_OUTCOME: BLOCKED\n"
+    )
+    output.write_text(exact, encoding="utf-8")
+    transcript.write_text(exact, encoding="utf-8")
+    runner.STATE.write_json_atomic(state_path, state)
+    hashes.update({
+        "expected_state_sha256": runner.STATE.sha256_file(state_path),
+        "expected_output_sha256": runner.STATE.sha256_file(output),
+        "expected_transcript_sha256": runner.STATE.sha256_file(transcript),
+    })
+
+    dry = runner.settle_terminal_devspace_nonexecution_fresh_run(
+        run_dir,
+        confirmation=runner.STATE.USER_AUTHORIZED_FRESH_AFTER_TERMINAL_DEVSPACE_NONEXECUTION,
+        reason="owner later authorized one retry after installing the one-use Core caller grant",
+        dry_run=True,
+        **hashes,
+    )
+    assert dry["safe_for_fresh_run"] is True
+    assert dry["auto_retry"] is False
+    assert dry["submission_action"] == "none"
+    assert dry["settlement_payload"]["signature"] == (
+        "terminal-core-caller-identity-bootstrap-pending-no-execution"
+    )
+
+    for missing in (
+        "attempted twice, as required",
+        "before any local tool execution",
+        "no repository files were inspected or modified",
+        "no mission operations were performed",
+    ):
+        output.write_text(exact.replace(missing, ""), encoding="utf-8")
+        hashes["expected_output_sha256"] = runner.STATE.sha256_file(output)
+        with pytest.raises(runner.OracleRunError) as rejected:
+            runner.settle_terminal_devspace_nonexecution_fresh_run(
+                run_dir,
+                confirmation=runner.STATE.USER_AUTHORIZED_FRESH_AFTER_TERMINAL_DEVSPACE_NONEXECUTION,
+                reason="weakened exact English pending evidence must remain blocked",
+                dry_run=True,
+                **hashes,
+            )
+        assert rejected.value.code == "TERMINAL_DEVSPACE_NONEXECUTION_EVIDENCE_REQUIRED"
+
+
 def test_terminal_devspace_nonexecution_settlement_rejects_generic_blocker_and_foreign_task(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

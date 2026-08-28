@@ -2213,7 +2213,24 @@ def terminal_devspace_nonexecution_evidence(
             "미션 파일을 읽지 못했으므로 저장소 지침 확인 및 미션 실행은 진행하지 않았습니다",
         )
     ) and folded.count("caller_identity_pending:") == 1
-    core_identity_pending = legacy_core_identity_pending or current_core_identity_pending
+    english_current_core_identity_pending = all(
+        needle in folded
+        for needle in (
+            "chat on steroids core could not read the required mission file",
+            mission_source.casefold(),
+            "the identical core read call was attempted twice, as required",
+            "both attempts returned the same connector error before any local tool execution",
+            "caller_identity_pending: the connector returned without running a local tool so the browser extension can bind this exact chatgpt request",
+            "retry the identical call once; ambiguous or dormant-worker ownership will remain blocked",
+            "because the exact mission file could not be read through chat on steroids core",
+            "no repository files were inspected or modified and no mission operations were performed",
+        )
+    ) and folded.count("caller_identity_pending:") == 1
+    core_identity_pending = (
+        legacy_core_identity_pending
+        or current_core_identity_pending
+        or english_current_core_identity_pending
+    )
     korean_core_nonexecution = all(
         needle in folded
         for needle in (

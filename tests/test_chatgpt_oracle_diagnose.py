@@ -1001,6 +1001,64 @@ def test_current_core_identity_pending_has_its_own_bounded_signature(tmp_path: P
     )
 
 
+def test_exact_english_core_identity_pending_has_its_own_bounded_signature(
+    tmp_path: Path,
+) -> None:
+    module = load()
+    state_root = tmp_path / "oracle-state"
+    project_root = state_root / "project"
+    mission_path = project_root / "work" / "mission.md"
+    mission_path.parent.mkdir(parents=True)
+    mission_path.write_text("exact mission", encoding="utf-8")
+    exact = (
+        "Chat On Steroids Core could not read the required mission file:\n\n"
+        f"`{mission_path}`\n\n"
+        "The identical Core read call was attempted twice, as required. Both attempts returned the same "
+        "connector error before any local tool execution:\n\n"
+        "> `CALLER_IDENTITY_PENDING: the connector returned without running a local tool so the browser extension "
+        "can bind this exact ChatGPT request. Retry the identical call once; ambiguous or dormant-worker ownership "
+        "will remain blocked.`\n\n"
+        "Because the exact mission file could not be read through Chat On Steroids Core, no repository files were "
+        "inspected or modified and no mission operations were performed.\n\n"
+        "TASK_OUTCOME: BLOCKED\n"
+    )
+    run_dir = write_run(
+        state_root,
+        "e" * 12,
+        status="attention_required",
+        output=exact,
+        session_authority="terminal",
+        terminal_harvested=True,
+        task_outcome="blocked",
+    )
+    state_path = run_dir / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state.update({
+        "transport": "pro-devspace",
+        "app_name": "Chat On Steroids Core",
+        "mission": {"path": str(mission_path), "sha256": "a" * 64},
+        "ownership": {"mission_sha256": "a" * 64},
+    })
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    verdict = module.diagnose(state_root)["unresolved_runs"][0]
+
+    assert verdict["bucket"] == "terminal-task-not-executed"
+    assert verdict["signature"] == (
+        "terminal-core-caller-identity-bootstrap-pending-no-execution"
+    )
+
+    for missing in (
+        "attempted twice, as required",
+        "before any local tool execution",
+        "no repository files were inspected or modified",
+        "no mission operations were performed",
+    ):
+        (run_dir / "output.md").write_text(exact.replace(missing, ""), encoding="utf-8")
+        verdict = module.diagnose(state_root)["unresolved_runs"][0]
+        assert verdict["signature"] == "durable-output-reports-blocked"
+
+
 def test_terminal_devspace_read_chunk_exposure_failure_has_bounded_signature(
     tmp_path: Path,
 ) -> None:
