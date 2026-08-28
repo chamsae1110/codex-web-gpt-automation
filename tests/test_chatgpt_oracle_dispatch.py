@@ -296,9 +296,10 @@ def test_settled_prebrowser_owner_dispatch_manifest_reaches_runner_launch(
             command, 0, stdout="oracle 0.18.0\n", stderr=""
         ),
         popen_factory=popen,
+        compat_factory=lambda version: {"ok": True, "version": version},
     )
 
-    assert result["ok"] is True
+    assert result["ok"] is True, json.dumps(result, indent=2)
     assert len(launched) == 1
     assert "--browser-attach-running" in launched[0]
     assert launched[0][launched[0].index("--remote-chrome") + 1] == "127.0.0.1:19356"
