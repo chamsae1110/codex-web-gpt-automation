@@ -972,6 +972,20 @@ def thinking_time_unknown_outcome_popen(command, **kwargs):
     return Process(1, [])
 
 
+def thinking_time_chip_not_found_popen(command, **kwargs):
+    kwargs["stdout"].write(
+        b"oracle 0.18.0\n"
+        b"Session: oracle-test-thinking-time-chip\n"
+        b"Launching browser mode (target=GPT-5.6 Sol; requested=gpt-5.6-sol).\n"
+        b"ERROR: Thinking time: chip not found (requested Pro); "
+        b"refusing to submit without confirmed Pro.\n"
+        b"User error (browser-automation): Thinking time: chip not found "
+        b"(requested Pro); refusing to submit without confirmed Pro.\n"
+    )
+    kwargs["stdout"].flush()
+    return Process(1, [])
+
+
 def profile_copy_ebusy_popen(command, **kwargs):
     source = Path(command[command.index("--copy-profile") + 1]) / "Default" / "Network" / "Cookies"
     destination = Path(kwargs["env"]["TEMP"]) / "oracle-browser-test" / "Default" / "Network" / "Cookies"
@@ -2408,6 +2422,28 @@ def test_thinking_time_unknown_outcome_is_proven_pre_submit_and_releases_project
         runner.STATE.load_manifest(pro_manifest(tmp_path)).run_root,
         tmp_path,
     ) == []
+
+
+def test_thinking_time_chip_not_found_is_proven_pre_submit_and_releases_project(tmp_path: Path) -> None:
+    runner = load_runner()
+    seed = tmp_path.parent / f"{tmp_path.name}-profile"
+    seed.mkdir(parents=True)
+    result = execute_run(
+        runner,
+        pro_manifest(tmp_path, run_id="2" * 32, copy_profile=str(seed)),
+        run_factory=version_runner,
+        popen_factory=thinking_time_chip_not_found_popen,
+    )
+    run_dir = Path(result["run_dir"])
+    state = runner.STATE.load_state(run_dir / "state.json")
+
+    assert result["status"] == "pre_submit_failed"
+    assert result["safe_for_fresh_run"] is True
+    assert state["session_authority"] == "pre_submit"
+    assert state["transport_status"] == "failed_pre_submit"
+    assert state["task_outcome"] == "not_executed"
+    assert state["pre_submit_failure"]["code"] == "ORACLE_THINKING_TIME_PRE_SUBMIT_FAILED"
+    assert state["pre_submit_failure"]["requested_level"] == "Pro"
 
 
 def test_profile_copy_ebusy_is_proven_pre_submit_and_releases_project(tmp_path: Path) -> None:

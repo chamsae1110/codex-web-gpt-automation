@@ -501,6 +501,7 @@ class FakeElement extends EventTarget {{
   getAttribute(name) {{ return Object.hasOwn(this.attrs, name) ? this.attrs[name] : null; }}
   getBoundingClientRect() {{ return this.visible ? {{ width: 240, height: 36 }} : {{ width: 0, height: 0 }}; }}
   focus() {{}}
+  dispatchEvent(event) {{ this.__dispatch?.(event); return true; }}
   matches(selector) {{ return selector.includes('__composer-pill'); }}
   querySelector() {{ return null; }}
   querySelectorAll() {{ return []; }}
@@ -517,8 +518,8 @@ function makeMenu(
   otherModelVisible = true,
   menuConfig = {{}},
 ) {{
-  const summaries = summarySpecs.map(
-    (spec) => new FakeElement(
+  const summaries = summarySpecs.map((spec) => {{
+    const summary = new FakeElement(
       spec.text,
       {{
         'data-testid': 'composer-model-picker-slider-simple-view',
@@ -526,8 +527,25 @@ function makeMenu(
         ...(spec.attrs ?? {{}}),
       }},
       spec.visible ?? true,
-    ),
-  );
+    );
+    if (spec.slider) {{
+      const slider = new FakeElement('', {{
+        role: 'slider',
+        'aria-valuenow': spec.slider.now,
+        'aria-valuemax': spec.slider.max,
+      }});
+      slider.__dispatch = (event) => {{
+        if (event?.type !== 'keydown' || event?.key !== 'ArrowRight') return;
+        slider.attrs['aria-valuenow'] = '5';
+        summary.textContent = spec.slider.afterText;
+        if (spec.slider.afterAriaLabel !== undefined) {{
+          summary.attrs['aria-label'] = spec.slider.afterAriaLabel;
+        }}
+      }};
+      summary.querySelector = (selector) => selector.includes('aria-valuenow') ? slider : null;
+    }}
+    return summary;
+  }});
   const advanced = new FakeElement('GPT-5.6 Sol GPT-5.5', {{ 'data-testid': 'composer-model-picker-slider-advanced-view' }});
   const model = new FakeElement(
     modelText,
@@ -673,6 +691,25 @@ const cases = {{
     openedButtonText: '추론 수준',
     summaries: [{{ text: 'Pro, 5개 중 5번째.왼쪽/오른쪽 화살표 키로 성능을 조정합니다.' }}],
   }}),
+  englishSwitch: await runCase({{
+    summaries: [{{
+      text: 'Extra High, 4 of 5.Use Left and Right arrow keys to adjust power.',
+      slider: {{
+        now: '4', max: '5',
+        afterText: 'Pro, 5 of 5.Use Left and Right arrow keys to adjust power.',
+      }},
+    }}],
+  }}),
+  koreanSwitch: await runCase({{
+    buttonText: '추론 수준',
+    summaries: [{{
+      text: '매우 높음, 5개 중 4번째.왼쪽/오른쪽 화살표 키로 성능을 조정합니다.',
+      slider: {{
+        now: '4', max: '5',
+        afterText: 'Pro, 5개 중 5번째.왼쪽/오른쪽 화살표 키로 성능을 조정합니다.',
+      }},
+    }}],
+  }}),
   proWithoutGpt56: await runCase({{
     menuOpen: false,
     buttonText: 'Pro',
@@ -707,6 +744,12 @@ const cases = {{
   disconnectedMenu: await runCase({{ menuConfig: {{ connected: false }} }}),
   wrongModel: await runCase({{ modelText: 'GPT-5.5' }}),
   wrongPower: await runCase({{ summaries: [{{ text: 'Extra High, 4 of 5.Use Left and Right arrow keys to adjust power.' }}] }}),
+  wrongSliderMaximum: await runCase({{
+    summaries: [{{
+      text: '매우 높음, 5개 중 4번째.왼쪽/오른쪽 화살표 키로 성능을 조정합니다.',
+      slider: {{ now: '4', max: '6', afterText: 'Pro, 5개 중 5번째' }},
+    }}],
+  }}),
   unrelatedMenu: await runCase({{
     modelText: 'GPT-5.5',
     summaries: [{{ text: 'Extra High, 4 of 5.Use Left and Right arrow keys to adjust power.' }}],
@@ -775,8 +818,13 @@ console.log(JSON.stringify(cases));
             "ok": True,
             "logs": ["[browser] Thinking time: Pro, 5 of 5 (already selected)"],
         }, (name, payload[name])
+    for name in ("englishSwitch", "koreanSwitch"):
+        assert payload[name] == {
+            "ok": True,
+            "logs": ["[browser] Thinking time: Pro, 5 of 5"],
+        }, (name, payload[name])
     for name, result in payload.items():
-        if name in {"positive", "koreanOpen", "koreanClosed"}:
+        if name in {"positive", "koreanOpen", "koreanClosed", "englishSwitch", "koreanSwitch"}:
             continue
         assert result["ok"] is False, name
         assert "refusing to submit without confirmed Pro" in result["error"], name

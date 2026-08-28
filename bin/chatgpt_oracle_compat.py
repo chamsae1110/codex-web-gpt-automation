@@ -224,14 +224,16 @@ PATCHES = {
     "dist/src/browser/actions/thinkingTime.js": {
         "patch": "thinkingTime.gpt56-pro-pill.patch",
         "pristine": "3d9d06b08417bca3b2d646eb4d46887d26c5de7c068d1e995c73b6b6e2f61199",
-        "patched": "6c2eb5e39e3ca9cc426dae03f26dbdb782c70d67bb6db73322a5f86140b88600",
+        "patched": "d6981bf7610a702bdf85c8933e98fe898bb08b2592294c8efba652483b46ffe7",
         "legacy_patched": [
+            "6c2eb5e39e3ca9cc426dae03f26dbdb782c70d67bb6db73322a5f86140b88600",
             "52d8e002530323e4bf91a69c450a68a497f9d472899f77138aa951c2940736ee",
             "141933dd09fee046d6c293197e80c5ad1a9dd1e46035bfbfc50f1abf44af39c7",
             "91b58f27d9ce002c75cc5cb03867fe50486f1b884fe5822f697c2e58a11437b6",
             "96751b74022e1599a976118971a48639017ea82a999166edc0b95f79b35db2f2",
         ],
         "legacy_patches": {
+            "6c2eb5e39e3ca9cc426dae03f26dbdb782c70d67bb6db73322a5f86140b88600": "thinkingTime.gpt56-pro-pill.v5.patch",
             "52d8e002530323e4bf91a69c450a68a497f9d472899f77138aa951c2940736ee": "thinkingTime.gpt56-pro-pill.v1.patch",
             "141933dd09fee046d6c293197e80c5ad1a9dd1e46035bfbfc50f1abf44af39c7": "thinkingTime.gpt56-pro-pill.v2.patch",
             "91b58f27d9ce002c75cc5cb03867fe50486f1b884fe5822f697c2e58a11437b6": "thinkingTime.gpt56-pro-pill.v3.patch",

@@ -67,6 +67,7 @@
     "bin/oracle-compat/0.18.0/thinkingTime.gpt56-pro-pill.v2.patch",
     "bin/oracle-compat/0.18.0/thinkingTime.gpt56-pro-pill.v3.patch",
     "bin/oracle-compat/0.18.0/thinkingTime.gpt56-pro-pill.v4.patch",
+    "bin/oracle-compat/0.18.0/thinkingTime.gpt56-pro-pill.v5.patch",
     "bin/chatgpt_oracle_state.py",
     "bin/chatgpt_oracle_profiles.py",
     "bin/chatgpt_oracle_dispatch.py",

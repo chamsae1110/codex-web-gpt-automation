@@ -238,7 +238,7 @@ ORACLE_MODEL_OPTION_MISSING_PRE_SUBMIT_RE = re.compile(
     r'in the model switcher\. Available: (?P<available>[^\r\n]{1,1000})\.$'
 )
 ORACLE_THINKING_TIME_PRE_SUBMIT_RE = re.compile(
-    r"Thinking time: (?:selection unverified \(requested |unknown outcome selecting )"
+    r"Thinking time: (?:selection unverified \(requested |option not found \(requested |chip not found \(requested |unknown outcome selecting )"
     r"(?P<requested>[^);]+)\)?; refusing to submit without confirmed (?P<required>[^.]+)\.",
     re.IGNORECASE,
 )
