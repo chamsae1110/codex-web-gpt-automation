@@ -5,6 +5,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPTS = ROOT / "scripts"
 
@@ -89,6 +91,30 @@ def test_golden_path_smoke_never_submits_or_launches_a_browser() -> None:
     assert "dry_run=True" in source
     assert "dry_run=False" not in source
     assert '"submitted_question": False' in source
+
+
+def test_golden_path_smoke_accepts_the_explicit_steroids_pro_attach_contract(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    smoke = load("golden_path_steroids_test", SCRIPTS / "run_golden_path_smoke.py")
+    profile = tmp_path / "steroids-profile"
+    profile.mkdir()
+    (profile / "DevToolsActivePort").write_text(
+        "19356\n/devtools/browser/exact\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("CODEX_CHATGPT_REGULAR_WEB_MODE", "pro")
+    monkeypatch.setenv("CODEX_CHATGPT_APP_NAME", "Chat On Steroids Core")
+    monkeypatch.setenv("ORACLE_PERSISTENT_CDP_ENDPOINT", "127.0.0.1:19356")
+    monkeypatch.setenv("ORACLE_PERSISTENT_BROWSER_PROFILE", str(profile.resolve()))
+
+    result = smoke.run_smoke(bin_root=ROOT / "bin")
+
+    assert result["ok"] is True, result["failed_checks"]
+    details = {item["check"]: item["detail"] for item in result["checks"]}
+    assert details["manifest_loads"]["transport"] == "pro-devspace"
+    assert details["manifest_loads"]["app_name"] == "Chat On Steroids Core"
+    assert details["argv_hides_browser_window"]["persistent_attach"] is True
+    assert details["argv_requests_extra_high_thinking"]["expected"] == "pro"
 
 
 def test_ci_workflow_runs_the_fast_gate_and_golden_path_smoke() -> None:

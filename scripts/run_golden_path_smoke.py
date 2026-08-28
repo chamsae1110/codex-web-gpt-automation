@@ -71,7 +71,11 @@ def run_smoke(*, bin_root: Path) -> dict[str, Any]:
 
         config = state.load_manifest(manifest_path)
         record("manifest_loads", True, {"transport": config.transport, "app_name": config.app_name})
-        record("devspace_transport_selected", config.transport == "devspace" and bool(config.app_name))
+        record(
+            "devspace_transport_selected",
+            config.transport in {"devspace", "pro-devspace"} and bool(config.app_name),
+            {"resolved_transport": config.transport},
+        )
 
         prompt = state.composer_prompt(config) if hasattr(state, "composer_prompt") else None
         if prompt is None:
@@ -86,14 +90,25 @@ def run_smoke(*, bin_root: Path) -> dict[str, Any]:
         argv = [str(item) for item in (preview.get("argv") or [])]
         record("dry_run_preview_ok", bool(preview.get("ok")), {"argv_length": len(argv)})
         record("argv_never_submits_files", "--file" not in argv)
-        record("argv_hides_browser_window", argv.count("--browser-hide-window") == 1)
+        persistent_attach = config.browser_attach_port is not None
+        record(
+            "argv_hides_browser_window",
+            argv.count("--browser-hide-window") == (0 if persistent_attach else 1),
+            {"persistent_attach": persistent_attach},
+        )
         record("argv_selects_a_model", "--model" in argv and "--browser-model-strategy" in argv)
-        record("argv_requests_extra_high_thinking", "extra-high" in argv)
+        expected_thinking = "pro" if config.transport == "pro-devspace" else "extra-high"
+        record(
+            "argv_requests_extra_high_thinking",
+            argv[argv.index("--browser-thinking-time") + 1] == expected_thinking,
+            {"expected": expected_thinking},
+        )
         profile_copy_supported = state.profile_copy_is_supported()
         record(
             "profile_copy_matches_host_capability",
-            ("--copy-profile" in argv) == bool(profile_copy_supported and config.copy_profile is not None),
-            {"host_supports_copy": bool(profile_copy_supported)},
+            ("--copy-profile" in argv)
+            == bool(not persistent_attach and profile_copy_supported and config.copy_profile is not None),
+            {"host_supports_copy": bool(profile_copy_supported), "persistent_attach": persistent_attach},
         )
         record("lifecycle_vocabulary_is_bounded", len(state.LIFECYCLE_STATES) == 4)
 
