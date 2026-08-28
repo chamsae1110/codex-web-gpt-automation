@@ -1,0 +1,98 @@
+--- a/dist/src/browser/actions/thinkingTime.js
++++ b/dist/src/browser/actions/thinkingTime.js
+@@ -452,6 +452,63 @@ function buildThinkingTimeExpression(level, desiredModel) {
+       ...extra,
+       diagnostic: collectPickerDiagnostic(),
+     });
++    const collectCurrentGpt56SolProProof = () => {
++      const result = {
++        passed: false,
++        intelligenceMenus: 0,
++        selectedModel: false,
++        proPowerSummary: false,
++      };
++      if (!TARGET_IS_GPT56_MODEL || TARGET_LEVEL !== 'pro') return result;
++      const menus = Array.from(document.querySelectorAll(MENU_CONTAINER_SELECTOR)).filter(
++        (menu) => isVisible(menu) && isIntelligenceEffortMenu(menu),
++      );
++      result.intelligenceMenus = menus.length;
++      for (const menu of menus) {
++        const selectedModel = Array.from(
++          menu.querySelectorAll(
++            '[role="menuitemradio"][aria-checked="true"], [role="option"][aria-selected="true"], [role="menuitemradio"][data-state="checked"]',
++          ),
++        ).some((node) => {
++          if (!isVisible(node)) return false;
++          const label = normalize(
++            (node.textContent ?? '') + ' ' + (node.getAttribute?.('aria-label') ?? ''),
++          );
++          return label === 'gpt 5 6 sol';
++        });
++        const proPowerSummary = Array.from(
++          menu.querySelectorAll('[data-testid="composer-model-picker-slider-simple-view"]'),
++        ).some((node) => {
++          if (!isVisible(node)) return false;
++          const label = normalize(
++            (node.textContent ?? '') + ' ' + (node.getAttribute?.('aria-label') ?? ''),
++          );
++          const compact = Array.from(label)
++            .filter((character) =>
++              (character >= 'a' && character <= 'z') ||
++              (character >= '0' && character <= '9'))
++            .join('');
++          return hasPhrase(label, 'pro') && compact.includes('5of5');
++        });
++        result.selectedModel ||= selectedModel;
++        result.proPowerSummary ||= proPowerSummary;
++        if (selectedModel && proPowerSummary) {
++          result.passed = true;
++          break;
++        }
++      }
++      return result;
++    };
++    const waitForStableCurrentGpt56SolProProof = async () => {
++      const deadline = performance.now() + INTELLIGENCE_WAIT_MS;
++      let consecutive = 0;
++      while (performance.now() < deadline) {
++        consecutive = collectCurrentGpt56SolProProof().passed ? consecutive + 1 : 0;
++        if (consecutive >= 2) return true;
++        await sleep(100);
++      }
++      return false;
++    };
+     const findOptionInMenu = (menu, modelKindOverride = null) => {
+       // Container controls reveal other controls; they are not tiers you can pick.
+       // Two shapes exist and both can collide with a tier label: a submenu opener
+@@ -730,10 +787,16 @@ function buildThinkingTimeExpression(level, desiredModel) {
+         modelKindFromNode(trigger) ||
+         effectiveTargetModelKind();
+       const option = findOption();
+-      if (!option && TARGET_IS_GPT56_MODEL && TARGET_LEVEL === 'heavy') {
+-        // GPT-5.6 has no "heavy" tier: Pro is the closest thing. Accept a pill that
+-        // is already on Pro as satisfying the request, but never click Pro to get
+-        // there, and never let this stand in for post-click verification.
++      if (
++        !option &&
++        TARGET_IS_GPT56_MODEL &&
++        (TARGET_LEVEL === 'heavy' || TARGET_LEVEL === 'pro')
++      ) {
++        // GPT-5.6's unified picker can expose the already-selected Pro tier only
++        // through the composer pill and advanced-view summary, without a selectable
++        // Pro row. Accept that existing Pro proof for an explicit Pro request (and
++        // the legacy heavy alias), but never click a lower tier or treat a model pill
++        // as effort proof.
+         const pill = freshComposerTrigger(trigger) || findModelButton();
+         const pillLabel = normalize(
+           (pill?.textContent ?? '') + ' ' + (pill?.getAttribute?.('aria-label') ?? ''),
+@@ -1069,6 +1132,10 @@ function buildThinkingTimeExpression(level, desiredModel) {
+       while (performance.now() < deadline) {
+         const menu = findVisibleEffortMenu(composerEffortPill);
+         if (menu) {
++          if (await waitForStableCurrentGpt56SolProProof()) {
++            closeOpenMenus();
++            return { status: 'already-selected', label: 'Pro, 5 of 5' };
++          }
+           const proEffortResult = await selectProEffortFromSubmenu();
+           if (proEffortResult) {
+           return proEffortResult;

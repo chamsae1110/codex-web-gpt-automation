@@ -1,0 +1,158 @@
+--- a/dist/src/browser/actions/thinkingTime.js
++++ b/dist/src/browser/actions/thinkingTime.js
+@@ -452,6 +452,104 @@ function buildThinkingTimeExpression(level, desiredModel) {
+       ...extra,
+       diagnostic: collectPickerDiagnostic(),
+     });
++    const classifySelectedState = (node) => {
++      const ariaChecked = node?.getAttribute?.('aria-checked');
++      const ariaSelected = node?.getAttribute?.('aria-selected');
++      const dataSelected = node?.getAttribute?.('data-selected');
++      const dataState = normalize(node?.getAttribute?.('data-state') ?? '');
++      const positive =
++        ariaChecked === 'true' ||
++        ariaSelected === 'true' ||
++        dataSelected === 'true' ||
++        ['checked', 'selected', 'on', 'true'].includes(dataState);
++      const contradictory =
++        (ariaChecked !== null && ariaChecked !== 'true') ||
++        (ariaSelected !== null && ariaSelected !== 'true') ||
++        (dataSelected !== null && dataSelected !== 'true') ||
++        (Boolean(dataState) &&
++          !['checked', 'selected', 'on', 'true'].includes(dataState));
++      return { positive, contradictory };
++    };
++    const normalizeProPowerSummary = (value) => (value || '')
++      .normalize('NFC')
++      .toLowerCase()
++      .replace(/[^a-z0-9\uac00-\ud7a3]+/g, ' ')
++      .replace(/\\s+/g, ' ')
++      .trim();
++    const isExactCurrentProPowerSummary = (value) => {
++      const label = normalizeProPowerSummary(value);
++      if (!label) return null;
++      return (
++        label === 'pro 5 of 5' ||
++        label === 'pro 5 of 5 use left and right arrow keys to adjust power' ||
++        label === 'pro 5개 중 5번째' ||
++        label === 'pro 5개 중 5번째 왼쪽 오른쪽 화살표 키로 성능을 조정합니다'
++      );
++    };
++    const collectCurrentGpt56SolProProof = (menu) => {
++      const result = {
++        passed: false,
++        selectedModel: false,
++        proPowerSummary: false,
++      };
++      if (
++        !TARGET_IS_GPT56_MODEL ||
++        TARGET_LEVEL !== 'pro' ||
++        !(menu instanceof HTMLElement) ||
++        !menu.isConnected ||
++        !isVisible(menu) ||
++        !isIntelligenceEffortMenu(menu)
++      ) return result;
++      const modelStates = Array.from(
++        menu.querySelectorAll('[role="menuitemradio"], [role="option"]'),
++      )
++        .filter(isVisible)
++        .map((node) => ({
++          node,
++          disabled: isOptionDisabled(node),
++          ...classifySelectedState(node),
++        }));
++      if (
++        modelStates.some(
++          (state) => state.positive && (state.contradictory || state.disabled),
++        )
++      ) {
++        return result;
++      }
++      const selectedModels = modelStates
++        .filter((state) => state.positive)
++        .map((state) => state.node);
++      if (selectedModels.length === 1) {
++        const node = selectedModels[0];
++        const labels = [node.textContent, node.getAttribute?.('aria-label')]
++          .map(normalize)
++          .filter(Boolean);
++        result.selectedModel =
++          labels.length > 0 && labels.every((label) => label === 'gpt 5 6 sol');
++      }
++      const summaries = Array.from(
++        menu.querySelectorAll('[data-testid="composer-model-picker-slider-simple-view"]'),
++      ).filter(isVisible);
++      if (summaries.length === 1 && !isOptionDisabled(summaries[0])) {
++        const labels = [summaries[0].textContent, summaries[0].getAttribute?.('aria-label')]
++          .map(isExactCurrentProPowerSummary)
++          .filter((value) => value !== null);
++        result.proPowerSummary = labels.length > 0 && labels.every(Boolean);
++      }
++      result.passed = result.selectedModel && result.proPowerSummary;
++      return result;
++    };
++    const waitForStableCurrentGpt56SolProProof = async (menu) => {
++      const deadline = performance.now() + INTELLIGENCE_WAIT_MS;
++      let consecutive = 0;
++      while (performance.now() < deadline) {
++        if (!menu?.isConnected || !isVisible(menu)) return false;
++        consecutive = collectCurrentGpt56SolProProof(menu).passed ? consecutive + 1 : 0;
++        if (consecutive >= 2) return true;
++        await sleep(100);
++      }
++      return false;
++    };
+     const findOptionInMenu = (menu, modelKindOverride = null) => {
+       // Container controls reveal other controls; they are not tiers you can pick.
+       // Two shapes exist and both can collide with a tier label: a submenu opener
+@@ -730,10 +828,16 @@ function buildThinkingTimeExpression(level, desiredModel) {
+         modelKindFromNode(trigger) ||
+         effectiveTargetModelKind();
+       const option = findOption();
+-      if (!option && TARGET_IS_GPT56_MODEL && TARGET_LEVEL === 'heavy') {
+-        // GPT-5.6 has no "heavy" tier: Pro is the closest thing. Accept a pill that
+-        // is already on Pro as satisfying the request, but never click Pro to get
+-        // there, and never let this stand in for post-click verification.
++      if (
++        !option &&
++        TARGET_IS_GPT56_MODEL &&
++        (TARGET_LEVEL === 'heavy' || TARGET_LEVEL === 'pro')
++      ) {
++        // GPT-5.6's unified picker can expose the already-selected Pro tier only
++        // through the composer pill and advanced-view summary, without a selectable
++        // Pro row. Accept that existing Pro proof for an explicit Pro request (and
++        // the legacy heavy alias), but never click a lower tier or treat a model pill
++        // as effort proof.
+         const pill = freshComposerTrigger(trigger) || findModelButton();
+         const pillLabel = normalize(
+           (pill?.textContent ?? '') + ' ' + (pill?.getAttribute?.('aria-label') ?? ''),
+@@ -987,6 +1091,18 @@ function buildThinkingTimeExpression(level, desiredModel) {
+     };
+     let composerEffortPill = findComposerEffortPill();
+     let modelBtn = findModelButton();
++    if (TARGET_IS_GPT56_MODEL && TARGET_LEVEL === 'pro') {
++      const visibleIntelligenceMenus = Array.from(
++        document.querySelectorAll(MENU_CONTAINER_SELECTOR),
++      ).filter((menu) => isVisible(menu) && isIntelligenceEffortMenu(menu));
++      if (
++        visibleIntelligenceMenus.length === 1 &&
++        await waitForStableCurrentGpt56SolProProof(visibleIntelligenceMenus[0])
++      ) {
++        closeOpenMenus();
++        return { status: 'already-selected', label: 'Pro, 5 of 5' };
++      }
++    }
+     const modelKindFromLegacyTrailing = (trailing) => {
+       const row = trailing.closest?.(
+         '[role="menuitem"], [role="menuitemradio"], [data-radix-collection-item]',
+@@ -1069,6 +1185,10 @@ function buildThinkingTimeExpression(level, desiredModel) {
+       while (performance.now() < deadline) {
+         const menu = findVisibleEffortMenu(composerEffortPill);
+         if (menu) {
++          if (await waitForStableCurrentGpt56SolProProof(menu)) {
++            closeOpenMenus();
++            return { status: 'already-selected', label: 'Pro, 5 of 5' };
++          }
+           const proEffortResult = await selectProEffortFromSubmenu();
+           if (proEffortResult) {
+           return proEffortResult;

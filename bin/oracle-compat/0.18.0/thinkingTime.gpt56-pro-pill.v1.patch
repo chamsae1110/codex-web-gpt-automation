@@ -1,0 +1,23 @@
+--- a/dist/src/browser/actions/thinkingTime.js
++++ b/dist/src/browser/actions/thinkingTime.js
+@@ -730,10 +730,16 @@ function buildThinkingTimeExpression(level, desiredModel) {
+         modelKindFromNode(trigger) ||
+         effectiveTargetModelKind();
+       const option = findOption();
+-      if (!option && TARGET_IS_GPT56_MODEL && TARGET_LEVEL === 'heavy') {
+-        // GPT-5.6 has no "heavy" tier: Pro is the closest thing. Accept a pill that
+-        // is already on Pro as satisfying the request, but never click Pro to get
+-        // there, and never let this stand in for post-click verification.
++      if (
++        !option &&
++        TARGET_IS_GPT56_MODEL &&
++        (TARGET_LEVEL === 'heavy' || TARGET_LEVEL === 'pro')
++      ) {
++        // GPT-5.6's unified picker can expose the already-selected Pro tier only
++        // through the composer pill and advanced-view summary, without a selectable
++        // Pro row. Accept that existing Pro proof for an explicit Pro request (and
++        // the legacy heavy alias), but never click a lower tier or treat a model pill
++        // as effort proof.
+         const pill = freshComposerTrigger(trigger) || findModelButton();
+         const pillLabel = normalize(
+           (pill?.textContent ?? '') + ' ' + (pill?.getAttribute?.('aria-label') ?? ''),

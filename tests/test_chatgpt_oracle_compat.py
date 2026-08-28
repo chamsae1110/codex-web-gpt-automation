@@ -399,6 +399,387 @@ def test_published_0180_default_contract_applies_every_current_patch(tmp_path: P
         assert syntax.returncode == 0, f"{relative}: {syntax.stderr}"
 
 
+def test_published_0180_accepts_current_gpt56_sol_pro_power_summary(tmp_path: Path) -> None:
+    compat = load_compat()
+    configured = os.environ.get("ORACLE_018_PACKAGE_ROOT", "").strip()
+    source = Path(configured) if configured else Path("__oracle_018_cache_unset__")
+    if not source.is_dir():
+        if os.environ.get("CI"):
+            pytest.fail("CI must prepare the exact published Oracle 0.18.0 package")
+        pytest.skip("published Oracle 0.18.0 package root is unavailable")
+    package = tmp_path / "oracle-current-pro-ui"
+    shutil.copytree(source, package)
+    compat.ensure_oracle_compatibility(
+        "oracle 0.18.0",
+        package_root=package,
+        backup_root=tmp_path / "backup-current-pro-ui",
+    )
+    target = package / "dist/src/browser/actions/thinkingTime.js"
+    standalone = tmp_path / "thinkingTime.current-ui.mjs"
+    source_text = target.read_text(encoding="utf-8")
+    source_text = source_text.replace(
+        'import { MENU_CONTAINER_SELECTOR, MENU_ITEM_SELECTOR, MODEL_BUTTON_SELECTOR, } from "../constants.js";',
+        'const MENU_CONTAINER_SELECTOR = \'[role="menu"]\';\n'
+        'const MENU_ITEM_SELECTOR = \'[role="menuitem"], [role="menuitemradio"], [role="option"], [data-testid]\';\n'
+        'const MODEL_BUTTON_SELECTOR = \'[data-testid="model-switcher-dropdown-button"], button.__composer-pill\';',
+    ).replace(
+        'import { logDomFailure } from "../domDebug.js";',
+        'const logDomFailure = async () => {};',
+    ).replace(
+        'import { buildClickDispatcher } from "./domEvents.js";',
+        'const buildClickDispatcher = () => "const dispatchClickSequence = (target) => { target?.__click?.(); return true; };";',
+    ).replace(
+        'import { BrowserAutomationError } from "../../oracle/errors.js";',
+        'class BrowserAutomationError extends Error {};',
+    ).replace(
+        "      result.passed = result.selectedModel && result.proPowerSummary;\n"
+        "      return result;",
+        "      result.passed = result.selectedModel && result.proPowerSummary;\n"
+        "      globalThis.__lastCurrentProProof = result;\n"
+        "      return result;",
+    ).replace(
+        "        result.proPowerSummary = labels.length > 0 && labels.every(Boolean);",
+        "        globalThis.__lastSummaryProof = { labels, text: summaries[0].textContent, "
+        "normalized: normalizeProPowerSummary(summaries[0].textContent), "
+        "disabled: isOptionDisabled(summaries[0]) };\n"
+        "        result.proPowerSummary = labels.length > 0 && labels.every(Boolean);",
+    )
+    standalone.write_text(source_text, encoding="utf-8")
+    module_url = standalone.as_uri()
+    script = f"""
+import {{ ensureThinkingTime }} from {json.dumps(module_url)};
+let now = 0;
+globalThis.performance = {{ now: () => now }};
+globalThis.setTimeout = (callback, delay = 0) => {{ now += delay; callback(); return 0; }};
+globalThis.window = globalThis;
+globalThis.KeyboardEvent = class {{ constructor(type, init) {{ this.type = type; Object.assign(this, init); }} }};
+globalThis.MouseEvent = class {{ constructor(type, init) {{ this.type = type; Object.assign(this, init); }} }};
+globalThis.PointerEvent = globalThis.MouseEvent;
+class FakeElement extends EventTarget {{
+  constructor(text, attrs = {{}}, visible = true) {{
+    super(); this.textContent = text; this.attrs = attrs; this.visible = visible; this.isConnected = true;
+  }}
+  getAttribute(name) {{ return Object.hasOwn(this.attrs, name) ? this.attrs[name] : null; }}
+  getBoundingClientRect() {{ return this.visible ? {{ width: 240, height: 36 }} : {{ width: 0, height: 0 }}; }}
+  focus() {{}}
+  matches(selector) {{ return selector.includes('__composer-pill'); }}
+  querySelector() {{ return null; }}
+  querySelectorAll() {{ return []; }}
+}}
+globalThis.HTMLElement = FakeElement;
+
+function makeMenu(
+  modelText,
+  modelAttrs,
+  summarySpecs,
+  id,
+  otherModelAttrs = null,
+  modelVisible = true,
+  otherModelVisible = true,
+  menuConfig = {{}},
+) {{
+  const summaries = summarySpecs.map(
+    (spec) => new FakeElement(
+      spec.text,
+      {{
+        'data-testid': 'composer-model-picker-slider-simple-view',
+        ...(spec.ariaLabel === undefined ? {{}} : {{ 'aria-label': spec.ariaLabel }}),
+        ...(spec.attrs ?? {{}}),
+      }},
+      spec.visible ?? true,
+    ),
+  );
+  const advanced = new FakeElement('GPT-5.6 Sol GPT-5.5', {{ 'data-testid': 'composer-model-picker-slider-advanced-view' }});
+  const model = new FakeElement(
+    modelText,
+    {{ role: 'menuitemradio', ...modelAttrs }},
+    modelVisible,
+  );
+  const otherModel = new FakeElement(
+    modelText === 'GPT-5.6 Sol' ? 'GPT-5.5' : 'GPT-5.6 Sol',
+    otherModelAttrs ?? {{
+      role: 'menuitemradio',
+      'aria-checked': modelAttrs['aria-checked'] === 'true' ? 'false' : 'true',
+    }},
+    otherModelVisible,
+  );
+  const powerOpener = new FakeElement('', {{ role: 'menuitem', 'aria-label': 'Power' }});
+  const menu = new FakeElement(
+    'ProPro, 5 of 5.Use Left and Right arrow keys to adjust power.GPT-5.6 SolGPT-5.5',
+    {{ id, role: 'menu', 'data-testid': 'composer-intelligence-picker-content' }},
+    menuConfig.visible ?? true,
+  );
+  menu.isConnected = menuConfig.connected ?? true;
+  menu.querySelector = (selector) =>
+    selector.includes('composer-model-picker-slider-simple-view') ? (summaries[0] ?? null) : null;
+  menu.querySelectorAll = (selector) => {{
+    if (selector.includes('composer-model-picker-slider-simple-view')) return summaries;
+    if (selector.includes('composer-model-picker-slider-advanced-view')) return [advanced];
+    if (selector.includes('aria-checked="true"')) {{
+      return [model, otherModel].filter((node) => node.getAttribute('aria-checked') === 'true');
+    }}
+    if (selector.includes('menuitem') || selector.includes('role="option"')) {{
+      return [powerOpener, model, otherModel];
+    }}
+    return [];
+  }};
+  return {{ menu, summaries, model, otherModel }};
+}}
+
+async function runCase(config = {{}}) {{
+  now = 0;
+  const exactSummary = 'Pro, 5 of 5.Use Left and Right arrow keys to adjust power.';
+  const target = makeMenu(
+    config.modelText ?? 'GPT-5.6 Sol',
+    config.modelAttrs ?? {{ 'aria-checked': 'true', 'data-state': 'checked' }},
+    config.summaries ?? [{{ text: exactSummary }}],
+    'target-menu',
+    config.otherModelAttrs ?? null,
+    config.modelVisible ?? true,
+    config.otherModelVisible ?? true,
+    config.menuConfig ?? {{}},
+  );
+  const menus = [target.menu];
+  if (config.decoy) {{
+    menus.push(makeMenu(
+      config.decoy.modelText ?? 'GPT-5.6 Sol',
+      config.decoy.modelAttrs ?? {{ 'aria-checked': 'true', 'data-state': 'checked' }},
+      config.decoy.summaries ?? [{{ text: exactSummary }}],
+      'decoy-menu',
+      config.decoy.otherModelAttrs ?? null,
+      config.decoy.modelVisible ?? true,
+      config.decoy.otherModelVisible ?? true,
+      config.decoy.menuConfig ?? {{}},
+    ).menu);
+  }}
+  const initiallyOpen = config.menuOpen ?? true;
+  const modelButton = new FakeElement(
+    config.buttonText ?? (initiallyOpen ? 'Thinking effort' : 'Pro'),
+    {{
+      'aria-expanded': initiallyOpen ? 'true' : 'false',
+      'aria-haspopup': 'menu',
+      'aria-controls': 'target-menu',
+      'data-state': initiallyOpen ? 'open' : 'closed',
+    }},
+  );
+  modelButton.__click = () => {{
+    if (config.openOnClick === false) return;
+    modelButton.attrs['aria-expanded'] = 'true';
+    modelButton.attrs['data-state'] = 'open';
+    modelButton.textContent = config.openedButtonText ?? '추론 수준';
+  }};
+  const menuIsOpen = () => modelButton.getAttribute('aria-expanded') === 'true';
+  globalThis.document = {{
+    body: {{}},
+    dispatchEvent: (event) => {{
+      if (event?.key === 'Escape') {{
+        modelButton.attrs['aria-expanded'] = 'false';
+        modelButton.attrs['data-state'] = 'closed';
+        modelButton.textContent = config.closedButtonText ?? 'Pro';
+      }}
+      return true;
+    }},
+    getElementById: (id) => menuIsOpen() && id === 'target-menu' ? target.menu : null,
+    querySelector: (selector) => {{
+      if (selector.includes('composer-intelligence-picker-content')) {{
+        return menuIsOpen() ? target.menu : null;
+      }}
+      if (selector.includes('composer-model-picker-slider-simple-view')) {{
+        return menuIsOpen() ? (target.summaries[0] ?? null) : null;
+      }}
+      if (selector.includes('model-switcher') || selector.includes('__composer-pill')) return modelButton;
+      return null;
+    }},
+    querySelectorAll: (selector) => {{
+      if (selector.includes('composer-model-picker-slider-simple-view')) {{
+        return menuIsOpen() ? target.summaries : [];
+      }}
+      if (selector.includes('aria-checked="true"')) {{
+        return menus.flatMap((menu) =>
+          menu.querySelectorAll('[role="menuitemradio"]').filter(
+            (node) => node.getAttribute('aria-checked') === 'true',
+          ),
+        );
+      }}
+      if (selector.includes('[role="menu"]')) return menuIsOpen() ? menus : [];
+      if (selector.includes('model-switcher') || selector.includes('__composer-pill')) return [modelButton];
+      return [];
+    }},
+  }};
+  const logs = [];
+  const Runtime = {{ evaluate: async ({{ expression }}) => ({{ result: {{ value: await eval(expression) }} }}) }};
+  try {{
+    await ensureThinkingTime(Runtime, 'pro', (message) => logs.push(message), 'gpt-5.6-sol');
+    return {{ ok: true, logs }};
+  }} catch (error) {{
+    return {{
+      ok: false,
+      logs,
+      error: String(error?.message ?? error),
+      proof: globalThis.__lastCurrentProProof ?? null,
+      summaryProof: globalThis.__lastSummaryProof ?? null,
+    }};
+  }}
+}}
+
+const cases = {{
+  positive: await runCase(),
+  koreanOpen: await runCase({{
+    buttonText: '추론 수준',
+    summaries: [{{ text: 'Pro, 5개 중 5번째.왼쪽/오른쪽 화살표 키로 성능을 조정합니다.' }}],
+  }}),
+  koreanClosed: await runCase({{
+    menuOpen: false,
+    buttonText: 'Pro',
+    openedButtonText: '추론 수준',
+    summaries: [{{ text: 'Pro, 5개 중 5번째.왼쪽/오른쪽 화살표 키로 성능을 조정합니다.' }}],
+  }}),
+  proWithoutGpt56: await runCase({{
+    menuOpen: false,
+    buttonText: 'Pro',
+    modelText: 'GPT-5.5',
+    summaries: [{{ text: 'Pro, 5개 중 5번째.왼쪽/오른쪽 화살표 키로 성능을 조정합니다.' }}],
+  }}),
+  gpt56WithoutPro: await runCase({{
+    menuOpen: false,
+    buttonText: 'High',
+    summaries: [{{ text: '높음, 5개 중 4번째.왼쪽/오른쪽 화살표 키로 성능을 조정합니다.' }}],
+  }}),
+  closedMenuStaysClosed: await runCase({{
+    menuOpen: false,
+    buttonText: 'Pro',
+    openOnClick: false,
+    summaries: [{{ text: 'Pro, 5개 중 5번째.왼쪽/오른쪽 화살표 키로 성능을 조정합니다.' }}],
+  }}),
+  hiddenSelectedModel: await runCase({{ modelVisible: false }}),
+  disabledSelectedModel: await runCase({{
+    modelAttrs: {{
+      'aria-checked': 'true',
+      'data-state': 'checked',
+      'aria-disabled': 'true',
+    }},
+  }}),
+  disabledSummary: await runCase({{
+    summaries: [{{
+      text: 'Pro, 5 of 5.Use Left and Right arrow keys to adjust power.',
+      attrs: {{ 'aria-disabled': 'true' }},
+    }}],
+  }}),
+  disconnectedMenu: await runCase({{ menuConfig: {{ connected: false }} }}),
+  wrongModel: await runCase({{ modelText: 'GPT-5.5' }}),
+  wrongPower: await runCase({{ summaries: [{{ text: 'Extra High, 4 of 5.Use Left and Right arrow keys to adjust power.' }}] }}),
+  unrelatedMenu: await runCase({{
+    modelText: 'GPT-5.5',
+    summaries: [{{ text: 'Extra High, 4 of 5.Use Left and Right arrow keys to adjust power.' }}],
+    decoy: {{}},
+  }}),
+  multipleSummaries: await runCase({{
+    summaries: [
+      {{ text: 'Extra High, 4 of 5.Use Left and Right arrow keys to adjust power.' }},
+      {{ text: 'Pro, 5 of 5.Use Left and Right arrow keys to adjust power.' }},
+    ],
+  }}),
+  negatedPro: await runCase({{ summaries: [{{ text: 'Not Pro, 5 of 5' }}] }}),
+  fiveOfFifty: await runCase({{ summaries: [{{ text: 'Pro, 5 of 50' }}] }}),
+  compoundPower: await runCase({{ summaries: [{{ text: 'Pro available; current 4 of 5; maximum 5 of 5' }}] }}),
+  conflictingLabel: await runCase({{
+    summaries: [{{
+      text: 'Extra High, 4 of 5.Use Left and Right arrow keys to adjust power.',
+      ariaLabel: 'Pro, 5 of 5',
+    }}],
+  }}),
+  contradictorySelectedState: await runCase({{
+    modelAttrs: {{ 'aria-checked': 'false', 'data-state': 'checked' }},
+  }}),
+  multipleSelectedModels: await runCase({{
+    otherModelAttrs: {{ role: 'menuitemradio', 'aria-checked': 'true' }},
+  }}),
+  otherContradictorySelectedState: await runCase({{
+    otherModelAttrs: {{
+      role: 'menuitemradio',
+      'aria-checked': 'false',
+      'data-state': 'checked',
+    }},
+  }}),
+  otherMixedSelectedState: await runCase({{
+    otherModelAttrs: {{
+      role: 'menuitemradio',
+      'aria-checked': 'mixed',
+      'data-state': 'checked',
+    }},
+  }}),
+  conflictingModelLabel: await runCase({{
+    modelAttrs: {{
+      'aria-checked': 'true',
+      'data-state': 'checked',
+      'aria-label': 'GPT-5.5',
+    }},
+  }}),
+}};
+console.log(JSON.stringify(cases));
+"""
+    node = shutil.which("node")
+    assert node is not None
+    completed = subprocess.run(
+        [node, "--input-type=module", "-e", script],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    payload = json.loads(completed.stdout)
+    for name in ("positive", "koreanOpen", "koreanClosed"):
+        assert payload[name] == {
+            "ok": True,
+            "logs": ["[browser] Thinking time: Pro, 5 of 5 (already selected)"],
+        }, (name, payload[name])
+    for name, result in payload.items():
+        if name in {"positive", "koreanOpen", "koreanClosed"}:
+            continue
+        assert result["ok"] is False, name
+        assert "refusing to submit without confirmed Pro" in result["error"], name
+
+
+def test_published_0180_migrates_legacy_pro_pill_patch_without_prior_backup(
+    tmp_path: Path,
+) -> None:
+    compat = load_compat()
+    configured = os.environ.get("ORACLE_018_PACKAGE_ROOT", "").strip()
+    source = Path(configured) if configured else Path("__oracle_018_cache_unset__")
+    if not source.is_dir():
+        if os.environ.get("CI"):
+            pytest.fail("CI must prepare the exact published Oracle 0.18.0 package")
+        pytest.skip("published Oracle 0.18.0 package root is unavailable")
+    contract = compat.PATCHES["dist/src/browser/actions/thinkingTime.js"]
+    legacy_patches = contract["legacy_patches"]
+    assert set(legacy_patches) == set(contract["legacy_patched"])
+
+    for index, (legacy_hash, legacy_patch) in enumerate(legacy_patches.items()):
+        package = tmp_path / f"oracle-legacy-pro-pill-{index}"
+        shutil.copytree(source, package)
+        target = package / "dist/src/browser/actions/thinkingTime.js"
+        compat._apply_patch(
+            package,
+            compat.patch_root("0.18.0") / str(legacy_patch),
+        )
+        assert compat.sha256_file(target) == legacy_hash
+
+        backup_root = tmp_path / f"backup-legacy-pro-pill-{index}"
+        result = compat.ensure_oracle_compatibility(
+            "oracle 0.18.0",
+            package_root=package,
+            backup_root=backup_root,
+        )
+
+        assert "dist/src/browser/actions/thinkingTime.js" in result["changed"]
+        assert compat.sha256_file(target) == contract["patched"]
+        assert compat.sha256_file(
+            backup_root / "dist/src/browser/actions/thinkingTime.js"
+        ) == contract["pristine"]
+
+
 def test_published_0171_patch_requires_extra_high_and_pro_selection_proof(tmp_path: Path) -> None:
     compat = load_compat()
     source = (
