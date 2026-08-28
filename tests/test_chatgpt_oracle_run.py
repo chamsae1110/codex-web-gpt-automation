@@ -368,10 +368,17 @@ def test_settled_prebrowser_owner_allows_dispatch_run_to_launch_oracle_once(
     grant = json.loads((run_dir / "caller-identity-grant.json").read_text(encoding="utf-8"))
     state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
     prompt = captured["command"][captured["command"].index("--prompt") + 1]
-    token_match = re.search(r"oracle_token=([A-Za-z0-9_-]{32,256})", prompt)
+    token_match = re.search(
+        rf"oracle://core/{re.escape(run_dir.name)}/([A-Za-z0-9_-]{{32,256}})",
+        prompt,
+    )
     assert token_match is not None
     assert hashlib.sha256(token_match.group(1).encode("utf-8")).hexdigest() == grant["token_sha256"]
+    bootstrap_uri = f"oracle://core/{run_dir.name}/{token_match.group(1)}"
+    assert hashlib.sha256(bootstrap_uri.encode("utf-8")).hexdigest() == grant["bootstrap_uri_sha256"]
     assert token_match.group(1) not in (run_dir / "caller-identity-grant.json").read_text(encoding="utf-8")
+    assert captured["kwargs"]["env"]["npm_config_loglevel"] == "error"
+    assert captured["kwargs"]["env"]["NPM_CONFIG_UPDATE_NOTIFIER"] == "false"
     assert state["core_caller_grant"]["sha256"] == hashlib.sha256(
         (run_dir / "caller-identity-grant.json").read_bytes()
     ).hexdigest()
@@ -1378,7 +1385,7 @@ def test_steroids_core_pro_dispatch_uses_persistent_prime_browser_and_direct_pro
         f"@Chat On Steroids Core Use exactly this approved project root: {tmp_path.resolve()}."
     )
     assert "Directly read and execute the mission file with the Core read tool" in prompt
-    assert "oracle_run_id=" in prompt
+    assert "oracle://core/" in prompt
     assert "runtime-one-use-token-not-materialized-during-dry-run" in prompt
     assert "First open exactly this project root in checkout mode" not in prompt
     assert "workspace id it returned" not in prompt

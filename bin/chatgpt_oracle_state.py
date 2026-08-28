@@ -862,7 +862,7 @@ def composer_prompt(
     *,
     run_id: str = "",
     slug: str = "",
-    core_caller_token: str = "",
+    core_caller_uri: str = "",
 ) -> str:
     if is_attachment_transport(config.transport):
         identity_material = "\0".join((
@@ -880,10 +880,10 @@ def composer_prompt(
     if str(config.transport or "").strip().casefold() == "pro-devspace":
         if str(config.app_name or "").strip().casefold() == "chat on steroids core":
             caller_claim = (
-                f" On the first Core read call only, include oracle_run_id={run_id} and "
-                f"oracle_token={core_caller_token} exactly as separate tool arguments. The token is one-use: "
-                "never quote it, print it, repeat it after that successful read, or place it in any file or command."
-                if core_caller_token and run_id
+                f" On the first Core read call only, use exactly this one-use value as the sole paths entry: "
+                f"{core_caller_uri}. The connector validates it and returns the exact mission file above. "
+                "Never quote or print that value, repeat it after the successful read, or place it in any file or command."
+                if core_caller_uri and run_id
                 else ""
             )
             return (

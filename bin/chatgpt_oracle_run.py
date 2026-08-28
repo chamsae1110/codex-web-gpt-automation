@@ -1676,6 +1676,7 @@ def persist_core_caller_grant(
     layout: Any,
     *,
     token: str,
+    bootstrap_uri: str,
 ) -> dict[str, Any]:
     """Write one hash-only grant immediately before a Steroids Prime launch."""
     if not re.fullmatch(r"[A-Za-z0-9_-]{32,256}", token):
@@ -1693,6 +1694,7 @@ def persist_core_caller_grant(
         "model": "gpt-5.6-sol",
         "thinking_time": "pro",
         "token_sha256": hashlib.sha256(token.encode("utf-8")).hexdigest(),
+        "bootstrap_uri_sha256": hashlib.sha256(bootstrap_uri.encode("utf-8")).hexdigest(),
         "created_at_ms": now_ms,
         "expires_at_ms": now_ms + 30 * 60 * 1000,
     }
@@ -1748,11 +1750,10 @@ def execute_run(
     layout = STATE.create_layout(config, run_id=config.requested_run_id)
     transport_mission_path = layout.run_dir / "mission.md"
     uses_core = str(config.app_name or "").strip().casefold() == "chat on steroids core"
-    core_caller_token = (
-        "runtime-one-use-token-not-materialized-during-dry-run"
-        if uses_core and dry_run
-        else secrets.token_urlsafe(48) if uses_core else ""
+    core_caller_token = "runtime-one-use-token-not-materialized-during-dry-run" if uses_core and dry_run else (
+        secrets.token_urlsafe(48) if uses_core else ""
     )
+    core_caller_uri = f"oracle://core/{layout.run_id}/{core_caller_token}" if uses_core else ""
     # The app reads the project mission. The copied bytes below are host-only
     # immutable evidence and are never exposed as the workspace handoff path.
     prompt = STATE.composer_prompt(
@@ -1760,7 +1761,7 @@ def execute_run(
         config.mission_path,
         run_id=layout.run_id,
         slug=layout.slug,
-        core_caller_token=core_caller_token,
+        core_caller_uri=core_caller_uri,
     )
     cdp_port = (
         config.browser_attach_port
@@ -1834,6 +1835,10 @@ def execute_run(
     layout.stdout_path.touch()
     layout.stderr_path.touch()
     oracle_env = STATE.browser_temp_environment(layout.browser_temp_path, platform_name=platform_name)
+    # npm otherwise echoes the complete Oracle argv (including the one-use bootstrap URI)
+    # into stderr before Oracle starts. Keep transport errors while suppressing npm notices.
+    oracle_env["npm_config_loglevel"] = "error"
+    oracle_env["NPM_CONFIG_UPDATE_NOTIFIER"] = "false"
     configure_task_outcome_terminal_contract(oracle_env, config.task_outcome_contract)
     configure_persistent_browser_attach_contract(oracle_env, config)
     terminal_watchdog_enabled = oracle_env.get("ORACLE_TASK_OUTCOME_TERMINAL_CONTRACT") == "v1"
@@ -1942,7 +1947,12 @@ def execute_run(
                             {"path": str(attachment), "expected": expected, "actual": actual},
                         )
                 if uses_core:
-                    persist_core_caller_grant(config, layout, token=core_caller_token)
+                    persist_core_caller_grant(
+                        config,
+                        layout,
+                        token=core_caller_token,
+                        bootstrap_uri=core_caller_uri,
+                    )
                 process = popen_factory(
                     argv,
                     cwd=str(config.project_root),
