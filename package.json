@@ -1,6 +1,6 @@
 {
   "name": "codex-web-gpt-automation",
-  "version": "1.20.1",
+  "version": "1.20.2",
   "private": false,
   "description": "Guarded, recoverable web ChatGPT automation for local Codex projects on Windows and macOS",
   "license": "MIT",
@@ -40,6 +40,8 @@
     "bin/chatgpt_agbrowse_state.py",
     "bin/chatgpt_agbrowse_tabs.py",
     "bin/chatgpt_git_isolation.py",
+    "bin/chatgpt_steroids_preflight.py",
+    "bin/start_chat_on_steroids_chrome.ps1",
     "bin/chatgpt_oracle_run.py",
     "bin/chatgpt_devspace_compat.py",
     "bin/devspace-compat/",

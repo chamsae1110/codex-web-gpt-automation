@@ -191,6 +191,7 @@ TERMINAL_DEVSPACE_NONEXECUTION_SIGNATURES = frozenset((
     "terminal-devspace-checkout-502-no-execution",
     "terminal-devspace-app-tools-unavailable-no-execution",
     "terminal-core-caller-identity-unavailable-no-execution",
+    "terminal-core-caller-identity-bootstrap-pending-no-execution",
 ))
 USER_AUTHORIZED_FRESH_AFTER_DEVSPACE_READ_ROUTE_REFRESH = (
     "user-authorized-fresh-run-after-devspace-read-route-refresh"
@@ -2181,6 +2182,16 @@ def terminal_devspace_nonexecution_evidence(
             "restore the browser-extension identity path and retry",
         )
     )
+    core_identity_pending = all(
+        needle in folded
+        for needle in (
+            "동일한 호출을 포함해 총 2회 모두 실패",
+            "caller_identity_pending: the connector returned without running a local tool so the browser extension can bind this exact chatgpt request",
+            "retry the identical call once; ambiguous or dormant-worker ownership will remain blocked",
+            "다른 앱이나 도구로 대체하지 않았고",
+            "프로젝트·미션·금지된 oracle 실행을 추가로 읽거나 실행하지 않았습니다",
+        )
+    ) and folded.count("caller_identity_pending:") == 1 and mission_source.casefold() in folded
     korean_core_nonexecution = all(
         needle in folded
         for needle in (
@@ -2221,8 +2232,13 @@ def terminal_devspace_nonexecution_evidence(
         app_name == "chat on steroids core"
         and app_name in folded
         and core_project_bound
-        and core_identity_refusal
-        and (korean_core_nonexecution or english_core_nonexecution or current_core_nonexecution)
+        and (
+            (
+                core_identity_refusal
+                and (korean_core_nonexecution or english_core_nonexecution or current_core_nonexecution)
+            )
+            or core_identity_pending
+        )
     )
     if (
         not run_id
@@ -2248,7 +2264,11 @@ def terminal_devspace_nonexecution_evidence(
     ):
         return None
     signature = (
-        "terminal-core-caller-identity-unavailable-no-execution"
+        (
+            "terminal-core-caller-identity-bootstrap-pending-no-execution"
+            if core_identity_pending
+            else "terminal-core-caller-identity-unavailable-no-execution"
+        )
         if core_identity_unavailable
         else (
             "terminal-devspace-app-tools-unavailable-no-execution"

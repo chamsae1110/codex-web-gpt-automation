@@ -21,6 +21,7 @@ STATE_PATH = Path(__file__).resolve().with_name("chatgpt_oracle_state.py")
 COMPAT_PATH = Path(__file__).resolve().with_name("chatgpt_oracle_compat.py")
 DEVSPACE_COMPAT_PATH = Path(__file__).resolve().with_name("chatgpt_devspace_compat.py")
 DEVSPACE_PREFLIGHT_PATH = Path(__file__).resolve().with_name("chatgpt_devspace_preflight.py")
+STEROIDS_PREFLIGHT_PATH = Path(__file__).resolve().with_name("chatgpt_steroids_preflight.py")
 CHROME_CDP_HELPER_PATH = Path(__file__).resolve().with_name("chatgpt_chrome_cdp.mjs")
 
 
@@ -80,6 +81,22 @@ def load_devspace_preflight_module():
 
 
 DEVSPACE_PREFLIGHT = load_devspace_preflight_module()
+
+
+def load_steroids_preflight_module():
+    spec = importlib.util.spec_from_file_location(
+        "chatgpt_steroids_preflight_runtime",
+        STEROIDS_PREFLIGHT_PATH,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Steroids preflight module unavailable: {STEROIDS_PREFLIGHT_PATH}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+STEROIDS_PREFLIGHT = load_steroids_preflight_module()
 
 
 class OracleRunError(RuntimeError):
@@ -1668,6 +1685,9 @@ def execute_run(
     devspace_qualification_factory: Callable[[Path], dict[str, Any]] = (
         DEVSPACE_PREFLIGHT.ensure_exact_root_qualified
     ),
+    steroids_preflight_factory: Callable[..., dict[str, Any]] = (
+        STEROIDS_PREFLIGHT.ensure_persistent_controller_ready
+    ),
     exact_recovery_factory: Callable[..., dict[str, Any]] | None = None,
     _cdp_port: int | None = None,
     _followup_parent_slug: str | None = None,
@@ -1706,9 +1726,20 @@ def execute_run(
     if dry_run:
         return dry_run_payload(config, layout, argv, prompt)
 
+    uses_core = str(config.app_name or "").strip().casefold() == "chat on steroids core"
+    if uses_core:
+        try:
+            steroids_preflight_factory(
+                host=str(config.browser_attach_host or ""),
+                port=config.browser_attach_port,
+                profile=config.browser_attach_profile,
+                platform_name=platform_name,
+            )
+        except STEROIDS_PREFLIGHT.SteroidsPreflightError as exc:
+            raise OracleRunError(exc.code, str(exc), exc.evidence) from exc
+
     qualification_target = web_multi_devspace_qualification_target(config)
 
-    uses_core = str(config.app_name or "").strip().casefold() == "chat on steroids core"
     if STATE.is_devspace_transport(config.transport) and not uses_core:
         try:
             devspace_qualification_factory(qualification_target)

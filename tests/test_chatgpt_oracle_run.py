@@ -357,6 +357,7 @@ def test_settled_prebrowser_owner_allows_dispatch_run_to_launch_oracle_once(
             command, 0, stdout="oracle 0.18.0\n", stderr=""
         ),
         popen_factory=popen_for(0, b"TASK_OUTCOME: EXECUTED\n", {}, launched),
+        steroids_preflight_factory=lambda **kwargs: {"ok": True},
     )
 
     assert result["ok"] is True
@@ -413,6 +414,7 @@ def test_settled_prebrowser_owner_tamper_still_blocks_dispatch_run_before_oracle
             command, 0, stdout="oracle 0.18.0\n", stderr=""
         ),
         popen_factory=popen_for(0, b"TASK_OUTCOME: EXECUTED\n", {}, launched),
+        steroids_preflight_factory=lambda **kwargs: {"ok": True},
     )
 
     assert result["ok"] is False
@@ -1371,6 +1373,59 @@ def test_steroids_core_pro_dispatch_uses_persistent_prime_browser_and_direct_pro
     child_env: dict[str, str] = {}
     runner.configure_persistent_browser_attach_contract(child_env, config)
     assert child_env == {"ORACLE_STRICT_ATTACH_PROFILE": "1"}
+
+
+def test_steroids_core_dispatch_refuses_extensionless_controller_before_run_creation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = load_runner()
+    profile = tmp_path.parent / f"{tmp_path.name}-steroids-profile"
+    profile.mkdir()
+    (profile / "DevToolsActivePort").write_text(
+        "19356\n/devtools/browser/stale-is-allowed-here\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("ORACLE_PERSISTENT_CDP_ENDPOINT", "127.0.0.1:19356")
+    monkeypatch.setenv("ORACLE_PERSISTENT_BROWSER_PROFILE", str(profile.resolve()))
+    manifest_path = pro_full_access_manifest(tmp_path, app_name="Chat On Steroids Core")
+    config = runner.STATE.load_manifest(manifest_path)
+
+    def extensionless(**kwargs):
+        raise runner.STEROIDS_PREFLIGHT.SteroidsPreflightError(
+            "STEROIDS_CONTROLLER_EXTENSION_UNVERIFIED",
+            "controller has no exact extension load proof",
+        )
+
+    with pytest.raises(runner.OracleRunError) as exc:
+        runner.execute_run(
+            manifest_path,
+            steroids_preflight_factory=extensionless,
+            version_resolver=lambda *args, **kwargs: pytest.fail("version lookup crossed the preflight gate"),
+        )
+
+    assert exc.value.code == "STEROIDS_CONTROLLER_EXTENSION_UNVERIFIED"
+    assert not config.run_root.exists()
+
+
+def test_steroids_core_dry_run_never_touches_controller_preflight(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = load_runner()
+    profile = tmp_path.parent / f"{tmp_path.name}-steroids-profile"
+    profile.mkdir()
+    (profile / "DevToolsActivePort").write_text(
+        "19356\n/devtools/browser/stale-is-allowed-here\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("ORACLE_PERSISTENT_CDP_ENDPOINT", "127.0.0.1:19356")
+    monkeypatch.setenv("ORACLE_PERSISTENT_BROWSER_PROFILE", str(profile.resolve()))
+
+    result = runner.execute_run(
+        pro_full_access_manifest(tmp_path, app_name="Chat On Steroids Core"),
+        dry_run=True,
+        steroids_preflight_factory=lambda **kwargs: pytest.fail("dry-run must stay no-browser"),
+    )
+
+    assert result["ok"] is True
+    assert result["browser_identity"]["mode"] == "persistent-attach"
 
 
 def test_non_core_pro_dispatch_does_not_hijack_steroids_prime_browser(
@@ -5616,6 +5671,76 @@ def test_terminal_devspace_nonexecution_settlement_accepts_current_repeated_core
                 run_dir,
                 confirmation=runner.STATE.USER_AUTHORIZED_FRESH_AFTER_TERMINAL_DEVSPACE_NONEXECUTION,
                 reason="weakened repeated identity evidence must stay blocked",
+                dry_run=True,
+                **hashes,
+            )
+        assert rejected.value.code == "TERMINAL_DEVSPACE_NONEXECUTION_EVIDENCE_REQUIRED"
+
+
+def test_terminal_devspace_nonexecution_settlement_accepts_exact_repeated_core_identity_pending(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner = load_runner()
+    task_id = "11111111-1111-4111-8111-111111111111"
+    monkeypatch.setenv("CODEX_THREAD_ID", task_id)
+    run_dir, hashes = terminal_devspace_nonexecution_run(runner, tmp_path)
+    state_path = run_dir / "state.json"
+    output = run_dir / "output.md"
+    transcript = run_dir / "transcript.md"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["app_name"] = "Chat On Steroids Core"
+    source_mission = Path(state["project_root"]) / "work" / "mission.md"
+    source_mission.parent.mkdir(parents=True)
+    source_mission.write_bytes((run_dir / "mission.md").read_bytes())
+    state["mission"]["path"] = str(source_mission)
+    state["ownership"] = {"mission_sha256": state["mission"]["sha256"]}
+    exact = (
+        "Chat On Steroids Core에서 지정된 미션 경로를 직접 읽으려 했으나, "
+        "**동일한 호출을 포함해 총 2회 모두 실패**했습니다.\n\n"
+        f"* 경로: `{source_mission}`\n"
+        "* 구체적 도구 오류: `CALLER_IDENTITY_PENDING: the connector returned without running a local tool "
+        "so the browser extension can bind this exact ChatGPT request. Retry the identical call once; "
+        "ambiguous or dormant-worker ownership will remain blocked.`\n\n"
+        "지시대로 다른 앱이나 도구로 대체하지 않았고, 프로젝트·미션·금지된 Oracle 실행을 "
+        "추가로 읽거나 실행하지 않았습니다.\n\n"
+        "TASK_OUTCOME: BLOCKED\n"
+    )
+    output.write_text(exact, encoding="utf-8")
+    transcript.write_text(exact, encoding="utf-8")
+    runner.STATE.write_json_atomic(state_path, state)
+    hashes.update({
+        "expected_state_sha256": runner.STATE.sha256_file(state_path),
+        "expected_output_sha256": runner.STATE.sha256_file(output),
+        "expected_transcript_sha256": runner.STATE.sha256_file(transcript),
+    })
+
+    dry = runner.settle_terminal_devspace_nonexecution_fresh_run(
+        run_dir,
+        confirmation=runner.STATE.USER_AUTHORIZED_FRESH_AFTER_TERMINAL_DEVSPACE_NONEXECUTION,
+        reason="owner later authorized one retry after restoring the exact extension-enabled controller",
+        dry_run=True,
+        **hashes,
+    )
+    assert dry["safe_for_fresh_run"] is True
+    assert dry["auto_retry"] is False
+    assert dry["submission_action"] == "none"
+    assert dry["settlement_payload"]["signature"] == (
+        "terminal-core-caller-identity-bootstrap-pending-no-execution"
+    )
+
+    for missing in (
+        "총 2회 모두 실패",
+        "Retry the identical call once; ambiguous or dormant-worker ownership will remain blocked.",
+        "다른 앱이나 도구로 대체하지 않았고",
+        "프로젝트·미션·금지된 Oracle 실행을 추가로 읽거나 실행하지 않았습니다.",
+    ):
+        output.write_text(exact.replace(missing, ""), encoding="utf-8")
+        hashes["expected_output_sha256"] = runner.STATE.sha256_file(output)
+        with pytest.raises(runner.OracleRunError) as rejected:
+            runner.settle_terminal_devspace_nonexecution_fresh_run(
+                run_dir,
+                confirmation=runner.STATE.USER_AUTHORIZED_FRESH_AFTER_TERMINAL_DEVSPACE_NONEXECUTION,
+                reason="weakened pending evidence must remain blocked",
                 dry_run=True,
                 **hashes,
             )

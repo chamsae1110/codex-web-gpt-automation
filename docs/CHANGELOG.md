@@ -1,5 +1,11 @@
 # 기술 변경 기록
 
+## 1.20.2 - Prove the Steroids persistent controller extension
+
+- Refuse a Chat On Steroids Core Pro submission before run creation unless the exact persistent Chrome listener was launched with the configured profile, port, and stable extension mirror.
+- Ship a verified controller launcher that preserves incompatible live browsers and never rewrites `DevToolsActivePort`.
+- Recognize only the exact repeated `CALLER_IDENTITY_PENDING` terminal no-execution result for same-task, hash-bound settlement.
+
 ## 1.20.1 - Assign and gate upstream runtime promotion
 
 - The six-hour watcher remains strictly read-only, but its stable drift issue

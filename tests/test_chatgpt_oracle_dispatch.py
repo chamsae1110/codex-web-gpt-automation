@@ -297,6 +297,7 @@ def test_settled_prebrowser_owner_dispatch_manifest_reaches_runner_launch(
         ),
         popen_factory=popen,
         compat_factory=lambda version: {"ok": True, "version": version},
+        steroids_preflight_factory=lambda **kwargs: {"ok": True},
     )
 
     assert result["ok"] is True, json.dumps(result, indent=2)

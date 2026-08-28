@@ -50,6 +50,13 @@ def test_install_manifest_ships_exact_persistent_profile_attach_patch() -> None:
     assert 'bin/oracle-compat/0.18.0/attachRunning.persistent-profile.v1.patch' in manifest['include']
 
 
+def test_install_manifest_ships_steroids_extension_controller_preflight() -> None:
+    manifest = json.loads((ROOT / 'install-manifest.json').read_text(encoding='utf-8'))
+
+    assert 'bin/chatgpt_steroids_preflight.py' in manifest['include']
+    assert 'bin/start_chat_on_steroids_chrome.ps1' in manifest['include']
+
+
 def test_public_file_hash_helpers_are_dotnet_stream_based() -> None:
     for name in ('install.ps1', 'update.ps1', 'rollback.ps1', 'doctor.ps1'):
         text = (ROOT / name).read_text(encoding='utf-8')
