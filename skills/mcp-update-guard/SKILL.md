@@ -170,12 +170,13 @@ instead of the layer that failed.
   and ambiguous nonexecution remain fail-closed. Fresh runs must use the
   persisted registered app name; do not replace it with a recommended default.
 - The same receipt may also settle the exact Chat On Steroids Core caller-identity
-  preflight refusal only when the terminal answer contains the complete
-  `CALLER_IDENTITY_REQUIRED` dormant-worker/browser-extension signature, binds
-  the configured Core app and project, and explicitly proves that no local tool,
-  project read/change, command, test, alternate app, or fallback path ran. This
-  is not a generic identity-error escape hatch: shortened, changed, or ambiguous
-  evidence remains unsafe, and only the owning task may append the receipt.
+  preflight refusal or the exact two-attempt `CALLER_IDENTITY_PENDING` bootstrap
+  result only when the terminal answer contains the complete expected signature,
+  binds the configured Core app and project, and explicitly proves that no local
+  tool, project read/change, command, test, alternate app, or fallback path ran.
+  This is not a generic identity-error escape hatch: shortened, changed,
+  duplicated, or ambiguous evidence remains unsafe, and only the owning task may
+  append the receipt.
 - A separate one-use `settle-terminal-devspace-read-route-refresh` receipt may
   release the first regular qualification canary only after the user manually
   refreshes the configured app tools and the managed post-register procedure is

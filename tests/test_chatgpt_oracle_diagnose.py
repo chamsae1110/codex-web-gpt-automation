@@ -957,6 +957,50 @@ def test_terminal_devspace_app_tools_unavailable_has_its_own_bounded_signature(
     )
 
 
+def test_current_core_identity_pending_has_its_own_bounded_signature(tmp_path: Path) -> None:
+    module = load()
+    state_root = tmp_path / "oracle-state"
+    project_root = state_root / "project"
+    mission_path = project_root / "work" / "mission.md"
+    mission_path.parent.mkdir(parents=True)
+    mission_path.write_text("exact mission", encoding="utf-8")
+    exact = (
+        "Chat On Steroids Core로 지정된 미션 경로를 정확히 두 번 읽으려 했으나, "
+        "두 호출 모두 로컬 읽기를 실행하지 못하고 다음 오류를 반환했습니다.\n\n"
+        "`CALLER_IDENTITY_PENDING: the connector returned without running a local tool so the browser extension "
+        "can bind this exact ChatGPT request. Retry the identical call once; ambiguous or dormant-worker ownership "
+        "will remain blocked.`\n\n"
+        "지시에 따라 다른 앱이나 경로로 대체하지 않았고, 금지된 Oracle 실행 관련 자원도 조회하지 "
+        "않았습니다. 미션 파일을 읽지 못했으므로 저장소 지침 확인 및 미션 실행은 진행하지 않았습니다.\n\n"
+        "TASK_OUTCOME: BLOCKED\n"
+    )
+    run_dir = write_run(
+        state_root,
+        "p" * 12,
+        status="attention_required",
+        output=exact,
+        session_authority="terminal",
+        terminal_harvested=True,
+        task_outcome="blocked",
+    )
+    state_path = run_dir / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state.update({
+        "transport": "pro-devspace",
+        "app_name": "Chat On Steroids Core",
+        "mission": {"path": str(mission_path), "sha256": "a" * 64},
+        "ownership": {"mission_sha256": "a" * 64},
+    })
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    verdict = module.diagnose(state_root)["unresolved_runs"][0]
+
+    assert verdict["bucket"] == "terminal-task-not-executed"
+    assert verdict["signature"] == (
+        "terminal-core-caller-identity-bootstrap-pending-no-execution"
+    )
+
+
 def test_terminal_devspace_read_chunk_exposure_failure_has_bounded_signature(
     tmp_path: Path,
 ) -> None:

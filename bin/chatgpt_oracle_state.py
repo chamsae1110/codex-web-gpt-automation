@@ -2182,7 +2182,7 @@ def terminal_devspace_nonexecution_evidence(
             "restore the browser-extension identity path and retry",
         )
     )
-    core_identity_pending = all(
+    legacy_core_identity_pending = all(
         needle in folded
         for needle in (
             "동일한 호출을 포함해 총 2회 모두 실패",
@@ -2192,6 +2192,19 @@ def terminal_devspace_nonexecution_evidence(
             "프로젝트·미션·금지된 oracle 실행을 추가로 읽거나 실행하지 않았습니다",
         )
     ) and folded.count("caller_identity_pending:") == 1 and mission_source.casefold() in folded
+    current_core_identity_pending = all(
+        needle in folded
+        for needle in (
+            "chat on steroids core로 지정된 미션 경로를 정확히 두 번 읽으려 했으나",
+            "두 호출 모두 로컬 읽기를 실행하지 못하고 다음 오류를 반환했습니다",
+            "caller_identity_pending: the connector returned without running a local tool so the browser extension can bind this exact chatgpt request",
+            "retry the identical call once; ambiguous or dormant-worker ownership will remain blocked",
+            "다른 앱이나 경로로 대체하지 않았고",
+            "금지된 oracle 실행 관련 자원도 조회하지 않았습니다",
+            "미션 파일을 읽지 못했으므로 저장소 지침 확인 및 미션 실행은 진행하지 않았습니다",
+        )
+    ) and folded.count("caller_identity_pending:") == 1
+    core_identity_pending = legacy_core_identity_pending or current_core_identity_pending
     korean_core_nonexecution = all(
         needle in folded
         for needle in (
