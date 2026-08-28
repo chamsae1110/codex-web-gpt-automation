@@ -862,6 +862,7 @@ def composer_prompt(
     *,
     run_id: str = "",
     slug: str = "",
+    core_caller_token: str = "",
 ) -> str:
     if is_attachment_transport(config.transport):
         identity_material = "\0".join((
@@ -878,6 +879,13 @@ def composer_prompt(
     effective_path = config.mission_path if mission_path is None else mission_path
     if str(config.transport or "").strip().casefold() == "pro-devspace":
         if str(config.app_name or "").strip().casefold() == "chat on steroids core":
+            caller_claim = (
+                f" On the first Core read call only, include oracle_run_id={run_id} and "
+                f"oracle_token={core_caller_token} exactly as separate tool arguments. The token is one-use: "
+                "never quote it, print it, repeat it after that successful read, or place it in any file or command."
+                if core_caller_token and run_id
+                else ""
+            )
             return (
                 f"@{config.app_name} Use exactly this approved project root: {config.project_root}. "
                 f"Directly read and execute the mission file with the Core read tool: {effective_path}. "
@@ -890,6 +898,7 @@ def composer_prompt(
                 "footnote, and Markdown reference definition before the outcome marker. End the final response with exactly "
                 "one of TASK_OUTCOME: EXECUTED, TASK_OUTCOME: NOT_EXECUTED, or TASK_OUTCOME: BLOCKED as the final nonempty "
                 "line; append nothing after it."
+                + caller_claim
                 + connector_identity_guard(config.app_name)
                 + self_observation_guard(run_id, slug)
             )

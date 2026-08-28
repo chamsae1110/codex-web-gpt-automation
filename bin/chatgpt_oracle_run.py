@@ -7,6 +7,7 @@ import json
 import math
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -1670,6 +1671,51 @@ def configure_persistent_browser_attach_contract(env: dict[str, str], config: An
         env.pop("ORACLE_STRICT_ATTACH_PROFILE", None)
 
 
+def persist_core_caller_grant(
+    config: Any,
+    layout: Any,
+    *,
+    token: str,
+) -> dict[str, Any]:
+    """Write one hash-only grant immediately before a Steroids Prime launch."""
+    if not re.fullmatch(r"[A-Za-z0-9_-]{32,256}", token):
+        raise OracleRunError("CORE_CALLER_TOKEN_INVALID", "internal Steroids caller token is invalid")
+    now_ms = int(time.time() * 1000)
+    payload = {
+        "schema": "codex.chatgpt.oracle-core-caller-grant/v1",
+        "run_id": layout.run_id,
+        "source_thread_id": config.source_thread_id,
+        "project_root": str(config.project_root),
+        "mission_path": str(config.mission_path),
+        "mission_sha256": config.mission_sha256,
+        "app_name": "Chat On Steroids Core",
+        "transport": "pro-devspace",
+        "model": "gpt-5.6-sol",
+        "thinking_time": "pro",
+        "token_sha256": hashlib.sha256(token.encode("utf-8")).hexdigest(),
+        "created_at_ms": now_ms,
+        "expires_at_ms": now_ms + 30 * 60 * 1000,
+    }
+    grant_path = layout.run_dir / "caller-identity-grant.json"
+    encoded = (json.dumps(payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    try:
+        with grant_path.open("xb") as handle:
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except FileExistsError as exc:
+        raise OracleRunError("CORE_CALLER_GRANT_EXISTS", "append-only Steroids caller grant already exists") from exc
+    state = STATE.load_state(layout.state_path)
+    state["core_caller_grant"] = {
+        "schema": "codex.chatgpt.oracle-core-caller-grant-reference/v1",
+        "path": str(grant_path),
+        "sha256": hashlib.sha256(encoded).hexdigest(),
+        "expires_at_ms": payload["expires_at_ms"],
+    }
+    STATE.write_json_atomic(layout.state_path, state)
+    return payload
+
+
 def execute_run(
     manifest_path: Path,
     *,
@@ -1701,6 +1747,12 @@ def execute_run(
     validate_oracle_attachment_sizes(config)
     layout = STATE.create_layout(config, run_id=config.requested_run_id)
     transport_mission_path = layout.run_dir / "mission.md"
+    uses_core = str(config.app_name or "").strip().casefold() == "chat on steroids core"
+    core_caller_token = (
+        "runtime-one-use-token-not-materialized-during-dry-run"
+        if uses_core and dry_run
+        else secrets.token_urlsafe(48) if uses_core else ""
+    )
     # The app reads the project mission. The copied bytes below are host-only
     # immutable evidence and are never exposed as the workspace handoff path.
     prompt = STATE.composer_prompt(
@@ -1708,6 +1760,7 @@ def execute_run(
         config.mission_path,
         run_id=layout.run_id,
         slug=layout.slug,
+        core_caller_token=core_caller_token,
     )
     cdp_port = (
         config.browser_attach_port
@@ -1726,7 +1779,6 @@ def execute_run(
     if dry_run:
         return dry_run_payload(config, layout, argv, prompt)
 
-    uses_core = str(config.app_name or "").strip().casefold() == "chat on steroids core"
     if uses_core:
         try:
             steroids_preflight_factory(
@@ -1889,6 +1941,8 @@ def execute_run(
                             "attachment bytes changed after manifest validation",
                             {"path": str(attachment), "expected": expected, "actual": actual},
                         )
+                if uses_core:
+                    persist_core_caller_grant(config, layout, token=core_caller_token)
                 process = popen_factory(
                     argv,
                     cwd=str(config.project_root),

@@ -4,6 +4,7 @@ import importlib.util
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -349,6 +350,7 @@ def test_settled_prebrowser_owner_allows_dispatch_run_to_launch_oracle_once(
     # Recreate the settlement after the profile-bound state hash is final.
     write_prebrowser_settlement(parent, owner=owner)
     launched: list[str] = []
+    captured: dict = {}
 
     result = execute_run(
         runner,
@@ -356,12 +358,23 @@ def test_settled_prebrowser_owner_allows_dispatch_run_to_launch_oracle_once(
         run_factory=lambda command, **kwargs: subprocess.CompletedProcess(
             command, 0, stdout="oracle 0.18.0\n", stderr=""
         ),
-        popen_factory=popen_for(0, b"TASK_OUTCOME: EXECUTED\n", {}, launched),
+        popen_factory=popen_for(0, b"TASK_OUTCOME: EXECUTED\n", captured, launched),
         steroids_preflight_factory=lambda **kwargs: {"ok": True},
     )
 
     assert result["ok"] is True
     assert launched
+    run_dir = Path(result["run_dir"])
+    grant = json.loads((run_dir / "caller-identity-grant.json").read_text(encoding="utf-8"))
+    state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+    prompt = captured["command"][captured["command"].index("--prompt") + 1]
+    token_match = re.search(r"oracle_token=([A-Za-z0-9_-]{32,256})", prompt)
+    assert token_match is not None
+    assert hashlib.sha256(token_match.group(1).encode("utf-8")).hexdigest() == grant["token_sha256"]
+    assert token_match.group(1) not in (run_dir / "caller-identity-grant.json").read_text(encoding="utf-8")
+    assert state["core_caller_grant"]["sha256"] == hashlib.sha256(
+        (run_dir / "caller-identity-grant.json").read_bytes()
+    ).hexdigest()
     assert runner.STATE.unresolved_project_sessions(
         config.run_root,
         tmp_path,
@@ -1365,6 +1378,8 @@ def test_steroids_core_pro_dispatch_uses_persistent_prime_browser_and_direct_pro
         f"@Chat On Steroids Core Use exactly this approved project root: {tmp_path.resolve()}."
     )
     assert "Directly read and execute the mission file with the Core read tool" in prompt
+    assert "oracle_run_id=" in prompt
+    assert "runtime-one-use-token-not-materialized-during-dry-run" in prompt
     assert "First open exactly this project root in checkout mode" not in prompt
     assert "workspace id it returned" not in prompt
     config = runner.STATE.load_manifest(
