@@ -61,6 +61,7 @@
     "bin/oracle-compat/0.18.0/oracle-cli.followup-port-and-timeout.patch",
     "bin/oracle-compat/0.18.0/browserConfig.followup-port-binding.patch",
     "bin/oracle-compat/0.18.0/browserConfig.copy-profile-windows.patch",
+    "bin/oracle-compat/0.18.0/attachRunning.persistent-profile.patch",
     "bin/oracle-compat/0.18.0/thinkingTime.gpt56-pro-pill.patch",
     "bin/oracle-compat/0.18.0/thinkingTime.gpt56-pro-pill.v1.patch",
     "bin/oracle-compat/0.18.0/thinkingTime.gpt56-pro-pill.v2.patch",

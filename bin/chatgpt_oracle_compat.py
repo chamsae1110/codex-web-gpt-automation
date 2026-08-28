@@ -216,6 +216,11 @@ LKG_PATCHES = {
 # changed follow-up port/timeout and Windows copy-profile hunks are rebased in
 # the 0.18.0 directory.
 PATCHES = {
+    "dist/src/browser/attachRunning.js": {
+        "patch": "attachRunning.persistent-profile.patch",
+        "pristine": "e97ba04ab0d9a584399e3dbd4bfee01b747b5ad4ed07faba9705faa67ef43ee0",
+        "patched": "9ad29511372693f47cc5ec047fc80769b9408b3f8ab57ab7db316d88d0ea1f20",
+    },
     "dist/src/browser/actions/thinkingTime.js": {
         "patch": "thinkingTime.gpt56-pro-pill.patch",
         "pristine": "3d9d06b08417bca3b2d646eb4d46887d26c5de7c068d1e995c73b6b6e2f61199",

@@ -397,6 +397,43 @@ def test_published_0180_default_contract_applies_every_current_patch(tmp_path: P
         assert compat.sha256_file(target) == contract["patched"]
         syntax = subprocess.run([node, "--check", str(target)], capture_output=True, text=True, check=False)
         assert syntax.returncode == 0, f"{relative}: {syntax.stderr}"
+    attach_source = (package / "dist/src/browser/attachRunning.js").read_text(encoding="utf-8")
+    assert 'process.env.ORACLE_PERSISTENT_BROWSER_PROFILE' in attach_source
+    assert "normalizeProfilePath(candidate.profileRoot) === expectedProfile" in attach_source
+    assert "No running browser with attach metadata matched" in attach_source
+    standalone = tmp_path / "attachRunning.persistent-profile.mjs"
+    standalone.write_text(
+        attach_source.replace(
+            'import { discoverDevToolsActivePortCandidates, } from "./detect.js";',
+            "const discoverDevToolsActivePortCandidates = async () => globalThis.__attachCandidates;",
+        ),
+        encoding="utf-8",
+    )
+    expected_profile = str((tmp_path / "expected-profile").resolve())
+    wrong_profile = str((tmp_path / "newer-wrong-profile").resolve())
+    filter_script = (
+        f"process.env.ORACLE_PERSISTENT_BROWSER_PROFILE={json.dumps(expected_profile)};"
+        f"globalThis.__attachCandidates=["
+        f"{{port:19356,profileRoot:{json.dumps(wrong_profile)},browserWSEndpoint:'ws://wrong',path:'wrong',mtimeMs:99}},"
+        f"{{port:19356,profileRoot:{json.dumps(expected_profile)},browserWSEndpoint:'ws://right',path:'right',mtimeMs:1}}];"
+        f"const m=await import({json.dumps(standalone.as_uri())});"
+        "const selected=await m.resolveAttachRunningConnection({remoteChrome:{host:'127.0.0.1',port:19356}},()=>{});"
+        "globalThis.__attachCandidates=[{port:19356,profileRoot:'missing',browserWSEndpoint:'ws://wrong',path:'wrong',mtimeMs:100}];"
+        "let rejected=false;try{await m.resolveAttachRunningConnection({remoteChrome:{host:'127.0.0.1',port:19356}},()=>{});}catch{rejected=true;}"
+        "console.log(JSON.stringify({selected,rejected}));"
+    )
+    filtered = subprocess.run(
+        [node, "--input-type=module", "-e", filter_script],
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=15,
+    )
+    assert filtered.returncode == 0, filtered.stderr
+    selected = json.loads(filtered.stdout)
+    assert selected["selected"]["profileRoot"] == expected_profile
+    assert selected["selected"]["browserWSEndpoint"] == "ws://right"
+    assert selected["rejected"] is True
 
 
 def test_published_0180_accepts_current_gpt56_sol_pro_power_summary(tmp_path: Path) -> None:
@@ -802,7 +839,7 @@ def test_published_0171_patch_requires_extra_high_and_pro_selection_proof(tmp_pa
 
     result = compat.ensure_oracle_compatibility("oracle 0.17.1", package_root=package, backup_root=backup)
     touched = set(result["changed"]) | set(result["already_patched"])
-    assert set(compat.PATCHES) <= touched
+    assert set(compat.LKG_PATCHES) <= touched
     node = shutil.which("node")
     assert node is not None, "Node.js is required to validate the patched Oracle source"
     followup = package / "dist/src/cli/followup.js"
