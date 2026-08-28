@@ -842,9 +842,9 @@ def connector_identity_guard(app_name: str) -> str:
         return (
             " Use only the Chat On Steroids Core app's tools. This connector has no checkout/open_workspace step "
             "and returns no workspace id; the approved project root is directly available to Core tools. "
-            "Never report a blocker merely because a workspace id is absent. Prove connector identity by successfully "
-            "reading the exact mission path with Chat On Steroids Core. If that direct read fails, retry the identical "
-            "path once with the same app, then report the concrete tool error and stop. Never substitute another app."
+            "Never report a blocker merely because a workspace id is absent. Prove connector identity by completing "
+            "the controller-specified first Core read. If that read fails, retry the identical paths entry once with "
+            "the same app, then report the concrete tool error and stop. Never substitute another app."
         )
     return (
         f" Use only the {name} app's workspace tools. If more than one connector exposes a workspace tool of the "
