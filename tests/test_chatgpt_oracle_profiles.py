@@ -73,7 +73,7 @@ def test_durable_host_pro_opt_in_upgrades_modes_without_losing_task_kind(
     assert contract["route"] == "oracle-pro-devspace"
     assert contract["model"] == "gpt-5.6-sol"
     assert contract["reasoning_level"] == "Pro"
-    assert contract["thinking_time"] == "heavy"
+    assert contract["thinking_time"] == "pro"
     assert contract["configured_regular_web_mode"] == "pro"
     assert contract["pro_selection_policy"] == "host-configured-pro"
     assert contract["action_authority"] == "mission-owned-full-access"
@@ -98,7 +98,7 @@ def test_durable_host_pro_opt_in_upgrades_write_capable_modes(
     assert contract["route"] == "oracle-pro-devspace"
     assert contract["model"] == "gpt-5.6-sol"
     assert contract["reasoning_level"] == "Pro"
-    assert contract["thinking_time"] == "heavy"
+    assert contract["thinking_time"] == "pro"
     assert contract["action_authority"] == "mission-owned-full-access"
     assert contract["pro_selection_policy"] == "host-configured-pro"
 
@@ -117,6 +117,24 @@ def test_durable_host_pro_opt_in_does_not_replace_deep_research(
     assert "model" not in contract
     assert contract["thinking_time"] == "extra-high"
     assert contract["research"] is True
+
+
+def test_steroids_core_pro_handoff_is_direct_and_has_no_workspace_contract(tmp_path: Path) -> None:
+    profiles = load_profiles()
+    mission = (tmp_path / "mission.md").resolve()
+
+    contract = profiles.build_launch_contract(
+        "pro", mission_path=mission, app_name="Chat On Steroids Core"
+    )
+
+    prompt = contract["composer_prompt"]
+    assert contract["model"] == "gpt-5.6-sol"
+    assert contract["thinking_time"] == "pro"
+    assert prompt.startswith(
+        f"@Chat On Steroids Core Read and execute the mission file directly with the Core tools: {mission}."
+    )
+    assert "has no checkout/open_workspace step and returns no workspace id" in prompt
+    assert "DevSpace capabilities" not in prompt
 
 
 @pytest.mark.parametrize("level", ["low", "Pro"])
@@ -140,7 +158,7 @@ def test_pro_attachment_is_oracle_attachment_only_and_manual_launches_nothing(tm
     assert pro["devspace_required"] is False
     assert pro["model"] == "gpt-5.6-sol"
     assert pro["task_kind"] == "pro"
-    assert pro["thinking_time"] == "heavy"
+    assert pro["thinking_time"] == "pro"
     assert pro["attachment_policy"] == "always"
     assert pro["attachments"] == [str(mission), str(packet)]
     assert pro["composer_prompt"].startswith(
@@ -199,7 +217,7 @@ def test_pro_is_explicit_full_access_devspace_without_attachments(tmp_path: Path
     assert contract["app_name"] == "DevSpace"
     assert contract["model"] == "gpt-5.6-sol"
     assert contract["model_strategy"] == "select"
-    assert contract["thinking_time"] == "heavy"
+    assert contract["thinking_time"] == "pro"
     assert contract["research"] is False
     assert contract["attachments"] == []
     assert contract["action_authority"] == "mission-owned-full-access"

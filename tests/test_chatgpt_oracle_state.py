@@ -604,6 +604,68 @@ def test_browser_identity_receipt_binds_exact_task_run_profile_port_target_and_u
     assert state.proven_browser_identity_receipt(layout.state_path) is None
 
 
+def test_persistent_browser_identity_receipt_binds_prime_profile_port_target_and_url(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = load_state()
+    monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
+    mission = tmp_path / "mission.md"
+    mission.write_text("read fixture", encoding="utf-8")
+    profile = tmp_path.parent / f"{tmp_path.name}-steroids-profile"
+    profile.mkdir()
+    (profile / "DevToolsActivePort").write_text(
+        "19356\n/devtools/browser/exact\n", encoding="utf-8"
+    )
+    monkeypatch.delenv("ORACLE_PERSISTENT_CDP_ENDPOINT", raising=False)
+    monkeypatch.delenv("ORACLE_PERSISTENT_BROWSER_PROFILE", raising=False)
+    monkeypatch.setenv("ORACLE_PERSISTENT_CDP_ENDPOINT", "127.0.0.1:19356")
+    monkeypatch.setenv("ORACLE_PERSISTENT_BROWSER_PROFILE", str(profile.resolve()))
+    task_id = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
+    config = state.load_manifest(manifest(
+        tmp_path,
+        mission.resolve(),
+        source_thread_id=task_id,
+        transport="pro-devspace",
+        app_name="Chat On Steroids Core",
+        model="gpt-5.6-sol",
+        model_strategy="select",
+        thinking_time="pro",
+        task_outcome_contract="v1",
+    ))
+    layout = state.create_layout(config, run_id="persistent-identity-123456")
+    layout.run_dir.mkdir(parents=True)
+    state.write_json_atomic(
+        layout.state_path,
+        state.state_payload(config, layout, status="running", resolved_version="0.18.0", cdp_port=19356),
+    )
+    session_root = tmp_path / "oracle-sessions-persistent"
+    monkeypatch.setenv("ORACLE_SESSION_ROOT", str(session_root))
+    meta = {"browser": {"runtime": {
+        "controllerPid": 401,
+        "chromePort": 19356,
+        "chromeProfileRoot": str(profile.resolve()),
+        "chromeTargetId": "prime-target-exact",
+        "tabUrl": "https://chatgpt.com/c/prime-conversation",
+    }}}
+    meta_path = session_root / layout.slug / "meta.json"
+    meta_path.parent.mkdir(parents=True)
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+
+    captured = state.capture_browser_identity_receipt(layout.state_path)
+
+    assert captured is not None
+    assert captured["payload"]["schema"].endswith("/v3")
+    assert captured["payload"]["authority"] == "persistent-browser-attach"
+    assert captured["payload"]["chrome_pid"] is None
+    assert captured["payload"]["profile_path"] == str(profile.resolve())
+    assert state.proven_browser_identity_receipt(layout.state_path) is not None
+
+    meta["browser"]["runtime"]["chromeProfileRoot"] = str(tmp_path)
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+    assert state.proven_browser_identity_receipt(layout.state_path) is None
+
+
 def test_run_owned_browser_temp_is_removed_and_prior_boot_orphans_are_swept(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -751,6 +813,114 @@ def test_windows_profile_copy_needs_no_external_dependency(
         platform_name="nt",
     )
     assert explicit_config.copy_profile == explicit.resolve()
+
+
+def test_steroids_core_pro_route_requires_exact_persistent_prime_browser(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state = load_state()
+    monkeypatch.delenv("ORACLE_PERSISTENT_CDP_ENDPOINT", raising=False)
+    monkeypatch.delenv("ORACLE_PERSISTENT_BROWSER_PROFILE", raising=False)
+    mission = tmp_path / "mission.md"
+    mission.write_text("work", encoding="utf-8")
+    profile = tmp_path.parent / f"{tmp_path.name}-steroids-profile"
+    profile.mkdir()
+    (profile / "DevToolsActivePort").write_text(
+        "19356\n/devtools/browser/exact\n", encoding="utf-8"
+    )
+
+    with pytest.raises(state.OracleStateError) as missing:
+        state.load_manifest(manifest(
+            tmp_path,
+            mission.resolve(),
+            transport="pro-devspace",
+            app_name="Chat On Steroids Core",
+            model="gpt-5.6-sol",
+            model_strategy="select",
+            thinking_time="pro",
+            task_outcome_contract="v1",
+        ))
+    assert missing.value.code == "PERSISTENT_BROWSER_CONFIG_REQUIRED"
+
+    monkeypatch.setenv("ORACLE_PERSISTENT_CDP_ENDPOINT", "127.0.0.1:19356")
+    monkeypatch.setenv("ORACLE_PERSISTENT_BROWSER_PROFILE", str(profile.resolve()))
+    config = state.load_manifest(manifest(
+        tmp_path,
+        mission.resolve(),
+        transport="pro-devspace",
+        app_name="Chat On Steroids Core",
+        model="gpt-5.6-sol",
+        model_strategy="select",
+        thinking_time="heavy",
+        task_outcome_contract="v1",
+    ))
+
+    assert config.thinking_time == "pro"
+    assert config.copy_profile is None
+    assert config.browser_attach_host == "127.0.0.1"
+    assert config.browser_attach_port == 19356
+    assert config.browser_attach_profile == profile.resolve()
+    prompt = state.composer_prompt(config)
+    assert prompt.startswith(
+        f"@Chat On Steroids Core Use exactly this approved project root: {tmp_path.resolve()}."
+    )
+    assert f"Directly read and execute the mission file with the Core read tool: {mission.resolve()}." in prompt
+    assert "Do not request checkout, open_workspace, or a workspace id" in prompt
+    assert "First open exactly this project root in checkout mode" not in prompt
+    assert "workspace id it returned" not in prompt
+
+    with pytest.raises(state.OracleStateError) as conflict:
+        state.load_manifest(manifest(
+            tmp_path,
+            mission.resolve(),
+            transport="pro-devspace",
+            app_name="Chat On Steroids Core",
+            model="gpt-5.6-sol",
+            model_strategy="select",
+            thinking_time="pro",
+            task_outcome_contract="v1",
+            copy_profile=str(profile.resolve()),
+        ))
+    assert conflict.value.code == "PERSISTENT_BROWSER_COPY_PROFILE_CONFLICT"
+
+
+@pytest.mark.parametrize(
+    ("endpoint", "recorded_port", "code"),
+    [
+        ("192.168.0.5:19356", 19356, "PERSISTENT_BROWSER_ENDPOINT_INVALID"),
+        ("127.0.0.1:19356", 19357, "PERSISTENT_BROWSER_PORT_MISMATCH"),
+    ],
+)
+def test_steroids_core_persistent_prime_browser_fails_closed_on_mismatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    endpoint: str,
+    recorded_port: int,
+    code: str,
+) -> None:
+    state = load_state()
+    mission = tmp_path / "mission.md"
+    mission.write_text("work", encoding="utf-8")
+    profile = tmp_path.parent / f"{tmp_path.name}-steroids-profile"
+    profile.mkdir()
+    (profile / "DevToolsActivePort").write_text(
+        f"{recorded_port}\n/devtools/browser/exact\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("ORACLE_PERSISTENT_CDP_ENDPOINT", endpoint)
+    monkeypatch.setenv("ORACLE_PERSISTENT_BROWSER_PROFILE", str(profile.resolve()))
+
+    with pytest.raises(state.OracleStateError) as exc:
+        state.load_manifest(manifest(
+            tmp_path,
+            mission.resolve(),
+            transport="pro-devspace",
+            app_name="Chat On Steroids Core",
+            model="gpt-5.6-sol",
+            model_strategy="select",
+            thinking_time="pro",
+            task_outcome_contract="v1",
+        ))
+    assert exc.value.code == code
 
 
 def test_explicit_profile_copy_fails_closed_without_the_copy_dependency(

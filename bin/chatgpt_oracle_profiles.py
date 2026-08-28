@@ -137,8 +137,17 @@ def composer_handoff(mission_path: str | Path, app_name: str | None = None) -> s
 def pro_devspace_composer_handoff(mission_path: str | Path, app_name: str | None = None) -> str:
     """The qualified Pro DevSpace handoff with maximum mission-authorized tools."""
     mission = _absolute_mission_path(mission_path)
+    resolved_app = WORKSPACE_CONFIG.normalize_app_name(app_name or WORKSPACE_CONFIG.configured_app_name())
+    if resolved_app.casefold() == "chat on steroids core":
+        return (
+            f"@{resolved_app} Read and execute the mission file directly with the Core tools: {mission}. "
+            "Use only the exact approved project root recorded there; Chat On Steroids Core has no checkout/open_workspace "
+            "step and returns no workspace id. Read the mission and applicable AGENTS.md fully first. Use only the Core tools "
+            "needed to complete every task-specific operation the mission authorizes. Own the complete agentic loop and obey all mission, "
+            "repository, credential, deployment, publication, purchase, and other irreversible-action boundaries."
+        )
     return (
-        f"@{WORKSPACE_CONFIG.normalize_app_name(app_name or WORKSPACE_CONFIG.configured_app_name())} {PRO_DEVSPACE_COMPOSER_PREFIX}: {mission}. "
+        f"@{resolved_app} {PRO_DEVSPACE_COMPOSER_PREFIX}: {mission}. "
         "Use only the exact project root recorded there; read the mission and applicable AGENTS.md fully first. "
         "Use the maximum DevSpace capabilities available for the mission, including file reads and mutations, shell "
         "commands and tests, network access, and browser or Chrome DevTools/CDP verification. Keep project file "
@@ -232,10 +241,9 @@ def build_launch_contract(
             "attachments": [str(path) for path in attachments],
             "model": PRO_MODEL,
             "reasoning_level": "Pro",
-            # `heavy` is Oracle's compatibility token for the current
-            # account-visible Pro power tier.  Keep it explicit so parent
-            # runners cannot fall back to the regular Extra High default.
-            "thinking_time": "heavy",
+            # Current Oracle exposes the account-visible Pro power tier as
+            # the explicit `pro` token. Never fall back to regular Extra High.
+            "thinking_time": "pro",
             "mission_path": str(mission),
             "composer_prompt": PRO_COMPOSER_PROMPT,
         })
@@ -254,7 +262,7 @@ def build_launch_contract(
             "model": PRO_MODEL,
             "model_strategy": "select",
             "reasoning_level": "Pro",
-            "thinking_time": "heavy",
+            "thinking_time": "pro",
             "action_authority": "mission-owned-full-access",
             "agentic_execution": True,
             "execution_loop": "inspect-plan-execute-test-inspect-adapt-verify",

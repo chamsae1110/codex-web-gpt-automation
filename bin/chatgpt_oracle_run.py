@@ -100,7 +100,12 @@ def build_oracle_argv(
     cdp_port: int | None = None,
     followup_parent_slug: str | None = None,
 ) -> list[str]:
-    lifecycle_args = [] if "--browser-hide-window" in config.oracle_args else ["--browser-hide-window"]
+    persistent_attach = config.browser_attach_port is not None
+    lifecycle_args = (
+        []
+        if persistent_attach or "--browser-hide-window" in config.oracle_args
+        else ["--browser-hide-window"]
+    )
     # This is the browser observer's window, not a run termination deadline.
     # If it expires, the exact slug retains ownership and the harness continues
     # live recovery.  The default is aligned with the observed provider limit;
@@ -129,7 +134,15 @@ def build_oracle_argv(
         "--browser-archive", config.archive,
         *lifecycle_args,
         *answer_timeout_args,
-        *(["--browser-port", str(cdp_port)] if cdp_port is not None else []),
+        *(
+            [
+                "--browser-attach-running",
+                "--remote-chrome",
+                f"{config.browser_attach_host}:{config.browser_attach_port}",
+            ]
+            if persistent_attach
+            else (["--browser-port", str(cdp_port)] if cdp_port is not None else [])
+        ),
         *config.oracle_args,
         *(["--followup", followup_parent_slug] if followup_parent_slug is not None else []),
         "--slug", layout.slug,
@@ -143,7 +156,7 @@ def build_oracle_argv(
         command[command.index("--slug"):command.index("--slug")] = [
             "--browser-attachments", "always", *attachment_args,
         ]
-    if config.copy_profile is not None:
+    if config.copy_profile is not None and not persistent_attach:
         command[command.index("--slug"):command.index("--slug")] = ["--copy-profile", str(config.copy_profile)]
     if not STATE.is_pro_transport(config.transport) and any(
         item == "--file" or item.startswith("--file=") or item == "-f" for item in command
@@ -483,6 +496,13 @@ def dry_run_payload(config, layout, argv: Sequence[str], prompt: str) -> dict[st
         "stderr_path": str(layout.stderr_path),
         "contains_file_flag": "--file" in argv,
         "browser_observer_timeout_seconds": observer_seconds,
+        "browser_identity": {
+            "mode": "persistent-attach" if config.browser_attach_port is not None else "isolated-launch",
+            "expected_cdp_port": config.browser_attach_port,
+            "expected_profile_path": (
+                str(config.browser_attach_profile) if config.browser_attach_profile is not None else None
+            ),
+        },
         "status_audit_seconds": config.status_audit_seconds,
         "time_alone_is_terminal": False,
     }
@@ -1661,7 +1681,11 @@ def execute_run(
         run_id=layout.run_id,
         slug=layout.slug,
     )
-    cdp_port = _cdp_port if _cdp_port is not None else STATE.reserve_loopback_cdp_port()
+    cdp_port = (
+        config.browser_attach_port
+        if config.browser_attach_port is not None
+        else (_cdp_port if _cdp_port is not None else STATE.reserve_loopback_cdp_port())
+    )
     if not isinstance(cdp_port, int) or not 1024 <= cdp_port <= 65535:
         raise OracleRunError("CDP_PORT_INVALID", "internal Oracle CDP port must be a valid loopback port")
     argv = build_oracle_argv(
@@ -1676,7 +1700,8 @@ def execute_run(
 
     qualification_target = web_multi_devspace_qualification_target(config)
 
-    if STATE.is_devspace_transport(config.transport):
+    uses_core = str(config.app_name or "").strip().casefold() == "chat on steroids core"
+    if STATE.is_devspace_transport(config.transport) and not uses_core:
         try:
             devspace_qualification_factory(qualification_target)
         except DEVSPACE_PREFLIGHT.DevSpacePreflightError as exc:
@@ -1744,7 +1769,7 @@ def execute_run(
             platform_name=platform_name,
         )
         compat_factory(version)
-        if STATE.is_devspace_transport(config.transport):
+        if STATE.is_devspace_transport(config.transport) and not uses_core:
             devspace_compat = devspace_compat_factory()
             if devspace_compat.get("service_restart_required"):
                 raise OracleRunError(
@@ -3563,7 +3588,7 @@ def _require_followup_parent(
         not STATE.is_pro_devspace_transport(str(state.get("transport") or ""))
         or str(profile.get("model") or "").casefold() != "gpt-5.6-sol"
         or str(profile.get("model_strategy") or "") != "select"
-        or str(profile.get("thinking_time") or "") != "heavy"
+        or str(profile.get("thinking_time") or "") not in {"heavy", "pro"}
     ):
         raise OracleRunError(
             "FOLLOWUP_PARENT_PROFILE_FORBIDDEN",
@@ -3645,7 +3670,7 @@ def _followup_manifest_payload(
         "episode_policy": policy,
         "model": "gpt-5.6-sol",
         "model_strategy": "select",
-        "thinking_time": "heavy",
+        "thinking_time": "pro",
         "research": str(profile.get("research") or "off"),
         "archive": "always" if archive_contract.get("was_archived") is True else "never",
         "task_outcome_contract": "v1",

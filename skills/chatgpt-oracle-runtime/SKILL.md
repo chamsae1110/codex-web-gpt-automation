@@ -6,9 +6,13 @@ description: "Current Oracle runtime path for new ChatGPT work: regular modes us
 # ChatGPT Oracle Runtime
 
 This is the only active browser path for all new GPT work. CodexPro and
-agbrowse are frozen for exact legacy recovery only. Regular modes use DevSpace;
-every explicitly requested new qualified Pro run uses the same app with the
-maximum mission-authorized capability. It may create, edit, and remove files;
+agbrowse are frozen for exact legacy recovery only. Regular modes use their
+configured app. Every explicitly requested new qualified Pro run uses the
+latest explicitly selected app with the maximum mission-authorized capability.
+For `Chat On Steroids Core`, `pro-devspace` is the lifecycle transport label,
+but the runner passes the explicit `pro` effort, attaches to the configured
+persistent Prime Chrome loopback endpoint/profile, and calls Core tools directly
+without DevSpace checkout, `open_workspace`, or workspace-id semantics. It may create, edit, and remove files;
 run commands and tests; use network access; inspect live browser/CDP state; and
 iterate through inspect, plan, execute, test, inspect the result, adapt, and
 verify. For user-owned loopback Chrome, the installed
@@ -45,13 +49,13 @@ It must not substitute a parent, child, active workspace, or shell boundary
 workaround. Regular routes default to `gpt-5.6` with `extra-high`, the highest
 supported non-Pro reasoning tier, and never auto-upgrade to Pro. Only explicit
 `pro` mode selects `GPT-5.6 Sol` at the Pro effort and the
-`pro-devspace` transport. It uses full-access DevSpace at the same exact root
-under the mission and repository rules. Explicit `pro-attachment` is limited
+`pro-devspace` transport. It uses the selected app's full-access tools at the
+same exact root under the mission and repository rules. Explicit `pro-attachment` is limited
 to its read-only immutable or
 external evidence contract and is never an automatic fallback.
 Never infer Pro from task difficulty, invent xhigh, or silently downgrade.
 
-On the first DevSpace-backed submission for a new project, the runner checks
+On the first DevSpace-app submission for a new project, the runner checks
 that its exact root is equal to or contained by a local DevSpace
 `allowedRoots` boundary before creating the Oracle run directory or browser
 session. An approved parent can cover all descendant projects, but the worker

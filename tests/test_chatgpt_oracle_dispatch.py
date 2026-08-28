@@ -85,7 +85,7 @@ def test_host_configured_pro_compiles_mode_to_full_access_sol_pro_devspace(
     assert value["task_kind"] == "review"
     assert value["transport"] == "pro-devspace"
     assert value["model"] == "gpt-5.6-sol"
-    assert value["thinking_time"] == "heavy"
+    assert value["thinking_time"] == "pro"
     assert value["task_outcome_contract"] == "v1"
 
 
@@ -109,7 +109,7 @@ def test_host_configured_pro_uses_full_access_sol_pro_for_write_mode(
     assert result["contract"]["pro_selection_policy"] == "host-configured-pro"
     assert value["transport"] == "pro-devspace"
     assert value["model"] == "gpt-5.6-sol"
-    assert value["thinking_time"] == "heavy"
+    assert value["thinking_time"] == "pro"
 
 
 def test_configured_app_name_is_forwarded_to_manifest_and_composer(tmp_path: Path) -> None:
@@ -129,6 +129,30 @@ def test_configured_app_name_is_forwarded_to_manifest_and_composer(tmp_path: Pat
     value = json.loads(target.read_text(encoding="utf-8"))
     assert value["app_name"] == "codex"
     assert result["contract"]["composer_prompt"].startswith("@codex ")
+
+
+def test_explicit_steroids_core_pro_manifest_keeps_core_route_and_pro_effort(tmp_path: Path) -> None:
+    module = load()
+    mission = tmp_path / "mission.md"
+    mission.write_text("read fixture", encoding="utf-8")
+    target = tmp_path / "steroids-core-pro.json"
+
+    result = module.compile_manifest(
+        mode="pro",
+        project_root=tmp_path,
+        mission_path=mission,
+        output_path=target,
+        app_name="Chat On Steroids Core",
+    )
+
+    value = json.loads(target.read_text(encoding="utf-8"))
+    assert result["contract"]["route"] == "oracle-pro-devspace"
+    assert value["transport"] == "pro-devspace"
+    assert value["app_name"] == "Chat On Steroids Core"
+    assert value["model"] == "gpt-5.6-sol"
+    assert value["thinking_time"] == "pro"
+    assert "checkout/open_workspace" in result["contract"]["composer_prompt"]
+    assert "DevSpace capabilities" not in result["contract"]["composer_prompt"]
 
 
 def test_regular_medium_is_forwarded_as_the_visible_medium_tier(tmp_path: Path) -> None:
@@ -168,11 +192,11 @@ def test_pro_attachment_compiles_attachment_only_oracle_and_manual_never_launche
     value = json.loads(pro_target.read_text(encoding="utf-8"))
     assert pro["contract"]["route"] == "oracle-pro-attachment-only"
     assert pro["contract"]["task_kind"] == "pro"
-    assert pro["contract"]["thinking_time"] == "heavy"
+    assert pro["contract"]["thinking_time"] == "pro"
     assert value["transport"] == "pro-attachment-only"
     assert value["task_kind"] == "pro"
     assert value["model"] == "gpt-5.6-sol"
-    assert value["thinking_time"] == "heavy"
+    assert value["thinking_time"] == "pro"
     assert value["attachments"] == [str(prompt.resolve()), str(packet.resolve())]
     assert "app_name" not in value
 
@@ -200,7 +224,7 @@ def test_pro_defaults_to_devspace_without_attachments(tmp_path: Path) -> None:
     assert value["app_name"] == "DevSpace"
     assert value["model"] == "gpt-5.6-sol"
     assert value["model_strategy"] == "select"
-    assert value["thinking_time"] == "heavy"
+    assert value["thinking_time"] == "pro"
     assert value["research"] == "off"
     assert value["task_outcome_contract"] == "v1"
     assert "attachments" not in value
@@ -234,4 +258,4 @@ def test_pro_cli_dry_run_validates_compiled_manifest_without_submission(
     assert emitted["run"]["transport"] == "pro-attachment-only"
     assert manifest["task_kind"] == "pro"
     assert manifest["model"] == "gpt-5.6-sol"
-    assert manifest["thinking_time"] == "heavy"
+    assert manifest["thinking_time"] == "pro"

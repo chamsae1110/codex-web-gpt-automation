@@ -28,12 +28,17 @@ search/browser QA and exact recovery of an already persisted legacy run.
 Pro is quota-limited. Invoke this skill only after an explicit user request;
 never infer Pro from task difficulty, select it as an automatic upgrade, or use
 it as a fallback from regular GPT. Qualified Pro uses Oracle with `GPT-5.6 Sol`
-at the Pro effort and the manually registered DevSpace app. The mission must bind one
+and the explicit `pro` effort token. The latest explicit app selection is
+authoritative. `Chat On Steroids Core` keeps the `pro-devspace` transport label
+for lifecycle compatibility but attaches to its persistent Prime Chrome at the
+configured loopback endpoint/profile, calls Core tools directly, and never asks
+for checkout, `open_workspace`, or a workspace id. A DevSpace app selection
+retains the ordinary isolated DevSpace route. The mission must bind one
 exact absolute project root. After one-time qualification, do not inspect,
 register, repair, select, or otherwise verify ChatGPT app/settings state on
 each run.
 
-Before the first qualified Pro submission for a new project, the local runner
+Before the first DevSpace-app Pro submission for a new project, the local runner
 must verify that the normalized exact root is equal to or contained by one
 DevSpace `allowedRoots` boundary. A deliberately approved parent therefore
 covers all of its descendant projects, while a child, a similarly named
@@ -45,8 +50,9 @@ changed config is revalidated. Failure returns
 `DEVSPACE_EXACT_ROOT_UNAVAILABLE` before Oracle or a browser is created and
 points to the complete root-preserving setup preview.
 
-Pro reads the mission and applicable `AGENTS.md` chain completely. It uses the
-maximum DevSpace capabilities available for that mission: project-file reads
+Pro reads the mission and applicable `AGENTS.md` chain completely. DevSpace uses the
+maximum DevSpace capabilities available for that mission; Chat On Steroids Core
+uses its directly exposed Core tools at the same exact root: project-file reads
 and mutations, shell commands and tests, network access, and browser or Chrome
 DevTools/CDP verification. Project-file mutations stay inside the exact root
 unless the mission or applicable project rules explicitly authorize a named
@@ -103,7 +109,10 @@ python "$env:USERPROFILE\.codex\bin\chatgpt_oracle_dispatch.py" --mode pro --pro
 Add `--dry-run` only when previewing a newly changed automation/configuration,
 debugging a manifest, or when the user explicitly asks for a preview. Do not
 run a routine preview immediately before the same live dispatch. New `pro`
-work uses full-access DevSpace; attachment work uses only the separate explicit
+work uses the full-access route selected by the explicit app. For Chat On
+Steroids Core, absent, mismatched, or non-loopback persistent browser
+configuration fails before submission; it must not fall back to a copied
+profile or DevSpace prompt. Attachment work uses only the separate explicit
 evidence contract.
 
 ## Same-conversation follow-up

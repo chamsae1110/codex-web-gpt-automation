@@ -130,10 +130,11 @@ def test_version_resolution_recovers_from_npx_failure_with_exact_cached_package(
 
 
 def pro_full_access_manifest(tmp_path: Path, **extra) -> Path:
+    app_name = extra.pop("app_name", "DevSpace")
     return manifest(
         tmp_path,
         transport="pro-devspace",
-        app_name="DevSpace",
+        app_name=app_name,
         model="gpt-5.6-sol",
         model_strategy="select",
         thinking_time="heavy",
@@ -423,7 +424,7 @@ def write_prompt_timeout_oracle_meta(
                 "copyProfileSource": str(copy_profile),
                 "desiredModel": "GPT-5.6 Sol",
                 "modelStrategy": "select",
-                "thinkingTime": "heavy",
+                "thinkingTime": "pro",
             },
             "runtime": {
                 "chromePid": 41001,
@@ -447,7 +448,7 @@ def write_prompt_timeout_oracle_meta(
                 "copyProfileSource": str(copy_profile),
                 "desiredModel": "GPT-5.6 Sol",
                 "modelStrategy": "select",
-                "thinkingTime": "heavy",
+                "thinkingTime": "pro",
             },
         },
     }
@@ -551,7 +552,7 @@ def cdp_disconnect_pre_submit_popen(session_root: Path, *, variation: str | None
                     "copyProfileSource": str(expected_profile),
                     "desiredModel": "GPT-5.6 Sol",
                     "modelStrategy": "select",
-                    "thinkingTime": "heavy",
+                    "thinkingTime": "pro",
                 },
                 "runtime": {
                     "chromePid": 12816,
@@ -569,7 +570,7 @@ def cdp_disconnect_pre_submit_popen(session_root: Path, *, variation: str | None
                     "copyProfileSource": str(expected_profile),
                     "desiredModel": "GPT-5.6 Sol",
                     "modelStrategy": "select",
-                    "thinkingTime": "heavy",
+                    "thinkingTime": "pro",
                 },
             },
             "completedAt": "2026-08-13T00:24:24.835Z",
@@ -658,7 +659,7 @@ def model_selector_button_pre_submit_popen(
                     "copyProfileSource": str(expected_profile),
                     "desiredModel": "GPT-5.6 Sol",
                     "modelStrategy": "select",
-                    "thinkingTime": "heavy",
+                    "thinkingTime": "pro",
                 },
                 "runtime": {
                     "chromePid": 16424,
@@ -677,7 +678,7 @@ def model_selector_button_pre_submit_popen(
                     "copyProfileSource": str(expected_profile),
                     "desiredModel": "GPT-5.6 Sol",
                     "modelStrategy": "select",
-                    "thinkingTime": "heavy",
+                    "thinkingTime": "pro",
                 },
             },
             "errorMessage": error_message,
@@ -1048,6 +1049,70 @@ def test_default_signed_in_profile_is_copied_per_run_and_window_is_hidden(
     assert result["argv"].count("--browser-hide-window") == 1
 
 
+def test_steroids_core_pro_dispatch_uses_persistent_prime_browser_and_direct_prompt(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runner = load_runner()
+    profile = tmp_path.parent / f"{tmp_path.name}-steroids-profile"
+    profile.mkdir()
+    (profile / "DevToolsActivePort").write_text(
+        "19356\n/devtools/browser/exact\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("ORACLE_PERSISTENT_CDP_ENDPOINT", "127.0.0.1:19356")
+    monkeypatch.setenv("ORACLE_PERSISTENT_BROWSER_PROFILE", str(profile.resolve()))
+
+    result = execute_run(
+        runner,
+        pro_full_access_manifest(tmp_path, app_name="Chat On Steroids Core"),
+        dry_run=True,
+    )
+
+    argv = result["argv"]
+    prompt = argv[argv.index("--prompt") + 1]
+    assert argv[argv.index("--browser-thinking-time") + 1] == "pro"
+    assert argv[argv.index("--remote-chrome") + 1] == "127.0.0.1:19356"
+    assert argv.count("--browser-attach-running") == 1
+    assert "--browser-port" not in argv
+    assert "--browser-hide-window" not in argv
+    assert "--copy-profile" not in argv
+    assert result["browser_identity"] == {
+        "mode": "persistent-attach",
+        "expected_cdp_port": 19356,
+        "expected_profile_path": str(profile.resolve()),
+    }
+    assert prompt.startswith(
+        f"@Chat On Steroids Core Use exactly this approved project root: {tmp_path.resolve()}."
+    )
+    assert "Directly read and execute the mission file with the Core read tool" in prompt
+    assert "First open exactly this project root in checkout mode" not in prompt
+    assert "workspace id it returned" not in prompt
+
+
+def test_non_core_pro_dispatch_does_not_hijack_steroids_prime_browser(
+    tmp_path: Path, monkeypatch
+) -> None:
+    runner = load_runner()
+    profile = tmp_path.parent / f"{tmp_path.name}-steroids-profile"
+    profile.mkdir()
+    (profile / "DevToolsActivePort").write_text(
+        "19356\n/devtools/browser/exact\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("ORACLE_PERSISTENT_CDP_ENDPOINT", "127.0.0.1:19356")
+    monkeypatch.setenv("ORACLE_PERSISTENT_BROWSER_PROFILE", str(profile.resolve()))
+
+    result = execute_run(
+        runner,
+        pro_full_access_manifest(tmp_path, app_name="DevSpace"),
+        dry_run=True,
+    )
+
+    argv = result["argv"]
+    assert "--browser-attach-running" not in argv
+    assert "--remote-chrome" not in argv
+    assert "--browser-port" in argv
+    assert result["browser_identity"]["mode"] == "isolated-launch"
+
+
 def test_missing_posix_copy_dependency_still_launches_without_profile_copy(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -1214,7 +1279,7 @@ def test_pro_devspace_dry_run_uses_readonly_handoff_without_file_transport(tmp_p
     assert "--browser-attachments" not in argv
     assert "--file" not in argv
     assert argv[argv.index("--model") + 1] == "gpt-5.6-sol"
-    assert argv[argv.index("--browser-thinking-time") + 1] == "heavy"
+    assert argv[argv.index("--browser-thinking-time") + 1] == "pro"
     assert prompt.startswith(f"@DevSpace First open exactly this project root in checkout mode: {tmp_path}.")
     assert f"Then read the read-only mission file: {tmp_path / 'mission.md'}." in prompt
     assert "Do not open the mission directory, a parent, a child" in prompt
@@ -1230,7 +1295,7 @@ def test_new_full_access_pro_manifest_is_accepted_with_maximum_tools(tmp_path: P
     prompt = result["argv"][result["argv"].index("--prompt") + 1]
     assert result["transport"] == "pro-devspace"
     assert result["argv"][result["argv"].index("--model") + 1] == "gpt-5.6-sol"
-    assert result["argv"][result["argv"].index("--browser-thinking-time") + 1] == "heavy"
+    assert result["argv"][result["argv"].index("--browser-thinking-time") + 1] == "pro"
     assert "run shell commands and tests" in prompt
     assert "network access" in prompt
     assert "browser or Chrome DevTools/CDP verification" in prompt

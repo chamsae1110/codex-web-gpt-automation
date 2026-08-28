@@ -330,6 +330,9 @@ class OracleConfig:
     model_strategy: str
     thinking_time: str
     copy_profile: Path | None
+    browser_attach_host: str | None
+    browser_attach_port: int | None
+    browser_attach_profile: Path | None
     research: str
     archive: str
     task_outcome_contract: str
@@ -396,6 +399,60 @@ def is_within(root: Path, candidate: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+def persistent_browser_attach_config(
+    project_root: Path,
+    transport: str,
+    app_name: str | None,
+) -> tuple[str | None, int | None, Path | None]:
+    """Resolve the fail-closed, loopback-only Steroids Prime browser contract."""
+    if not is_pro_transport(transport) or str(app_name or "").strip().casefold() != "chat on steroids core":
+        return None, None, None
+    endpoint_raw = str(os.environ.get("ORACLE_PERSISTENT_CDP_ENDPOINT") or "").strip()
+    profile_raw = str(os.environ.get("ORACLE_PERSISTENT_BROWSER_PROFILE") or "").strip()
+    if not endpoint_raw or not profile_raw:
+        raise OracleStateError(
+            "PERSISTENT_BROWSER_CONFIG_REQUIRED",
+            "Chat On Steroids Core Pro runs require both the persistent loopback endpoint and its browser profile",
+        )
+    match = re.fullmatch(r"(?:127\.0\.0\.1|localhost):([0-9]{4,5})", endpoint_raw, re.IGNORECASE)
+    if match is None:
+        raise OracleStateError(
+            "PERSISTENT_BROWSER_ENDPOINT_INVALID",
+            "persistent Pro browser endpoint must be one loopback host:port",
+        )
+    port = int(match.group(1))
+    if not 1024 <= port <= 65535:
+        raise OracleStateError(
+            "PERSISTENT_BROWSER_PORT_INVALID",
+            "persistent Pro browser port must be within 1024..65535",
+        )
+    profile = absolute_path(profile_raw, label="persistent_browser_profile", must_exist=True)
+    if not profile.is_dir() or profile.is_symlink():
+        raise OracleStateError(
+            "PERSISTENT_BROWSER_PROFILE_INVALID",
+            "persistent Pro browser profile must identify a real directory",
+        )
+    if is_within(project_root, profile) or is_within(profile, project_root):
+        raise OracleStateError(
+            "PERSISTENT_BROWSER_PROFILE_OVERLAPS_PROJECT",
+            "persistent Pro browser profile must be outside the approved project",
+        )
+    try:
+        recorded_port = int((profile / "DevToolsActivePort").read_text(encoding="utf-8").splitlines()[0])
+    except (OSError, ValueError, IndexError):
+        raise OracleStateError(
+            "PERSISTENT_BROWSER_METADATA_MISSING",
+            "persistent Pro browser profile has no valid DevToolsActivePort metadata",
+        ) from None
+    if recorded_port != port:
+        raise OracleStateError(
+            "PERSISTENT_BROWSER_PORT_MISMATCH",
+            "persistent Pro browser endpoint does not match its profile metadata",
+            {"expected_port": port, "recorded_port": recorded_port},
+        )
+    return "127.0.0.1", port, profile
 
 
 def oracle_state_root() -> Path:
@@ -568,12 +625,16 @@ def load_manifest(
     if model_strategy not in {"select", "current", "ignore"}:
         raise OracleStateError("MODEL_STRATEGY_INVALID", "model_strategy must be select, current, or ignore")
     thinking_time = str(payload.get("thinking_time") or "heavy").strip().casefold()
-    if thinking_time not in {"light", "standard", "extended", "extra-high", "heavy"}:
+    if thinking_time not in {"light", "standard", "extended", "extra-high", "pro", "heavy"}:
         raise OracleStateError(
             "THINKING_TIME_INVALID",
-            "thinking_time must be light, standard, extended, extra-high, or heavy",
+            "thinking_time must be light, standard, extended, extra-high, pro, or heavy",
         )
     if is_pro_transport(transport):
+        # Keep sealed legacy manifests readable, but never send the obsolete
+        # `heavy` selector to the current Pro UI.
+        if thinking_time == "heavy":
+            thinking_time = "pro"
         if model.casefold() != "gpt-5.6-sol":
             raise OracleStateError(
                 "PRO_MODEL_INVALID",
@@ -582,10 +643,22 @@ def load_manifest(
             )
         if model_strategy != "select":
             raise OracleStateError("PRO_MODEL_STRATEGY_INVALID", "Pro requires explicit model selection")
-        if thinking_time != "heavy":
-            raise OracleStateError("PRO_THINKING_TIME_INVALID", "Pro requires heavy reasoning")
+        if thinking_time != "pro":
+            raise OracleStateError("PRO_THINKING_TIME_INVALID", "Pro requires the explicit Pro effort token")
+    browser_attach_host, browser_attach_port, browser_attach_profile = persistent_browser_attach_config(
+        project_root,
+        transport,
+        app_name,
+    )
     copy_profile_raw = str(payload.get("copy_profile") or "").strip()
-    if copy_profile_raw:
+    if browser_attach_port is not None:
+        if copy_profile_raw:
+            raise OracleStateError(
+                "PERSISTENT_BROWSER_COPY_PROFILE_CONFLICT",
+                "persistent Pro browser attachment cannot be combined with copy_profile",
+            )
+        copy_profile = None
+    elif copy_profile_raw:
         copy_profile = absolute_path(copy_profile_raw, label="copy_profile", must_exist=True)
     else:
         # The manually signed-in Oracle profile is the immutable seed for a
@@ -702,6 +775,9 @@ def load_manifest(
         model_strategy,
         thinking_time,
         copy_profile,
+        browser_attach_host,
+        browser_attach_port,
+        browser_attach_profile,
         research,
         archive,
         task_outcome_contract,
@@ -742,6 +818,14 @@ def connector_identity_guard(app_name: str) -> str:
     name = str(app_name or "").strip()
     if not name:
         return ""
+    if name.casefold() == "chat on steroids core":
+        return (
+            " Use only the Chat On Steroids Core app's tools. This connector has no checkout/open_workspace step "
+            "and returns no workspace id; the approved project root is directly available to Core tools. "
+            "Never report a blocker merely because a workspace id is absent. Prove connector identity by successfully "
+            "reading the exact mission path with Chat On Steroids Core. If that direct read fails, retry the identical "
+            "path once with the same app, then report the concrete tool error and stop. Never substitute another app."
+        )
     return (
         f" Use only the {name} app's workspace tools. If more than one connector exposes a workspace tool of the "
         f"same name, select the one provided by {name} and never substitute another plugin's connector. "
@@ -773,6 +857,22 @@ def composer_prompt(
         )
     effective_path = config.mission_path if mission_path is None else mission_path
     if str(config.transport or "").strip().casefold() == "pro-devspace":
+        if str(config.app_name or "").strip().casefold() == "chat on steroids core":
+            return (
+                f"@{config.app_name} Use exactly this approved project root: {config.project_root}. "
+                f"Directly read and execute the mission file with the Core read tool: {effective_path}. "
+                "Do not request checkout, open_workspace, or a workspace id; Chat On Steroids Core exposes the approved "
+                "root directly. Read the mission and applicable AGENTS.md fully first. Use only the Core tools needed to "
+                "complete the mission and perform every task-specific operation it authorizes. Keep project file "
+                "mutations inside the exact root unless the mission or applicable repository rules explicitly authorize a "
+                "named outside target. Obey all repository safety rules and explicit approval boundaries. Own the complete "
+                "agentic coding loop: inspect, plan, execute, test, inspect the result, adapt, and verify. Put every citation, "
+                "footnote, and Markdown reference definition before the outcome marker. End the final response with exactly "
+                "one of TASK_OUTCOME: EXECUTED, TASK_OUTCOME: NOT_EXECUTED, or TASK_OUTCOME: BLOCKED as the final nonempty "
+                "line; append nothing after it."
+                + connector_identity_guard(config.app_name)
+                + self_observation_guard(run_id, slug)
+            )
         return (
             f"@{config.app_name} First open exactly this project root in checkout mode: {config.project_root}. "
             "Do not open the mission directory, a parent, a child, or the active workspace as a substitute. "
@@ -865,6 +965,15 @@ def state_payload(
             "model_strategy": config.model_strategy,
             "thinking_time": config.thinking_time,
             "copy_profile": str(config.copy_profile) if config.copy_profile else None,
+            "browser_attach": (
+                {
+                    "host": config.browser_attach_host,
+                    "port": config.browser_attach_port,
+                    "profile_path": str(config.browser_attach_profile),
+                }
+                if config.browser_attach_port is not None and config.browser_attach_profile is not None
+                else None
+            ),
             "research": config.research,
             "archive": config.archive,
         },
@@ -925,6 +1034,10 @@ def state_payload(
         "browser_identity": {
             "schema": "codex.chatgpt.oracle-browser-identity/v1",
             "expected_cdp_port": cdp_port,
+            "mode": "persistent-attach" if config.browser_attach_port is not None else "isolated-launch",
+            "expected_profile_path": (
+                str(config.browser_attach_profile) if config.browser_attach_profile is not None else None
+            ),
             "receipt_path": None,
             "receipt_sha256": None,
         },
@@ -1371,6 +1484,7 @@ def proven_browser_identity_receipt(state_path: Path) -> dict[str, Any] | None:
     if not isinstance(receipt, dict) or receipt.get("schema") not in {
         "codex.chatgpt.oracle-browser-identity-receipt/v1",
         "codex.chatgpt.oracle-browser-identity-receipt/v2",
+        "codex.chatgpt.oracle-browser-identity-receipt/v3",
     }:
         return None
     schema = str(receipt.get("schema") or "")
@@ -1389,7 +1503,7 @@ def proven_browser_identity_receipt(state_path: Path) -> dict[str, Any] | None:
     if schema.endswith("/v1"):
         if receipt.get("cdp_port") != identity.get("expected_cdp_port"):
             return None
-    else:
+    elif schema.endswith("/v2"):
         reference = state.get("saved_terminal_output_settlement")
         artifacts = state.get("artifacts") if isinstance(state.get("artifacts"), dict) else {}
         if (
@@ -1491,7 +1605,16 @@ def proven_browser_identity_receipt(state_path: Path) -> dict[str, Any] | None:
     observed = {
         "chrome_pid": runtime.get("chromePid"),
         "browser_parent_pid": runtime.get("controllerPid"),
-        "profile_path": str(Path(str(runtime.get("userDataDir") or "")).expanduser().resolve()),
+        "profile_path": str(
+            Path(
+                str(
+                    runtime.get("chromeProfileRoot")
+                    if schema.endswith("/v3")
+                    else runtime.get("userDataDir")
+                    or ""
+                )
+            ).expanduser().resolve()
+        ),
         "cdp_port": runtime.get("chromePort"),
         "target_id": runtime.get("chromeTargetId"),
         "conversation_url": runtime.get("tabUrl"),
@@ -1512,6 +1635,14 @@ def proven_browser_identity_receipt(state_path: Path) -> dict[str, Any] | None:
         or (recorded_identity_sha256 and recorded_identity_sha256 != observed_identity_sha256)
     ):
         return None
+    if schema.endswith("/v3"):
+        if (
+            receipt.get("authority") != "persistent-browser-attach"
+            or identity.get("mode") != "persistent-attach"
+            or receipt.get("cdp_port") != identity.get("expected_cdp_port")
+            or receipt.get("profile_path") != identity.get("expected_profile_path")
+        ):
+            return None
     if schema.endswith("/v2"):
         if (
             receipt.get("observed_cdp_port") != observed["cdp_port"]
@@ -1583,13 +1714,20 @@ def capture_browser_identity_receipt(state_path: Path) -> dict[str, Any] | None:
     browser = meta.get("browser") if isinstance(meta.get("browser"), dict) else {}
     runtime = browser.get("runtime") if isinstance(browser.get("runtime"), dict) else {}
     identity = state.get("browser_identity") if isinstance(state.get("browser_identity"), dict) else {}
+    persistent_attach = identity.get("mode") == "persistent-attach"
     try:
-        chrome_pid = int(runtime.get("chromePid"))
+        raw_chrome_pid = runtime.get("chromePid")
+        chrome_pid = (
+            None
+            if persistent_attach and raw_chrome_pid in {None, ""}
+            else int(raw_chrome_pid)
+        )
         parent_pid = int(runtime.get("controllerPid"))
         cdp_port = int(runtime.get("chromePort"))
     except (TypeError, ValueError):
         return None
-    profile = Path(str(runtime.get("userDataDir") or "")).expanduser()
+    profile_value = runtime.get("chromeProfileRoot") if persistent_attach else runtime.get("userDataDir")
+    profile = Path(str(profile_value or "")).expanduser()
     browser_temp = Path(str((state.get("artifacts") or {}).get("browser_temp") or "")).expanduser()
     target_id = str(runtime.get("chromeTargetId") or "").strip()
     url = str(runtime.get("tabUrl") or "").strip()
@@ -1610,15 +1748,33 @@ def capture_browser_identity_receipt(state_path: Path) -> dict[str, Any] | None:
         return existing
     if browser_identity_receipt_path(directory).exists():
         return None
-    if (
-        chrome_pid <= 0 or parent_pid <= 0
+    if persistent_attach:
+        expected_profile = str(identity.get("expected_profile_path") or "")
+        if (
+            parent_pid <= 0
+            or (chrome_pid is not None and chrome_pid <= 0)
+            or not target_id
+            or CHATGPT_CONVERSATION_URL_RE.fullmatch(url) is None
+            or not expected_profile
+            or not profile.is_dir()
+            or profile.is_symlink()
+            or profile.resolve() != Path(expected_profile).resolve()
+        ):
+            return None
+    elif (
+        chrome_pid is None or chrome_pid <= 0 or parent_pid <= 0
         or not target_id or CHATGPT_CONVERSATION_URL_RE.fullmatch(url) is None
         or not str(browser_temp) or not is_within(browser_temp.resolve(), profile.resolve())
     ):
         return None
     ownership = state.get("ownership") if isinstance(state.get("ownership"), dict) else {}
     receipt = {
-        "schema": "codex.chatgpt.oracle-browser-identity-receipt/v1",
+        "schema": (
+            "codex.chatgpt.oracle-browser-identity-receipt/v3"
+            if persistent_attach
+            else "codex.chatgpt.oracle-browser-identity-receipt/v1"
+        ),
+        "authority": "persistent-browser-attach" if persistent_attach else "isolated-browser-launch",
         "source_thread_id": source_thread_id_from_state(state),
         "project_root_sha256": ownership.get("project_root_sha256"),
         "run_id": state.get("run_id"),
@@ -2888,7 +3044,7 @@ def _standalone_pro_attachment_no_submission_evidence(
         or run_dir.name != run_id
         or str(profile.get("model") or "") != "gpt-5.6-sol"
         or str(profile.get("model_strategy") or "") != "select"
-        or str(profile.get("thinking_time") or "") != "heavy"
+        or str(profile.get("thinking_time") or "") not in {"heavy", "pro"}
     ):
         return None
 
@@ -3126,7 +3282,7 @@ def _standalone_pro_no_submission_evidence(
         or run_dir.name != run_id
         or str(profile.get("model") or "") != "gpt-5.6-sol"
         or str(profile.get("model_strategy") or "") != "select"
-        or str(profile.get("thinking_time") or "") != "heavy"
+        or str(profile.get("thinking_time") or "") not in {"heavy", "pro"}
     ):
         return None
     oracle = state.get("oracle") if isinstance(state.get("oracle"), dict) else {}
@@ -3268,12 +3424,12 @@ def _standalone_pro_no_submission_evidence(
             or option_profile != state_profile
             or config.get("desiredModel") != "GPT-5.6 Sol"
             or config.get("modelStrategy") != "select"
-            or config.get("thinkingTime") != "heavy"
+            or config.get("thinkingTime") != profile.get("thinking_time")
             or options.get("model") != "gpt-5.6-sol"
             or options.get("slug") != locator
             or option_browser.get("modelStrategy") != "select"
             or option_browser.get("desiredModel") != "GPT-5.6 Sol"
-            or option_browser.get("thinkingTime") != "heavy"
+            or option_browser.get("thinkingTime") != profile.get("thinking_time")
             or runtime.get("promptSubmitted") is not False
             or runtime.get("tabUrl") != "https://chatgpt.com/"
             or details_runtime.get("promptSubmitted") not in {None, False}
@@ -3559,12 +3715,12 @@ def bounded_task_owned_prompt_timeout_harvest_evidence(
         or option_profile != state_profile
         or config.get("desiredModel") != "GPT-5.6 Sol"
         or config.get("modelStrategy") != "select"
-        or config.get("thinkingTime") != "heavy"
+        or config.get("thinkingTime") != profile.get("thinking_time")
         or options.get("model") != "gpt-5.6-sol"
         or options.get("slug") != locator
         or option_browser.get("desiredModel") != "GPT-5.6 Sol"
         or option_browser.get("modelStrategy") != "select"
-        or option_browser.get("thinkingTime") != "heavy"
+        or option_browser.get("thinkingTime") != profile.get("thinking_time")
         or runtime.get("promptSubmitted") is not True
         or runtime.get("tabUrl") != "https://chatgpt.com/"
         or runtime.get("conversationId") not in {None, ""}
@@ -3775,7 +3931,7 @@ def _followup_no_submission_evidence(
         or state.get("transport_status") not in {"failed", "not_submitted_user_confirmed"}
         or profile.get("model") != "gpt-5.6-sol"
         or profile.get("model_strategy") != "select"
-        or profile.get("thinking_time") != "heavy"
+        or str(profile.get("thinking_time") or "") not in {"heavy", "pro"}
         or state.get("task_outcome") != "pending"
         or state.get("terminal_harvested") is True
         or state.get("parallel_parent_id") is not None
@@ -5036,7 +5192,7 @@ def proven_pre_submit_cdp_disconnect(state_path: Path) -> dict[str, Any] | None:
     if (
         str(profile.get("model") or "") != "gpt-5.6-sol"
         or str(profile.get("model_strategy") or "") != "select"
-        or str(profile.get("thinking_time") or "") != "heavy"
+        or str(profile.get("thinking_time") or "") not in {"heavy", "pro"}
         or copy_profile != expected_profile
         or str(oracle.get("resolved_version") or "").removeprefix("oracle ").strip() != "0.17.1"
         or not locator
@@ -5145,7 +5301,7 @@ def proven_pre_submit_cdp_disconnect(state_path: Path) -> dict[str, Any] | None:
         or option_profile != expected_profile
         or config.get("desiredModel") != "GPT-5.6 Sol"
         or config.get("modelStrategy") != "select"
-        or config.get("thinkingTime") != "heavy"
+        or config.get("thinkingTime") != profile.get("thinking_time")
         or options.get("model") != "gpt-5.6-sol"
         or options.get("slug") != locator
         or output_path != canonical["output"]
