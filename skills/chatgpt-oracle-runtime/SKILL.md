@@ -262,6 +262,20 @@ state/output/transcript SHA-256 values and confirmation token
 writes one append-only receipt; it does not edit historical run artifacts or
 submit a prompt.
 
+Oracle 0.18 persistent attach can fail before creating any browser target when
+its configured loopback CDP listener is absent. This is not generic recovery
+authority. It is classified as pre-browser nonexecution only when the exact
+0.18 launch transcript and configured endpoint/profile match, the observer
+records process exit, the immutable mission and ownership receipt validate,
+and output, conversation URL, browser identity receipt, and prompt-submitted
+evidence are all absent. The owning task may then invoke
+`settle-prebrowser-attach-nonexecution` with the exact state, transcript,
+stdout, stderr, and mission SHA-256 values plus confirmation token
+`user-authorized-fresh-run-after-prebrowser-attach-nonexecution`. Its
+append-only receipt authorizes at most one fresh run after the persistent
+listener is proven ready. Any contradictory or ambiguous evidence stays
+locked.
+
 A second, non-generic settlement exists only for a terminal DevSpace checkout
 answer that names the exact project root, reports `502 Upstream or external
 service errors` plus the missing workspace ID, and explicitly states that it

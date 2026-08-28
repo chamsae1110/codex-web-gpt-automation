@@ -201,6 +201,15 @@ TERMINAL_DEVSPACE_READ_ROUTE_REFRESH_SETTLEMENT_SCHEMA = (
 TERMINAL_DEVSPACE_READ_ROUTE_REFRESH_SIGNATURE = (
     "terminal-devspace-read-chunk-unavailable-after-read-only-probe"
 )
+USER_AUTHORIZED_FRESH_AFTER_PREBROWSER_ATTACH_NONEXECUTION = (
+    "user-authorized-fresh-run-after-prebrowser-attach-nonexecution"
+)
+PREBROWSER_ATTACH_NONEXECUTION_SETTLEMENT_SCHEMA = (
+    "codex.chatgpt.oracle-prebrowser-attach-nonexecution-settlement/v1"
+)
+PREBROWSER_ATTACH_NONEXECUTION_SIGNATURE = (
+    "persistent-attach-cdp-refused-before-browser"
+)
 USER_AUTHORIZED_BLOCKED_PARENT_CONTINUATION = (
     "user-authorized-one-use-blocked-parent-continuation"
 )
@@ -3483,6 +3492,8 @@ def _standalone_pro_no_submission_evidence(
         transport_bytes = transport_path.read_bytes()
     except OSError:
         return None
+
+
     mission_sha256 = str(mission.get("sha256") or "")
     transport_sha256 = hashlib.sha256(transport_bytes).hexdigest()
     if (
@@ -3580,6 +3591,313 @@ def _standalone_pro_no_submission_evidence(
         **selector_meta_evidence,
         "_source_mission_path": str(source_path),
         "_transport_mission_path": str(transport_path),
+    }
+
+
+def persistent_attach_prebrowser_nonexecution_evidence(
+    state_path: Path,
+) -> dict[str, Any] | None:
+    """Prove Oracle 0.18 never reached a browser through persistent attach.
+
+    This deliberately recognizes one historical wire shape only.  A generic
+    ECONNREFUSED is not pre-submit proof: recovery can emit the same socket
+    error after submission.  Here the immutable run tuple, absent browser
+    receipt/output/conversation, exact Oracle transcript, configured loopback
+    endpoint, and process-exited observer must all agree.
+    """
+    try:
+        exact_state = state_path.expanduser().resolve(strict=True)
+        directory = exact_state.parent.resolve(strict=True)
+        if (
+            state_path.is_symlink()
+            or exact_state != (directory / "state.json")
+            or not exact_state.is_file()
+        ):
+            return None
+        state = load_state(exact_state)
+    except (OSError, OracleStateError):
+        return None
+
+    profile = state.get("profile") if isinstance(state.get("profile"), dict) else {}
+    attach = profile.get("browser_attach") if isinstance(profile.get("browser_attach"), dict) else {}
+    identity = (
+        state.get("browser_identity")
+        if isinstance(state.get("browser_identity"), dict)
+        else {}
+    )
+    oracle = state.get("oracle") if isinstance(state.get("oracle"), dict) else {}
+    observer = (
+        state.get("browser_observer")
+        if isinstance(state.get("browser_observer"), dict)
+        else {}
+    )
+    mission = state.get("mission") if isinstance(state.get("mission"), dict) else {}
+    artifacts = state.get("artifacts") if isinstance(state.get("artifacts"), dict) else {}
+    ownership = proven_ownership_receipt(exact_state)
+
+    host = str(attach.get("host") or "")
+    port = attach.get("port")
+    slug = str(oracle.get("slug") or "")
+    profile_path = Path(str(attach.get("profile_path") or ""))
+    expected_profile_path = Path(str(identity.get("expected_profile_path") or ""))
+    output_path = Path(str(artifacts.get("output") or directory / "output.md"))
+    stdout_path = Path(str(artifacts.get("stdout") or directory / "stdout.log"))
+    stderr_path = Path(str(artifacts.get("stderr") or directory / "stderr.log"))
+    transcript_path = Path(str(artifacts.get("transcript") or directory / "transcript.md"))
+    mission_path = Path(str(mission.get("transport_path") or directory / "mission.md"))
+    receipt_path = browser_identity_receipt_path(directory)
+    command = oracle.get("command") if isinstance(oracle.get("command"), list) else []
+
+    try:
+        port_number = int(port)
+        observer_pid = int(observer.get("oracle_process_pid"))
+        canonical_paths = {
+            "stdout": (stdout_path, directory / "stdout.log"),
+            "stderr": (stderr_path, directory / "stderr.log"),
+            "transcript": (transcript_path, directory / "transcript.md"),
+            "mission": (mission_path, directory / "mission.md"),
+        }
+        if any(
+            raw.is_symlink()
+            or raw.resolve(strict=True) != expected.resolve(strict=True)
+            or not raw.resolve(strict=True).is_file()
+            for raw, expected in canonical_paths.values()
+        ):
+            return None
+        stdout_bytes = stdout_path.read_bytes()
+        stderr_bytes = stderr_path.read_bytes()
+        transcript_bytes = transcript_path.read_bytes()
+        mission_bytes = mission_path.read_bytes()
+        stdout_text = stdout_bytes.decode("utf-8", errors="strict")
+        stderr_text = stderr_bytes.decode("utf-8", errors="strict")
+        transcript_bytes.decode("utf-8", errors="strict")
+    except (OSError, TypeError, ValueError, UnicodeDecodeError):
+        return None
+
+    if (
+        state.get("schema") != STATE_SCHEMA
+        or str(state.get("mode") or "") != "browser"
+        or str(state.get("transport") or "") != "pro-devspace"
+        or str(state.get("app_name") or "") != "Chat On Steroids Core"
+        or str(profile.get("model") or "") != "gpt-5.6-sol"
+        or str(profile.get("model_strategy") or "") != "select"
+        or str(profile.get("thinking_time") or "") != "pro"
+        or profile.get("copy_profile") is not None
+        or host != "127.0.0.1"
+        or not (1 <= port_number <= 65535)
+        or not profile_path.is_absolute()
+        or profile_path != expected_profile_path
+        or identity.get("schema") != "codex.chatgpt.oracle-browser-identity/v1"
+        or identity.get("mode") != "persistent-attach"
+        or identity.get("expected_cdp_port") != port_number
+        or identity.get("receipt_path") is not None
+        or identity.get("receipt_sha256") is not None
+        or receipt_path.exists()
+        or receipt_path.is_symlink()
+        or proven_browser_identity_receipt(exact_state) is not None
+        or str(state.get("status") or "") != "attention_required"
+        or str(state.get("transport_status") or "") != "failed"
+        or str(state.get("task_outcome") or "") != "pending"
+        or str(state.get("session_authority") or "") != "submitted_unknown"
+        or state.get("terminal_harvested") is not False
+        or state.get("artifact_sha256") is not None
+        or state.get("exit_code") != 1
+        or observer.get("status") != "process-exited"
+        or observer_pid <= 0
+        or observer.get("timeout_is_terminal") is not False
+        or str(oracle.get("resolved_version") or "") != "0.18.0"
+        or command not in (
+            ["npx", "-y", "@steipete/oracle@0.18.0"],
+            ["npx.cmd", "-y", "@steipete/oracle@0.18.0"],
+        )
+        or not slug
+        or str(oracle.get("session_locator") or "") != slug
+        or ownership is None
+        or _state_has_conversation_url(state)
+        or output_path.is_symlink()
+        or output_path.resolve() != (directory / "output.md").resolve()
+        or output_path.exists()
+        or transcript_bytes != stdout_bytes + stderr_bytes
+        or hashlib.sha256(mission_bytes).hexdigest() != mission.get("sha256")
+    ):
+        return None
+
+    stdout_lines = stdout_text.splitlines()
+    endpoint = f"{host}:{port_number}"
+    if len(stdout_lines) != 14:
+        return None
+    if (
+        re.fullmatch(r"🧿 oracle 0\.18\.0 — [^\r\n]+", stdout_lines[0]) is None
+        or stdout_lines[1] != f"Session: {slug}"
+        or stdout_lines[2] != "Mode: browser foreground"
+        or stdout_lines[3] != "Models: 1"
+        or stdout_lines[4] != "Detach: no"
+        or stdout_lines[5] != f"Reattach: oracle session {slug}"
+        or re.fullmatch(
+            r"Launching browser mode \(target=GPT-5\.6 Sol; requested=gpt-5\.6-sol\) "
+            r"with ~[1-9][0-9]* tokens\.",
+            stdout_lines[6],
+        ) is None
+        or stdout_lines[7] != "This run can take up to an hour (usually ~10 minutes)."
+        or stdout_lines[8] != (
+            "[browser] Browser control: attach to an already-running local Chrome session; "
+            "may focus/control the browser UI."
+        )
+        or stdout_lines[9] != (
+            "[browser] Browser guidance: Oracle opens a dedicated tab and leaves the "
+            "existing browser process alone."
+        )
+    ):
+        return None
+    acquired = re.fullmatch(
+        r"\[browser\] Acquired ChatGPT browser slot ([0-9a-f]{8}) \(3 max\)\.",
+        stdout_lines[10],
+    )
+    released = re.fullmatch(
+        r"\[browser\] Released ChatGPT browser slot ([0-9a-f]{8})\.",
+        stdout_lines[11],
+    )
+    if (
+        acquired is None
+        or released is None
+        or acquired.group(1) != released.group(1)
+        or stdout_lines[12] != f"ERROR: connect ECONNREFUSED {endpoint}"
+        or stdout_lines[13] != (
+            f"User error (browser-automation): connect ECONNREFUSED {endpoint}"
+        )
+    ):
+        return None
+
+    stderr_lines = stderr_text.splitlines()
+    output_arg = str((directory / "output.md").resolve())
+    if (
+        len(stderr_lines) != 2
+        or re.fullmatch(r"npm notice run [a-zA-Z0-9@._/-]+ npx", stderr_lines[0]) is None
+        or re.fullmatch(
+            r"npm notice run oracle --engine browser --model gpt-5\.6-sol "
+            r"--browser-model-strategy select --browser-thinking-time pro "
+            r"--browser-research off --browser-archive never --browser-timeout 100m "
+            r"--browser-attach-running --remote-chrome "
+            + re.escape(endpoint)
+            + r" --slug "
+            + re.escape(slug)
+            + r" --prompt @Chat On Steroids Core .+ --write-output "
+            + re.escape(output_arg),
+            stderr_lines[1],
+        )
+        is None
+        or any(
+            forbidden in stderr_lines[1]
+            for forbidden in ("--copy-profile", "--browser-port", "--browser-hide-window", "--followup")
+        )
+    ):
+        return None
+
+    folded_evidence = (stdout_text + "\n" + stderr_text).casefold()
+    if any(
+        marker in folded_evidence
+        for marker in (
+            "chatgpt.com/c/",
+            "model selection:",
+            "thinking time:",
+            "prompt did not appear in conversation",
+            "prompt textarea did not appear",
+            "answer:",
+        )
+    ):
+        return None
+    return {
+        "schema": "codex.chatgpt.oracle-prebrowser-attach-nonexecution-evidence/v1",
+        "signature": PREBROWSER_ATTACH_NONEXECUTION_SIGNATURE,
+        "run_id": state.get("run_id"),
+        "slug": slug,
+        "source_thread_id": source_thread_id_from_state(state),
+        "project_root": state.get("project_root"),
+        "transport": state.get("transport"),
+        "app_name": state.get("app_name"),
+        "endpoint": endpoint,
+        "profile_path": str(profile_path),
+        "state_sha256": sha256_file(exact_state),
+        "stdout_sha256": hashlib.sha256(stdout_bytes).hexdigest(),
+        "stderr_sha256": hashlib.sha256(stderr_bytes).hexdigest(),
+        "transcript_sha256": hashlib.sha256(transcript_bytes).hexdigest(),
+        "mission_sha256": hashlib.sha256(mission_bytes).hexdigest(),
+        "ownership_receipt_sha256": ownership["sha256"],
+        "output_absent": True,
+        "conversation_url_absent": True,
+        "browser_identity_receipt_absent": True,
+        "prompt_submitted": False,
+        "resolved_version": "0.18.0",
+    }
+
+
+def proven_prebrowser_attach_nonexecution_fresh_run_authority(
+    state_path: Path,
+) -> dict[str, Any] | None:
+    """Revalidate append-only same-task authority for the bounded failure."""
+    try:
+        directory = state_path.parent.resolve(strict=True)
+        receipt_path = (
+            directory
+            / "settlements"
+            / "prebrowser-attach-nonexecution-fresh-run.json"
+        )
+        if not receipt_path.is_file() or receipt_path.is_symlink():
+            return None
+
+        def reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+            result: dict[str, Any] = {}
+            for key, value in pairs:
+                if key in result:
+                    raise ValueError(f"duplicate settlement key: {key}")
+                result[key] = value
+            return result
+
+        receipt_bytes = receipt_path.read_bytes()
+        receipt = json.loads(
+            receipt_bytes.decode("utf-8", errors="strict"),
+            object_pairs_hook=reject_duplicate_keys,
+        )
+        evidence = persistent_attach_prebrowser_nonexecution_evidence(state_path)
+        state = load_state(state_path)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError, OracleStateError):
+        return None
+    if not isinstance(receipt, dict) or evidence is None:
+        return None
+    authorized_thread = str(receipt.get("authorized_source_thread_id") or "").casefold()
+    if (
+        receipt.get("schema") != PREBROWSER_ATTACH_NONEXECUTION_SETTLEMENT_SCHEMA
+        or receipt.get("confirmation")
+        != USER_AUTHORIZED_FRESH_AFTER_PREBROWSER_ATTACH_NONEXECUTION
+        or SOURCE_THREAD_ID_RE.fullmatch(authorized_thread) is None
+        or authorized_thread != source_thread_id_from_state(state)
+        or not str(receipt.get("reason") or "").strip()
+        or receipt.get("run_id") != evidence.get("run_id")
+        or receipt.get("project_root") != evidence.get("project_root")
+        or receipt.get("slug") != evidence.get("slug")
+        or receipt.get("transport") != evidence.get("transport")
+        or receipt.get("app_name") != evidence.get("app_name")
+        or receipt.get("signature") != evidence.get("signature")
+        or receipt.get("endpoint") != evidence.get("endpoint")
+        or receipt.get("profile_path") != evidence.get("profile_path")
+        or receipt.get("state_sha256") != evidence.get("state_sha256")
+        or receipt.get("stdout_sha256") != evidence.get("stdout_sha256")
+        or receipt.get("stderr_sha256") != evidence.get("stderr_sha256")
+        or receipt.get("transcript_sha256") != evidence.get("transcript_sha256")
+        or receipt.get("mission_sha256") != evidence.get("mission_sha256")
+        or receipt.get("ownership_receipt_sha256")
+        != evidence.get("ownership_receipt_sha256")
+        or receipt.get("output_absent") is not True
+        or receipt.get("auto_retry") is not False
+        or receipt.get("submission_action") != "none"
+        or receipt_path.resolve(strict=True).parent.parent != directory
+    ):
+        return None
+    return {
+        **receipt,
+        "authorized_source_thread_id": authorized_thread,
+        "path": str(receipt_path),
+        "sha256": hashlib.sha256(receipt_bytes).hexdigest(),
     }
 
 

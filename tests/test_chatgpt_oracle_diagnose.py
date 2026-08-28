@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from oracle_prebrowser_fixture import write_prebrowser_attach_refusal
+
 MODULE_PATH = Path(__file__).resolve().parents[1] / "bin" / "chatgpt_oracle_diagnose.py"
 
 
@@ -1033,3 +1035,106 @@ def test_recursive_self_observation_outranks_foreign_connector_search_evidence(
     verdict = module.diagnose(state_root)["unresolved_runs"][0]
 
     assert verdict["signature"] == "post-submit-recursive-self-observation"
+
+
+def test_prebrowser_attach_econnrefused_is_classified_from_exact_bounded_evidence(
+    tmp_path: Path,
+) -> None:
+    module = load()
+    run_dir = write_prebrowser_attach_refusal(tmp_path / "oracle-state")
+
+    evidence = module.STATE.persistent_attach_prebrowser_nonexecution_evidence(
+        run_dir / "state.json"
+    )
+    verdict = module.diagnose(tmp_path / "oracle-state")["unresolved_runs"][0]
+
+    assert evidence is not None
+    assert evidence["signature"] == module.STATE.PREBROWSER_ATTACH_NONEXECUTION_SIGNATURE
+    assert evidence["output_absent"] is True
+    assert evidence["browser_identity_receipt_absent"] is True
+    assert verdict["bucket"] == "pre-submit-host-environment"
+    assert verdict["signature"] == module.STATE.PREBROWSER_ATTACH_NONEXECUTION_SIGNATURE
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "browser-receipt",
+        "conversation-url",
+        "output",
+        "prompt-submitted",
+        "different-error",
+        "different-version",
+        "different-endpoint",
+        "ambiguous-duplicate-log",
+    ),
+)
+def test_prebrowser_attach_econnrefused_stays_locked_on_any_contradiction(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    module = load()
+    state_root = tmp_path / "oracle-state"
+    run_dir = write_prebrowser_attach_refusal(state_root)
+    state_path = run_dir / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    stdout_path = run_dir / "stdout.log"
+    stderr_path = run_dir / "stderr.log"
+
+    if mutation == "browser-receipt":
+        (run_dir / "browser-identity-receipt.json").write_text("{}", encoding="utf-8")
+    elif mutation == "conversation-url":
+        state["oracle"]["conversation_url"] = "https://chatgpt.com/c/contradiction"
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+    elif mutation == "output":
+        (run_dir / "output.md").write_text("provider output", encoding="utf-8")
+    elif mutation == "prompt-submitted":
+        stdout_path.write_text(
+            stdout_path.read_text(encoding="utf-8") + "Model selection: GPT-5.6 Sol\n",
+            encoding="utf-8",
+        )
+    elif mutation == "different-error":
+        stdout_path.write_text(
+            stdout_path.read_text(encoding="utf-8").replace("ECONNREFUSED", "ECONNRESET"),
+            encoding="utf-8",
+        )
+    elif mutation == "different-version":
+        state["oracle"]["resolved_version"] = "0.17.1"
+        state["oracle"]["command"][-1] = "@steipete/oracle@0.17.1"
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        stdout_path.write_text(
+            stdout_path.read_text(encoding="utf-8").replace("oracle 0.18.0", "oracle 0.17.1"),
+            encoding="utf-8",
+        )
+    elif mutation == "different-endpoint":
+        stdout_path.write_text(
+            stdout_path.read_text(encoding="utf-8").replace("127.0.0.1:19356", "127.0.0.1:19357"),
+            encoding="utf-8",
+        )
+    else:
+        stdout_path.write_text(
+            stdout_path.read_text(encoding="utf-8")
+            + "ERROR: connect ECONNREFUSED 127.0.0.1:19356\n",
+            encoding="utf-8",
+        )
+    if mutation in {
+        "prompt-submitted",
+        "different-error",
+        "different-version",
+        "different-endpoint",
+        "ambiguous-duplicate-log",
+    }:
+        (run_dir / "transcript.md").write_bytes(
+            stdout_path.read_bytes() + stderr_path.read_bytes()
+        )
+
+    assert (
+        module.STATE.persistent_attach_prebrowser_nonexecution_evidence(state_path)
+        is None
+    )
+    unresolved = module.diagnose(state_root)["unresolved_runs"]
+    assert not any(
+        verdict["bucket"] == "pre-submit-host-environment"
+        and verdict["signature"] == module.STATE.PREBROWSER_ATTACH_NONEXECUTION_SIGNATURE
+        for verdict in unresolved
+    )

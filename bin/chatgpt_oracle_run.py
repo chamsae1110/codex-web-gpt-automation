@@ -3161,6 +3161,200 @@ def settle_terminal_devspace_nonexecution_fresh_run(
     return {**preview, "settlement": proven, "settlement_sha256": proven["sha256"]}
 
 
+def settle_prebrowser_attach_nonexecution_fresh_run(
+    run_dir: Path,
+    *,
+    confirmation: str,
+    reason: str,
+    expected_state_sha256: str,
+    expected_transcript_sha256: str,
+    expected_stdout_sha256: str,
+    expected_stderr_sha256: str,
+    expected_mission_sha256: str,
+    dry_run: bool = False,
+    process_alive: Callable[[int], bool] = process_is_alive,
+) -> dict[str, Any]:
+    """Append same-task authority after exact persistent-attach prebrowser failure."""
+    if (
+        confirmation.strip().casefold()
+        != STATE.USER_AUTHORIZED_FRESH_AFTER_PREBROWSER_ATTACH_NONEXECUTION
+    ):
+        raise OracleRunError(
+            "PREBROWSER_ATTACH_NONEXECUTION_CONFIRMATION_REQUIRED",
+            "confirmation does not authorize a fresh run after prebrowser attach nonexecution",
+        )
+    normalized_reason = reason.strip()
+    if not normalized_reason:
+        raise OracleRunError(
+            "PREBROWSER_ATTACH_NONEXECUTION_REASON_REQUIRED",
+            "an explicit user-authority reason is required",
+        )
+    authorized_thread = STATE.current_source_thread_id()
+    if authorized_thread is None:
+        raise OracleRunError(
+            "PREBROWSER_ATTACH_NONEXECUTION_TASK_REQUIRED",
+            "settlement must be issued from the exact owning Codex task",
+        )
+    directory = run_dir.expanduser().resolve(strict=True)
+    state_path = directory / "state.json"
+    if (
+        state_path.is_symlink()
+        or state_path.resolve(strict=True) != state_path
+        or not state_path.is_file()
+    ):
+        raise OracleRunError(
+            "PREBROWSER_ATTACH_NONEXECUTION_STATE_UNSAFE",
+            "state must be the regular state.json in the exact run directory",
+        )
+    state = STATE.load_state(state_path)
+    owner_thread = STATE.source_thread_id_from_state(state)
+    if owner_thread != authorized_thread:
+        raise OracleRunError(
+            "FOREIGN_TASK_SESSION",
+            "a task may settle only its own exact prebrowser attach failure",
+            {
+                "owner_source_thread_id": owner_thread or "legacy-unbound",
+                "caller_source_thread_id": authorized_thread,
+                "run_id": state.get("run_id"),
+            },
+        )
+    evidence = STATE.persistent_attach_prebrowser_nonexecution_evidence(state_path)
+    if evidence is None:
+        raise OracleRunError(
+            "PREBROWSER_ATTACH_NONEXECUTION_EVIDENCE_REQUIRED",
+            "the exact run does not prove the bounded Oracle 0.18 persistent-attach prebrowser failure",
+        )
+    actual_hashes = {
+        name: str(evidence[name])
+        for name in (
+            "state_sha256",
+            "transcript_sha256",
+            "stdout_sha256",
+            "stderr_sha256",
+            "mission_sha256",
+        )
+    }
+    expected_hashes = {
+        "state_sha256": expected_state_sha256.strip().casefold(),
+        "transcript_sha256": expected_transcript_sha256.strip().casefold(),
+        "stdout_sha256": expected_stdout_sha256.strip().casefold(),
+        "stderr_sha256": expected_stderr_sha256.strip().casefold(),
+        "mission_sha256": expected_mission_sha256.strip().casefold(),
+    }
+    if actual_hashes != expected_hashes:
+        raise OracleRunError(
+            "PREBROWSER_ATTACH_NONEXECUTION_HASH_MISMATCH",
+            "exact prebrowser run artifacts changed before authority settlement",
+            {"expected": expected_hashes, "actual": actual_hashes},
+        )
+    active_pids = [pid for pid in run_owned_process_ids(directory, state) if process_alive(pid)]
+    if active_pids:
+        raise OracleRunError(
+            "PREBROWSER_ATTACH_NONEXECUTION_PROCESS_ACTIVE",
+            "run-owned Oracle or recovery process is still active",
+            {"active_pids": active_pids},
+        )
+    project_root = Path(str(state.get("project_root") or "")).expanduser().resolve(strict=True)
+    owners = STATE.unresolved_project_sessions(
+        directory.parent,
+        project_root,
+        exclude_run_id=str(state.get("run_id") or ""),
+        source_thread_id=authorized_thread,
+    )
+    if owners:
+        raise OracleRunError(
+            "PREBROWSER_ATTACH_NONEXECUTION_OWNER_ACTIVE",
+            "another exact same-task project session still owns submission authority",
+            {"owners": owners},
+        )
+    existing = STATE.proven_prebrowser_attach_nonexecution_fresh_run_authority(state_path)
+    if existing is not None:
+        if existing.get("authorized_source_thread_id") != authorized_thread:
+            raise OracleRunError(
+                "PREBROWSER_ATTACH_NONEXECUTION_AUTHORITY_CONFLICT",
+                "append-only fresh-run authority belongs to a different Codex task",
+            )
+        return {
+            "ok": True,
+            "status": "prebrowser_attach_nonexecution_fresh_run_authorized",
+            "safe_for_fresh_run": True,
+            "scope_released": True,
+            "retry_ordinal": 1,
+            "auto_retry": False,
+            "submission_action": "none",
+            "run_dir": str(directory),
+            "settlement": existing,
+        }
+    receipt = {
+        "schema": STATE.PREBROWSER_ATTACH_NONEXECUTION_SETTLEMENT_SCHEMA,
+        "confirmation": STATE.USER_AUTHORIZED_FRESH_AFTER_PREBROWSER_ATTACH_NONEXECUTION,
+        "reason": normalized_reason,
+        "authorized_source_thread_id": authorized_thread,
+        "run_id": evidence["run_id"],
+        "project_root": evidence["project_root"],
+        "slug": evidence["slug"],
+        "transport": evidence["transport"],
+        "app_name": evidence["app_name"],
+        "signature": evidence["signature"],
+        "endpoint": evidence["endpoint"],
+        "profile_path": evidence["profile_path"],
+        **actual_hashes,
+        "ownership_receipt_sha256": evidence["ownership_receipt_sha256"],
+        "output_absent": True,
+        "retry_ordinal": 1,
+        "auto_retry": False,
+        "submission_action": "none",
+        "authorized_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+    receipt_path = (
+        directory
+        / "settlements"
+        / "prebrowser-attach-nonexecution-fresh-run.json"
+    )
+    preview = {
+        "ok": True,
+        "status": "dry-run" if dry_run else "prebrowser_attach_nonexecution_fresh_run_authorized",
+        "safe_for_fresh_run": True,
+        "scope_released": True,
+        "retry_ordinal": 1,
+        "auto_retry": False,
+        "submission_action": "none",
+        "run_dir": str(directory),
+        "settlement_path": str(receipt_path),
+        "settlement_payload": receipt,
+    }
+    if dry_run:
+        return preview
+    if receipt_path.parent.exists() and (
+        receipt_path.parent.is_symlink()
+        or receipt_path.parent.resolve().parent != directory
+    ):
+        raise OracleRunError(
+            "PREBROWSER_ATTACH_NONEXECUTION_SETTLEMENT_PATH_UNSAFE",
+            "append-only settlement directory is outside the exact run",
+        )
+    receipt_path.parent.mkdir(parents=True, exist_ok=True)
+    encoded = (json.dumps(receipt, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    try:
+        with receipt_path.open("xb") as handle:
+            handle.write(encoded)
+            handle.flush()
+            os.fsync(handle.fileno())
+    except FileExistsError as exc:
+        raise OracleRunError(
+            "PREBROWSER_ATTACH_NONEXECUTION_SETTLEMENT_EXISTS",
+            "append-only settlement path already exists but did not validate",
+            {"path": str(receipt_path)},
+        ) from exc
+    proven = STATE.proven_prebrowser_attach_nonexecution_fresh_run_authority(state_path)
+    if proven is None:
+        raise OracleRunError(
+            "PREBROWSER_ATTACH_NONEXECUTION_SETTLEMENT_INVALID",
+            "written append-only settlement failed revalidation",
+        )
+    return {**preview, "settlement": proven, "settlement_sha256": proven["sha256"]}
+
+
 def settle_terminal_devspace_read_route_refresh_fresh_run(
     run_dir: Path,
     *,
@@ -4285,6 +4479,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     terminal_nonexecution_parser.add_argument("--reason", required=True)
     terminal_nonexecution_parser.add_argument("--dry-run", action="store_true")
+    prebrowser_attach_parser = commands.add_parser(
+        "settle-prebrowser-attach-nonexecution"
+    )
+    prebrowser_attach_parser.add_argument("--run-dir", type=Path, required=True)
+    prebrowser_attach_parser.add_argument("--expected-state-sha256", required=True)
+    prebrowser_attach_parser.add_argument("--expected-transcript-sha256", required=True)
+    prebrowser_attach_parser.add_argument("--expected-stdout-sha256", required=True)
+    prebrowser_attach_parser.add_argument("--expected-stderr-sha256", required=True)
+    prebrowser_attach_parser.add_argument("--expected-mission-sha256", required=True)
+    prebrowser_attach_parser.add_argument(
+        "--confirmation",
+        choices=(STATE.USER_AUTHORIZED_FRESH_AFTER_PREBROWSER_ATTACH_NONEXECUTION,),
+        required=True,
+    )
+    prebrowser_attach_parser.add_argument("--reason", required=True)
+    prebrowser_attach_parser.add_argument("--dry-run", action="store_true")
     read_route_refresh_parser = commands.add_parser(
         "settle-terminal-devspace-read-route-refresh"
     )
@@ -4412,6 +4622,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 reason=args.reason,
                 expected_state_sha256=args.expected_state_sha256,
                 expected_output_sha256=args.expected_output_sha256,
+                expected_transcript_sha256=args.expected_transcript_sha256,
+                expected_stdout_sha256=args.expected_stdout_sha256,
+                expected_stderr_sha256=args.expected_stderr_sha256,
+                expected_mission_sha256=args.expected_mission_sha256,
+                dry_run=args.dry_run,
+            )
+        elif args.command == "settle-prebrowser-attach-nonexecution":
+            payload = settle_prebrowser_attach_nonexecution_fresh_run(
+                args.run_dir,
+                confirmation=args.confirmation,
+                reason=args.reason,
+                expected_state_sha256=args.expected_state_sha256,
                 expected_transcript_sha256=args.expected_transcript_sha256,
                 expected_stdout_sha256=args.expected_stdout_sha256,
                 expected_stderr_sha256=args.expected_stderr_sha256,

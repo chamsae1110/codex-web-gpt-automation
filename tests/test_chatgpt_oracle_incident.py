@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from oracle_prebrowser_fixture import write_prebrowser_attach_refusal
+
 MODULE_PATH = Path(__file__).resolve().parents[1] / "bin" / "chatgpt_oracle_incident.py"
 DEFAULT_EVALUATOR = "99999999-9999-4999-8999-999999999999"
 
@@ -844,3 +846,110 @@ def test_non_project_reporter_role_is_rejected(tmp_path: Path) -> None:
     with pytest.raises(module.IncidentError) as exc:
         module.build_packet(run_dir, reporter_role=module.MAINTENANCE_OWNER)
     assert exc.value.code == "INCIDENT_REPORTER_ROLE_INVALID"
+
+
+def test_prebrowser_attach_econnrefused_requires_same_task_hash_bound_settlement(
+    tmp_path: Path,
+) -> None:
+    module = load()
+    run_dir = write_prebrowser_attach_refusal(tmp_path, owner=DEFAULT_EVALUATOR)
+    state_path = run_dir / "state.json"
+
+    before = module.validate_packet(module.build_packet(run_dir))
+
+    assert before["bucket"] == "pre-submit-host-environment"
+    assert before["signature"] == module.STATE.PREBROWSER_ATTACH_NONEXECUTION_SIGNATURE
+    assert before["lifecycle"] == "needs_attention"
+    assert before["authority_source"] == "exact-prebrowser-attach-nonexecution-evidence"
+    assert before["safe_for_fresh_run"] is False
+    assert before["fresh_run_authority"] is None
+    assert before["operational_instruction"]["action"] == "inspect-owned-exact-run"
+
+    evidence = module.STATE.persistent_attach_prebrowser_nonexecution_evidence(state_path)
+    assert evidence is not None
+    settlement = run_dir / "settlements" / "prebrowser-attach-nonexecution-fresh-run.json"
+    settlement.parent.mkdir()
+    settlement.write_text(json.dumps({
+        "schema": module.STATE.PREBROWSER_ATTACH_NONEXECUTION_SETTLEMENT_SCHEMA,
+        "confirmation": module.STATE.USER_AUTHORIZED_FRESH_AFTER_PREBROWSER_ATTACH_NONEXECUTION,
+        "reason": "user confirmed no review conversation existed after the listener refusal",
+        "authorized_source_thread_id": DEFAULT_EVALUATOR,
+        "run_id": evidence["run_id"],
+        "project_root": evidence["project_root"],
+        "slug": evidence["slug"],
+        "transport": evidence["transport"],
+        "app_name": evidence["app_name"],
+        "signature": evidence["signature"],
+        "endpoint": evidence["endpoint"],
+        "profile_path": evidence["profile_path"],
+        "state_sha256": evidence["state_sha256"],
+        "stdout_sha256": evidence["stdout_sha256"],
+        "stderr_sha256": evidence["stderr_sha256"],
+        "transcript_sha256": evidence["transcript_sha256"],
+        "mission_sha256": evidence["mission_sha256"],
+        "ownership_receipt_sha256": evidence["ownership_receipt_sha256"],
+        "output_absent": True,
+        "retry_ordinal": 1,
+        "auto_retry": False,
+        "submission_action": "none",
+        "authorized_at": "2026-08-28T00:00:00Z",
+    }), encoding="utf-8")
+
+    after = module.validate_packet(module.build_packet(run_dir))
+
+    assert after["lifecycle"] == "pre_submit_settled"
+    assert after["authority_source"] == (
+        "hash-bound-prebrowser-attach-nonexecution-receipt"
+    )
+    assert after["safe_for_fresh_run"] is True
+    assert after["fresh_run_authority"]["retry_ordinal"] == 1
+    assert after["operational_instruction"]["action"] == "rerun-settled-workflow"
+    assert after["operational_instruction"]["reason"] == (
+        "hash-bound-proof-confirms-persistent-attach-failed-before-browser"
+    )
+
+
+def test_prebrowser_attach_econnrefused_settlement_never_grants_a_foreign_task(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = load()
+    owner = "11111111-1111-4111-8111-111111111111"
+    foreign = "22222222-2222-4222-8222-222222222222"
+    run_dir = write_prebrowser_attach_refusal(tmp_path, owner=owner)
+    state_path = run_dir / "state.json"
+    evidence = module.STATE.persistent_attach_prebrowser_nonexecution_evidence(state_path)
+    assert evidence is not None
+    settlement = run_dir / "settlements" / "prebrowser-attach-nonexecution-fresh-run.json"
+    settlement.parent.mkdir()
+    payload = {
+        "schema": module.STATE.PREBROWSER_ATTACH_NONEXECUTION_SETTLEMENT_SCHEMA,
+        "confirmation": module.STATE.USER_AUTHORIZED_FRESH_AFTER_PREBROWSER_ATTACH_NONEXECUTION,
+        "reason": "same-task user authority",
+        "authorized_source_thread_id": owner,
+        "run_id": evidence["run_id"],
+        "project_root": evidence["project_root"],
+        "slug": evidence["slug"],
+        "transport": evidence["transport"],
+        "app_name": evidence["app_name"],
+        "signature": evidence["signature"],
+        "endpoint": evidence["endpoint"],
+        "profile_path": evidence["profile_path"],
+        **{key: evidence[key] for key in (
+            "state_sha256", "stdout_sha256", "stderr_sha256",
+            "transcript_sha256", "mission_sha256", "ownership_receipt_sha256",
+        )},
+        "output_absent": True,
+        "retry_ordinal": 1,
+        "auto_retry": False,
+        "submission_action": "none",
+        "authorized_at": "2026-08-28T00:00:00Z",
+    }
+    settlement.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setenv("CODEX_THREAD_ID", foreign)
+
+    packet = module.validate_packet(module.build_packet(run_dir))
+
+    assert packet["ownership_scope"] == "foreign-task"
+    assert packet["safe_for_fresh_run"] is False
+    assert packet["operational_instruction"]["action"] == "route-to-owner-task"

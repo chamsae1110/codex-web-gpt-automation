@@ -105,6 +105,7 @@ def _operational_instruction(
     state: dict[str, Any],
     *,
     lifecycle: str,
+    signature: str,
     owner: str | None,
     evaluator: str | None,
     scope: str,
@@ -119,7 +120,11 @@ def _operational_instruction(
         executable = False
     elif lifecycle == "pre_submit_settled" and owner is not None and evaluator == owner:
         action = "rerun-settled-workflow"
-        reason = "workflow-proof-confirms-oracle-layout-was-never-created"
+        reason = (
+            "hash-bound-proof-confirms-persistent-attach-failed-before-browser"
+            if signature == STATE.PREBROWSER_ATTACH_NONEXECUTION_SIGNATURE
+            else "workflow-proof-confirms-oracle-layout-was-never-created"
+        )
         executable = True
     elif owner is None:
         action = "none"
@@ -164,6 +169,9 @@ def build_packet(run_dir: Path, *, reporter_role: str = REPORTER_ROLE) -> dict[s
     state = STATE.load_state(state_path)
     artifacts = state.get("artifacts") if isinstance(state.get("artifacts"), dict) else {}
     output_path = Path(str(artifacts.get("output") or (directory / "output.md")))
+    prebrowser_attach_evidence = (
+        STATE.persistent_attach_prebrowser_nonexecution_evidence(state_path)
+    )
     verdict = DIAGNOSE.classify_run(
         state,
         stdout_text="\n".join((
@@ -178,6 +186,7 @@ def build_packet(run_dir: Path, *, reporter_role: str = REPORTER_ROLE) -> dict[s
         ),
         pre_submit_host_failure=STATE.proven_pre_submit_host_failure(state_path),
         pre_submit_session_absence=STATE.proven_pre_submit_session_absence(state_path),
+        prebrowser_attach_nonexecution=prebrowser_attach_evidence,
     )
     lifecycle = STATE.resolve_lifecycle(
         state, output_is_present=DIAGNOSE._output_is_nonempty(output_path)
@@ -206,6 +215,9 @@ def build_packet(run_dir: Path, *, reporter_role: str = REPORTER_ROLE) -> dict[s
             state_path
         )
     )
+    prebrowser_attach_authority = (
+        STATE.proven_prebrowser_attach_nonexecution_fresh_run_authority(state_path)
+    )
     if (
         (
             terminal_nonexecution_authority is not None
@@ -215,6 +227,11 @@ def build_packet(run_dir: Path, *, reporter_role: str = REPORTER_ROLE) -> dict[s
         or (
             read_route_refresh_authority is not None
             and read_route_refresh_authority.get("authorized_source_thread_id")
+            == evaluated_from_thread
+        )
+        or (
+            prebrowser_attach_authority is not None
+            and prebrowser_attach_authority.get("authorized_source_thread_id")
             == evaluated_from_thread
         )
     ):
@@ -249,10 +266,36 @@ def build_packet(run_dir: Path, *, reporter_role: str = REPORTER_ROLE) -> dict[s
         == evaluated_from_thread
         and not owners
     )
+    prebrowser_attach_fresh_safe = (
+        str(verdict["signature"]) == STATE.PREBROWSER_ATTACH_NONEXECUTION_SIGNATURE
+        and prebrowser_attach_authority is not None
+        and prebrowser_attach_authority.get("signature")
+        == str(verdict["signature"])
+        and prebrowser_attach_authority.get("authorized_source_thread_id")
+        == evaluated_from_thread
+        and ownership_scope == "same-task"
+        and not owners
+    )
     fresh_run_authority = (
-        read_route_refresh_authority
+        prebrowser_attach_authority
+        or read_route_refresh_authority
         or terminal_nonexecution_authority
         or recursive_authority
+    )
+    effective_lifecycle = (
+        {
+            "lifecycle": "pre_submit_settled",
+            "authority_source": "hash-bound-prebrowser-attach-nonexecution-receipt",
+        }
+        if prebrowser_attach_authority is not None
+        else (
+            {
+                "lifecycle": "needs_attention",
+                "authority_source": "exact-prebrowser-attach-nonexecution-evidence",
+            }
+            if prebrowser_attach_evidence is not None
+            else lifecycle
+        )
     )
     return {
         "schema": SCHEMA,
@@ -260,8 +303,8 @@ def build_packet(run_dir: Path, *, reporter_role: str = REPORTER_ROLE) -> dict[s
         "project_root": str(state.get("project_root") or ""),
         "bucket": bucket,
         "signature": str(verdict["signature"]),
-        "lifecycle": str(lifecycle["lifecycle"]),
-        "authority_source": str(lifecycle["authority_source"]),
+        "lifecycle": str(effective_lifecycle["lifecycle"]),
+        "authority_source": str(effective_lifecycle["authority_source"]),
         "conversation_url": str((state.get("oracle") or {}).get("conversation_url") or "")
         if isinstance(state.get("oracle"), dict)
         else "",
@@ -274,7 +317,8 @@ def build_packet(run_dir: Path, *, reporter_role: str = REPORTER_ROLE) -> dict[s
         "ownership_scope": ownership_scope,
         "operational_instruction": _operational_instruction(
             state,
-            lifecycle=str(lifecycle["lifecycle"]),
+            lifecycle=str(effective_lifecycle["lifecycle"]),
+            signature=str(verdict["signature"]),
             owner=owner_thread,
             evaluator=evaluated_from_thread,
             scope=ownership_scope,
@@ -287,17 +331,26 @@ def build_packet(run_dir: Path, *, reporter_role: str = REPORTER_ROLE) -> dict[s
                 and (
                     (
                         bucket in {DIAGNOSE.PRE_SUBMIT_HOST, DIAGNOSE.PRE_SUBMIT_UI}
+                        and str(verdict["signature"])
+                        != STATE.PREBROWSER_ATTACH_NONEXECUTION_SIGNATURE
                         and not owners
                     )
                     or recursive_fresh_safe
                     or read_route_refresh_fresh_safe
+                    or prebrowser_attach_fresh_safe
                 )
             )
             or terminal_nonexecution_fresh_safe
         ),
         "unresolved_owners": owners,
         "fresh_run_authority": fresh_run_authority,
-        "remediation": DIAGNOSE.REMEDIATION.get(bucket, ""),
+        "remediation": (
+            "Use the same-task hash-bound prebrowser settlement, ensure the configured "
+            "persistent Chrome listener is running, then make at most one fresh run."
+            if str(verdict["signature"])
+            == STATE.PREBROWSER_ATTACH_NONEXECUTION_SIGNATURE
+            else DIAGNOSE.REMEDIATION.get(bucket, "")
+        ),
         "evidence_paths": sorted(
             str(path)
             for path in (
@@ -427,6 +480,7 @@ def build_missing_layout_packet(
         "operational_instruction": _operational_instruction(
             state_stub,
             lifecycle="pre_submit_settled",
+            signature="oracle-layout-not-created-pre-submit",
             owner=owner,
             evaluator=evaluator,
             scope=scope,
@@ -553,7 +607,12 @@ def validate_packet(packet: dict[str, Any]) -> dict[str, Any]:
         elif lifecycle == "pre_submit_settled" and scope == "same-task":
             expected_instruction = (
                 "rerun-settled-workflow",
-                "workflow-proof-confirms-oracle-layout-was-never-created",
+                (
+                    "hash-bound-proof-confirms-persistent-attach-failed-before-browser"
+                    if packet.get("signature")
+                    == STATE.PREBROWSER_ATTACH_NONEXECUTION_SIGNATURE
+                    else "workflow-proof-confirms-oracle-layout-was-never-created"
+                ),
                 True,
                 True,
             )
@@ -594,7 +653,10 @@ def validate_packet(packet: dict[str, Any]) -> dict[str, Any]:
                 "the operational action must match the exact lifecycle and task ownership scope",
                 {"expected": expected_instruction, "actual": actual_instruction},
             )
-        if packet.get("safe_for_fresh_run") is True and packet.get("bucket") == DIAGNOSE.TASK_NOT_EXECUTED:
+        if packet.get("safe_for_fresh_run") is True and (
+            packet.get("bucket") == DIAGNOSE.TASK_NOT_EXECUTED
+            or packet.get("signature") == STATE.PREBROWSER_ATTACH_NONEXECUTION_SIGNATURE
+        ):
             state_path = Path(str(packet["run_dir"])) / "state.json"
             signature = str(packet.get("signature") or "")
             if signature == "post-submit-recursive-self-observation":
@@ -605,6 +667,12 @@ def validate_packet(packet: dict[str, Any]) -> dict[str, Any]:
                     proof = None
             elif signature == STATE.TERMINAL_DEVSPACE_READ_ROUTE_REFRESH_SIGNATURE:
                 proof = STATE.proven_terminal_devspace_read_route_refresh_fresh_run_authority(
+                    state_path
+                )
+                if proof is not None and proof.get("authorized_source_thread_id") != evaluator:
+                    proof = None
+            elif signature == STATE.PREBROWSER_ATTACH_NONEXECUTION_SIGNATURE:
+                proof = STATE.proven_prebrowser_attach_nonexecution_fresh_run_authority(
                     state_path
                 )
                 if proof is not None and proof.get("authorized_source_thread_id") != evaluator:

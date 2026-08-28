@@ -176,6 +176,7 @@ def classify_run(
     user_confirmed_no_submission: bool = False,
     pre_submit_host_failure: dict[str, Any] | None = None,
     pre_submit_session_absence: dict[str, Any] | None = None,
+    prebrowser_attach_nonexecution: dict[str, Any] | None = None,
 ) -> dict[str, str]:
     """Return the bucket and signature for one persisted run.
 
@@ -227,6 +228,19 @@ def classify_run(
         return {
             "bucket": PRE_SUBMIT_HOST,
             "signature": "exact-session-absent-before-submit",
+        }
+    if (
+        isinstance(prebrowser_attach_nonexecution, dict)
+        and prebrowser_attach_nonexecution.get("signature")
+        == STATE.PREBROWSER_ATTACH_NONEXECUTION_SIGNATURE
+        and prebrowser_attach_nonexecution.get("output_absent") is True
+        and prebrowser_attach_nonexecution.get("conversation_url_absent") is True
+        and prebrowser_attach_nonexecution.get("browser_identity_receipt_absent") is True
+        and prebrowser_attach_nonexecution.get("prompt_submitted") is False
+    ):
+        return {
+            "bucket": PRE_SUBMIT_HOST,
+            "signature": STATE.PREBROWSER_ATTACH_NONEXECUTION_SIGNATURE,
         }
     if lifecycle == "abandoned":
         return {"bucket": ACTIVE, "signature": "explicitly-abandoned"}
@@ -328,6 +342,11 @@ def diagnose(state_root: Path | None = None) -> dict[str, Any]:
             pre_submit_host_failure=STATE.proven_pre_submit_host_failure(run_dir / "state.json"),
             pre_submit_session_absence=STATE.proven_pre_submit_session_absence(
                 run_dir / "state.json"
+            ),
+            prebrowser_attach_nonexecution=(
+                STATE.persistent_attach_prebrowser_nonexecution_evidence(
+                    run_dir / "state.json"
+                )
             ),
         )
         observer = state.get("browser_observer") if isinstance(state.get("browser_observer"), dict) else {}

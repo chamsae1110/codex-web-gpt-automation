@@ -11,6 +11,8 @@ from pathlib import Path
 
 import pytest
 
+from oracle_prebrowser_fixture import write_prebrowser_attach_refusal
+
 RUNNER_PATH = Path(__file__).resolve().parents[1] / "bin" / "chatgpt_oracle_run.py"
 
 
@@ -156,6 +158,110 @@ def test_version_resolution_recovers_current_oracle_from_exact_cached_package() 
         cache_resolver=lambda command: "oracle 0.18.0",
     )
     assert resolved == "oracle 0.18.0"
+
+
+def test_prebrowser_attach_econnrefused_settlement_is_hash_bound_and_append_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = load_runner()
+    owner = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    monkeypatch.setenv("CODEX_THREAD_ID", owner)
+    run_dir = write_prebrowser_attach_refusal(tmp_path, owner=owner)
+    state_path = run_dir / "state.json"
+    evidence = runner.STATE.persistent_attach_prebrowser_nonexecution_evidence(state_path)
+    assert evidence is not None
+    hashes = {
+        f"expected_{name}": evidence[name]
+        for name in (
+            "state_sha256",
+            "transcript_sha256",
+            "stdout_sha256",
+            "stderr_sha256",
+            "mission_sha256",
+        )
+    }
+    state_before = state_path.read_bytes()
+
+    dry = runner.settle_prebrowser_attach_nonexecution_fresh_run(
+        run_dir,
+        confirmation=runner.STATE.USER_AUTHORIZED_FRESH_AFTER_PREBROWSER_ATTACH_NONEXECUTION,
+        reason="user confirmed the listener was absent and no review conversation existed",
+        dry_run=True,
+        process_alive=lambda _pid: False,
+        **hashes,
+    )
+
+    assert dry["status"] == "dry-run"
+    assert dry["safe_for_fresh_run"] is True
+    assert dry["retry_ordinal"] == 1
+    assert dry["submission_action"] == "none"
+    assert state_path.read_bytes() == state_before
+    assert not Path(dry["settlement_path"]).exists()
+
+    settled = runner.settle_prebrowser_attach_nonexecution_fresh_run(
+        run_dir,
+        confirmation=runner.STATE.USER_AUTHORIZED_FRESH_AFTER_PREBROWSER_ATTACH_NONEXECUTION,
+        reason="user confirmed the listener was absent and no review conversation existed",
+        process_alive=lambda _pid: False,
+        **hashes,
+    )
+
+    assert settled["status"] == "prebrowser_attach_nonexecution_fresh_run_authorized"
+    assert settled["safe_for_fresh_run"] is True
+    assert settled["settlement"]["authorized_source_thread_id"] == owner
+    assert settled["settlement"]["endpoint"] == "127.0.0.1:19356"
+    assert state_path.read_bytes() == state_before
+    assert not (run_dir / "output.md").exists()
+    assert runner.STATE.proven_prebrowser_attach_nonexecution_fresh_run_authority(
+        state_path
+    ) is not None
+
+
+def test_prebrowser_attach_econnrefused_settlement_rejects_hash_drift_and_foreign_task(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = load_runner()
+    owner = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    run_dir = write_prebrowser_attach_refusal(tmp_path, owner=owner)
+    evidence = runner.STATE.persistent_attach_prebrowser_nonexecution_evidence(
+        run_dir / "state.json"
+    )
+    assert evidence is not None
+    hashes = {
+        f"expected_{name}": evidence[name]
+        for name in (
+            "state_sha256",
+            "transcript_sha256",
+            "stdout_sha256",
+            "stderr_sha256",
+            "mission_sha256",
+        )
+    }
+    monkeypatch.setenv("CODEX_THREAD_ID", owner)
+    with pytest.raises(runner.OracleRunError) as drift:
+        runner.settle_prebrowser_attach_nonexecution_fresh_run(
+            run_dir,
+            confirmation=runner.STATE.USER_AUTHORIZED_FRESH_AFTER_PREBROWSER_ATTACH_NONEXECUTION,
+            reason="bounded user authority",
+            dry_run=True,
+            process_alive=lambda _pid: False,
+            **{**hashes, "expected_stdout_sha256": "0" * 64},
+        )
+    assert drift.value.code == "PREBROWSER_ATTACH_NONEXECUTION_HASH_MISMATCH"
+
+    monkeypatch.setenv("CODEX_THREAD_ID", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+    with pytest.raises(runner.OracleRunError) as foreign:
+        runner.settle_prebrowser_attach_nonexecution_fresh_run(
+            run_dir,
+            confirmation=runner.STATE.USER_AUTHORIZED_FRESH_AFTER_PREBROWSER_ATTACH_NONEXECUTION,
+            reason="bounded user authority",
+            dry_run=True,
+            process_alive=lambda _pid: False,
+            **hashes,
+        )
+    assert foreign.value.code == "FOREIGN_TASK_SESSION"
 
 
 def test_default_oracle_command_is_pinned_to_the_hash_validated_version() -> None:
