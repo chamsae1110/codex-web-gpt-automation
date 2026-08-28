@@ -2186,12 +2186,24 @@ def terminal_devspace_nonexecution_evidence(
             ("no fallback", "did not try another path"),
         )
     )
+    current_core_nonexecution = (
+        project_root.casefold() in folded
+        and all(
+            needle in folded
+            for needle in (
+                "workspace tool provider: **chat on steroids core**",
+                "both permitted attempts against the exact root",
+                "no project file, mission file, `agents.md`, oracle controller state, or other local resource was read or modified",
+                "the mission could not be started because chat on steroids core did not establish caller identity or return a workspace id",
+            )
+        )
+    )
     core_identity_unavailable = (
         app_name == "chat on steroids core"
         and app_name in folded
         and core_project_bound
         and core_identity_refusal
-        and (korean_core_nonexecution or english_core_nonexecution)
+        and (korean_core_nonexecution or english_core_nonexecution or current_core_nonexecution)
     )
     if (
         not run_id
