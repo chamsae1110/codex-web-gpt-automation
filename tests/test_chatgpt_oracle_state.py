@@ -1463,6 +1463,38 @@ def test_settled_prebrowser_owner_is_released_without_rewriting_historical_state
     assert (parent / "state.json").read_bytes() == state_before
 
 
+def test_settled_stale_ws_404_owner_is_released_without_state_rewrite(
+    tmp_path: Path,
+) -> None:
+    state = load_state()
+    owner = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    source_mission = project_root / "mission.md"
+    source_mission.write_text("immutable review", encoding="utf-8")
+    run_root = tmp_path / "runs"
+    parent = write_prebrowser_attach_refusal(
+        tmp_path,
+        owner=owner,
+        project_root=project_root,
+        source_mission=source_mission,
+        run_root=run_root,
+        failure="stale-ws-404",
+    )
+    state_before = (parent / "state.json").read_bytes()
+    write_prebrowser_settlement(parent, owner=owner)
+
+    authority = state.proven_prebrowser_attach_nonexecution_fresh_run_authority(
+        parent / "state.json"
+    )
+    assert authority is not None
+    assert authority["signature"] == state.PREBROWSER_ATTACH_STALE_WS_404_SIGNATURE
+    assert state.unresolved_project_sessions(
+        run_root, project_root, source_thread_id=owner
+    ) == []
+    assert (parent / "state.json").read_bytes() == state_before
+
+
 @pytest.mark.parametrize(
     "mutation",
     ("tampered-receipt", "output", "conversation", "foreign-authority"),

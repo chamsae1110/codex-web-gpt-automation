@@ -263,8 +263,13 @@ writes one append-only receipt; it does not edit historical run artifacts or
 submit a prompt.
 
 Oracle 0.18 persistent attach can fail before creating any browser target when
-its configured loopback CDP listener is absent. This is not generic recovery
-authority. It is classified as pre-browser nonexecution only when the exact
+its configured loopback CDP listener is absent, or when its profile metadata
+contains a stale browser-WebSocket UUID and the attach fails with the exact
+`Unexpected server response: 404` pair. The strict route refreshes the current
+browser WebSocket URL from the same loopback `/json/version` endpoint and
+validates its host, port, and browser path before connecting. This is not
+generic recovery authority. It is classified as pre-browser nonexecution only
+when the exact
 0.18 launch transcript and configured endpoint/profile match, the observer
 records process exit, the immutable mission and ownership receipt validate,
 and output, conversation URL, browser identity receipt, and prompt-submitted

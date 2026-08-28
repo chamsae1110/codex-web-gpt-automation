@@ -402,6 +402,10 @@ def test_published_0180_default_contract_applies_every_current_patch(tmp_path: P
     assert 'process.env.ORACLE_PERSISTENT_BROWSER_PROFILE' in attach_source
     assert "normalizeProfilePath(candidate.profileRoot) === expectedProfile" in attach_source
     assert "No running browser with attach metadata matched" in attach_source
+    assert "/json/version" in attach_source
+    assert "isExactBrowserWSEndpoint" in attach_source
+    assert "Strict attach requires a loopback Chrome endpoint" in attach_source
+    assert "Refreshed stale DevToolsActivePort browser endpoint" in attach_source
     standalone = tmp_path / "attachRunning.persistent-profile.mjs"
     standalone.write_text(
         attach_source.replace(
@@ -415,14 +419,31 @@ def test_published_0180_default_contract_applies_every_current_patch(tmp_path: P
     filter_script = (
         "process.env.ORACLE_STRICT_ATTACH_PROFILE='1';"
         f"process.env.ORACLE_PERSISTENT_BROWSER_PROFILE={json.dumps(expected_profile)};"
+        "const logs=[];let fetchCalls=0;"
+        "globalThis.fetch=async()=>{fetchCalls+=1;return {ok:true,status:200,json:async()=>({webSocketDebuggerUrl:'ws://127.0.0.1:19356/devtools/browser/live'})};};"
         f"globalThis.__attachCandidates=["
-        f"{{port:19356,profileRoot:{json.dumps(wrong_profile)},browserWSEndpoint:'ws://wrong',path:'wrong',mtimeMs:99}},"
-        f"{{port:19356,profileRoot:{json.dumps(expected_profile)},browserWSEndpoint:'ws://right',path:'right',mtimeMs:1}}];"
+        f"{{port:19356,profileRoot:{json.dumps(wrong_profile)},browserWSEndpoint:'ws://127.0.0.1:19356/devtools/browser/wrong',path:'wrong',mtimeMs:99}},"
+        f"{{port:19356,profileRoot:{json.dumps(expected_profile)},browserWSEndpoint:'ws://127.0.0.1:19356/devtools/browser/stale',path:'right',mtimeMs:1}}];"
         f"const m=await import({json.dumps(standalone.as_uri())});"
-        "const selected=await m.resolveAttachRunningConnection({remoteChrome:{host:'127.0.0.1',port:19356}},()=>{});"
-        "globalThis.__attachCandidates=[{port:19356,profileRoot:'missing',browserWSEndpoint:'ws://wrong',path:'wrong',mtimeMs:100}];"
+        "const selected=await m.resolveAttachRunningConnection({remoteChrome:{host:'127.0.0.1',port:19356}},message=>logs.push(message));"
+        "globalThis.__attachCandidates=[{port:19356,profileRoot:'missing',browserWSEndpoint:'ws://127.0.0.1:19356/devtools/browser/wrong',path:'wrong',mtimeMs:100}];"
         "let rejected=false;try{await m.resolveAttachRunningConnection({remoteChrome:{host:'127.0.0.1',port:19356}},()=>{});}catch{rejected=true;}"
-        "console.log(JSON.stringify({selected,rejected}));"
+        f"globalThis.__attachCandidates=[{{port:19356,profileRoot:{json.dumps(expected_profile)},browserWSEndpoint:'ws://127.0.0.1:19356/devtools/browser/stale',path:'right',mtimeMs:1}}];"
+        "globalThis.fetch=async()=>{fetchCalls+=1;return {ok:true,status:200,json:async()=>({webSocketDebuggerUrl:'ws://example.com:19356/devtools/browser/foreign'})};};"
+        "let endpointRejected=false;try{await m.resolveAttachRunningConnection({remoteChrome:{host:'127.0.0.1',port:19356}},()=>{});}catch{endpointRejected=true;}"
+        "globalThis.fetch=async()=>{fetchCalls+=1;return {ok:true,status:200,json:async()=>({webSocketDebuggerUrl:'ws://127.0.0.1:19357/devtools/browser/wrong-port'})};};"
+        "let portRejected=false;try{await m.resolveAttachRunningConnection({remoteChrome:{host:'127.0.0.1',port:19356}},()=>{});}catch{portRejected=true;}"
+        "globalThis.fetch=async()=>{fetchCalls+=1;return {ok:true,status:200,json:async()=>({webSocketDebuggerUrl:'not-a-websocket'})};};"
+        "let malformedRejected=false;try{await m.resolveAttachRunningConnection({remoteChrome:{host:'127.0.0.1',port:19356}},()=>{});}catch{malformedRejected=true;}"
+        "globalThis.fetch=async()=>{fetchCalls+=1;return {ok:false,status:404,json:async()=>({})};};"
+        "let statusRejected=false;try{await m.resolveAttachRunningConnection({remoteChrome:{host:'127.0.0.1',port:19356}},()=>{});}catch{statusRejected=true;}"
+        "globalThis.fetch=async()=>{throw new Error('non-loopback attach must fail before fetch');};"
+        "let nonLoopbackRejected=false;try{await m.resolveAttachRunningConnection({remoteChrome:{host:'example.com',port:19356}},()=>{});}catch{nonLoopbackRejected=true;}"
+        "delete process.env.ORACLE_STRICT_ATTACH_PROFILE;delete process.env.ORACLE_PERSISTENT_BROWSER_PROFILE;"
+        "globalThis.fetch=async()=>{throw new Error('non-strict attach must not fetch');};"
+        "globalThis.__attachCandidates=[{port:19356,profileRoot:'legacy',browserWSEndpoint:'ws://legacy',path:'legacy',mtimeMs:1}];"
+        "const nonStrict=await m.resolveAttachRunningConnection({remoteChrome:{host:'127.0.0.1',port:19356}},()=>{});"
+        "console.log(JSON.stringify({selected,rejected,endpointRejected,portRejected,malformedRejected,statusRejected,nonLoopbackRejected,nonStrict,logs,fetchCalls}));"
     )
     filtered = subprocess.run(
         [node, "--input-type=module", "-e", filter_script],
@@ -434,8 +455,50 @@ def test_published_0180_default_contract_applies_every_current_patch(tmp_path: P
     assert filtered.returncode == 0, filtered.stderr
     selected = json.loads(filtered.stdout)
     assert selected["selected"]["profileRoot"] == expected_profile
-    assert selected["selected"]["browserWSEndpoint"] == "ws://right"
+    assert selected["selected"]["browserWSEndpoint"] == (
+        "ws://127.0.0.1:19356/devtools/browser/live"
+    )
     assert selected["rejected"] is True
+    assert selected["endpointRejected"] is True
+    assert selected["portRejected"] is True
+    assert selected["malformedRejected"] is True
+    assert selected["statusRejected"] is True
+    assert selected["nonLoopbackRejected"] is True
+    assert selected["nonStrict"]["browserWSEndpoint"] == "ws://legacy"
+    assert selected["fetchCalls"] == 5
+    assert any(
+        "Refreshed stale DevToolsActivePort browser endpoint" in message
+        for message in selected["logs"]
+    )
+
+
+def test_published_0180_migrates_previous_strict_attach_patch(tmp_path: Path) -> None:
+    compat = load_compat()
+    configured = os.environ.get("ORACLE_018_PACKAGE_ROOT", "").strip()
+    source = Path(configured) if configured else Path("__oracle_018_cache_unset__")
+    if not source.is_dir():
+        if os.environ.get("CI"):
+            pytest.fail("CI must prepare the exact published Oracle 0.18.0 package")
+        pytest.skip("published Oracle 0.18.0 package root is unavailable")
+    package = tmp_path / "oracle-previous-attach"
+    shutil.copytree(source, package)
+    relative = "dist/src/browser/attachRunning.js"
+    target = package / relative
+    contract = compat.PATCHES[relative]
+    compat._apply_patch(
+        package,
+        compat.patch_root("0.18.0") / "attachRunning.persistent-profile.v1.patch",
+    )
+    assert compat.sha256_file(target) == contract["legacy_patched"][0]
+
+    result = compat.ensure_oracle_compatibility(
+        "oracle 0.18.0",
+        package_root=package,
+        backup_root=tmp_path / "backup-previous-attach",
+    )
+
+    assert relative in result["changed"]
+    assert compat.sha256_file(target) == contract["patched"]
 
 
 def test_published_0180_accepts_current_gpt56_sol_pro_power_summary(tmp_path: Path) -> None:

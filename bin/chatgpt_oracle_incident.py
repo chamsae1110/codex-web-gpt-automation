@@ -122,7 +122,7 @@ def _operational_instruction(
         action = "rerun-settled-workflow"
         reason = (
             "hash-bound-proof-confirms-persistent-attach-failed-before-browser"
-            if signature == STATE.PREBROWSER_ATTACH_NONEXECUTION_SIGNATURE
+            if signature in STATE.PREBROWSER_ATTACH_NONEXECUTION_SIGNATURES
             else "settled-owner-guard-rejected-before-oracle-retry-unconsumed"
             if signature == STATE.SETTLED_PREBROWSER_OWNER_GUARD_REJECTION_SIGNATURE
             else "workflow-proof-confirms-oracle-layout-was-never-created"
@@ -273,7 +273,7 @@ def build_packet(run_dir: Path, *, reporter_role: str = REPORTER_ROLE) -> dict[s
         and not owners
     )
     prebrowser_attach_fresh_safe = (
-        str(verdict["signature"]) == STATE.PREBROWSER_ATTACH_NONEXECUTION_SIGNATURE
+        str(verdict["signature"]) in STATE.PREBROWSER_ATTACH_NONEXECUTION_SIGNATURES
         and prebrowser_attach_authority is not None
         and prebrowser_attach_authority.get("signature")
         == str(verdict["signature"])
@@ -344,7 +344,7 @@ def build_packet(run_dir: Path, *, reporter_role: str = REPORTER_ROLE) -> dict[s
                     (
                         bucket in {DIAGNOSE.PRE_SUBMIT_HOST, DIAGNOSE.PRE_SUBMIT_UI}
                         and str(verdict["signature"])
-                        != STATE.PREBROWSER_ATTACH_NONEXECUTION_SIGNATURE
+                        not in STATE.PREBROWSER_ATTACH_NONEXECUTION_SIGNATURES
                         and not owners
                     )
                     or recursive_fresh_safe
@@ -360,7 +360,7 @@ def build_packet(run_dir: Path, *, reporter_role: str = REPORTER_ROLE) -> dict[s
             "Use the same-task hash-bound prebrowser settlement, ensure the configured "
             "persistent Chrome listener is running, then make at most one fresh run."
             if str(verdict["signature"])
-            == STATE.PREBROWSER_ATTACH_NONEXECUTION_SIGNATURE
+            in STATE.PREBROWSER_ATTACH_NONEXECUTION_SIGNATURES
             else "No additional settlement is required; the owning task may use the "
             "unconsumed retry authority once after the normal preflight passes."
             if str(verdict["signature"])
@@ -626,7 +626,7 @@ def validate_packet(packet: dict[str, Any]) -> dict[str, Any]:
                 (
                     "hash-bound-proof-confirms-persistent-attach-failed-before-browser"
                     if packet.get("signature")
-                    == STATE.PREBROWSER_ATTACH_NONEXECUTION_SIGNATURE
+                    in STATE.PREBROWSER_ATTACH_NONEXECUTION_SIGNATURES
                     else "settled-owner-guard-rejected-before-oracle-retry-unconsumed"
                     if packet.get("signature")
                     == STATE.SETTLED_PREBROWSER_OWNER_GUARD_REJECTION_SIGNATURE
@@ -696,7 +696,7 @@ def validate_packet(packet: dict[str, Any]) -> dict[str, Any]:
                 )
         if packet.get("safe_for_fresh_run") is True and (
             packet.get("bucket") == DIAGNOSE.TASK_NOT_EXECUTED
-            or packet.get("signature") == STATE.PREBROWSER_ATTACH_NONEXECUTION_SIGNATURE
+            or packet.get("signature") in STATE.PREBROWSER_ATTACH_NONEXECUTION_SIGNATURES
         ):
             state_path = Path(str(packet["run_dir"])) / "state.json"
             signature = str(packet.get("signature") or "")
@@ -712,7 +712,7 @@ def validate_packet(packet: dict[str, Any]) -> dict[str, Any]:
                 )
                 if proof is not None and proof.get("authorized_source_thread_id") != evaluator:
                     proof = None
-            elif signature == STATE.PREBROWSER_ATTACH_NONEXECUTION_SIGNATURE:
+            elif signature in STATE.PREBROWSER_ATTACH_NONEXECUTION_SIGNATURES:
                 proof = STATE.proven_prebrowser_attach_nonexecution_fresh_run_authority(
                     state_path
                 )

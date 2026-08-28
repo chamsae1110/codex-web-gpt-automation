@@ -913,6 +913,33 @@ def test_prebrowser_attach_econnrefused_requires_same_task_hash_bound_settlement
     )
 
 
+def test_prebrowser_attach_stale_ws_404_requires_only_the_existing_settlement(
+    tmp_path: Path,
+) -> None:
+    module = load()
+    run_dir = write_prebrowser_attach_refusal(
+        tmp_path, owner=DEFAULT_EVALUATOR, failure="stale-ws-404"
+    )
+
+    before = module.validate_packet(module.build_packet(run_dir))
+
+    assert before["bucket"] == "pre-submit-host-environment"
+    assert before["signature"] == module.STATE.PREBROWSER_ATTACH_STALE_WS_404_SIGNATURE
+    assert before["lifecycle"] == "needs_attention"
+    assert before["safe_for_fresh_run"] is False
+    assert before["fresh_run_authority"] is None
+
+    write_prebrowser_settlement(run_dir, owner=DEFAULT_EVALUATOR)
+    after = module.validate_packet(module.build_packet(run_dir))
+
+    assert after["lifecycle"] == "pre_submit_settled"
+    assert after["safe_for_fresh_run"] is True
+    assert after["fresh_run_authority"]["signature"] == (
+        module.STATE.PREBROWSER_ATTACH_STALE_WS_404_SIGNATURE
+    )
+    assert after["operational_instruction"]["action"] == "rerun-settled-workflow"
+
+
 def test_prebrowser_attach_econnrefused_settlement_never_grants_a_foreign_task(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

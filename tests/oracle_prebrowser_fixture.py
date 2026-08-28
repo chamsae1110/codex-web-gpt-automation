@@ -13,8 +13,11 @@ def write_prebrowser_attach_refusal(
     project_root: Path | None = None,
     source_mission: Path | None = None,
     run_root: Path | None = None,
+    failure: str = "econnrefused",
 ) -> Path:
     """Write the exact bounded Oracle 0.18 persistent-attach failure shape."""
+    if failure not in {"econnrefused", "stale-ws-404"}:
+        raise ValueError(f"unsupported prebrowser failure fixture: {failure}")
     root.mkdir(parents=True, exist_ok=True)
     project_root = project_root or (root / "project")
     project_root.mkdir(parents=True, exist_ok=True)
@@ -36,6 +39,13 @@ def write_prebrowser_attach_refusal(
     stdout_path = run_dir / "stdout.log"
     stderr_path = run_dir / "stderr.log"
     transcript_path = run_dir / "transcript.md"
+    failure_lines = (
+        "ERROR: connect ECONNREFUSED 127.0.0.1:19356\n"
+        "User error (browser-automation): connect ECONNREFUSED 127.0.0.1:19356\n"
+        if failure == "econnrefused"
+        else "ERROR: Unexpected server response: 404\n"
+        "User error (browser-automation): Unexpected server response: 404\n"
+    )
     stdout = (
         "🧿 oracle 0.18.0 — Your code's confessional booth.\n"
         f"Session: {slug}\n"
@@ -51,8 +61,7 @@ def write_prebrowser_attach_refusal(
         "browser process alone.\n"
         "[browser] Acquired ChatGPT browser slot f554424e (3 max).\n"
         "[browser] Released ChatGPT browser slot f554424e.\n"
-        "ERROR: connect ECONNREFUSED 127.0.0.1:19356\n"
-        "User error (browser-automation): connect ECONNREFUSED 127.0.0.1:19356\n"
+        f"{failure_lines}"
     )
     stderr = (
         "npm notice run fixture@0.1.0 npx\n"
@@ -158,6 +167,12 @@ def write_prebrowser_settlement(run_dir: Path, *, owner: str) -> Path:
     state_path = run_dir / "state.json"
     state = json.loads(state_path.read_text(encoding="utf-8"))
     profile = state["profile"]["browser_attach"]
+    stdout = (run_dir / "stdout.log").read_text(encoding="utf-8")
+    signature = (
+        "persistent-attach-stale-browser-websocket-404-before-browser"
+        if "Unexpected server response: 404" in stdout
+        else "persistent-attach-cdp-refused-before-browser"
+    )
     receipt = {
         "schema": "codex.chatgpt.oracle-prebrowser-attach-nonexecution-settlement/v1",
         "confirmation": "user-authorized-fresh-run-after-prebrowser-attach-nonexecution",
@@ -168,7 +183,7 @@ def write_prebrowser_settlement(run_dir: Path, *, owner: str) -> Path:
         "slug": state["oracle"]["slug"],
         "transport": state["transport"],
         "app_name": state["app_name"],
-        "signature": "persistent-attach-cdp-refused-before-browser",
+        "signature": signature,
         "endpoint": f"{profile['host']}:{profile['port']}",
         "profile_path": profile["profile_path"],
         "state_sha256": hashlib.sha256(state_path.read_bytes()).hexdigest(),

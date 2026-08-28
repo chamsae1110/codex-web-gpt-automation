@@ -1060,6 +1060,27 @@ def test_prebrowser_attach_econnrefused_is_classified_from_exact_bounded_evidenc
     assert verdict["signature"] == module.STATE.PREBROWSER_ATTACH_NONEXECUTION_SIGNATURE
 
 
+def test_prebrowser_attach_stale_ws_404_is_exact_prebrowser_nonexecution(
+    tmp_path: Path,
+) -> None:
+    module = load()
+    run_dir = write_prebrowser_attach_refusal(
+        tmp_path / "oracle-state", failure="stale-ws-404"
+    )
+
+    evidence = module.STATE.persistent_attach_prebrowser_nonexecution_evidence(
+        run_dir / "state.json"
+    )
+    verdict = module.diagnose(tmp_path / "oracle-state")["unresolved_runs"][0]
+
+    assert evidence is not None
+    assert evidence["signature"] == module.STATE.PREBROWSER_ATTACH_STALE_WS_404_SIGNATURE
+    assert evidence["endpoint"] == "127.0.0.1:19356"
+    assert evidence["prompt_submitted"] is False
+    assert verdict["bucket"] == "pre-submit-host-environment"
+    assert verdict["signature"] == module.STATE.PREBROWSER_ATTACH_STALE_WS_404_SIGNATURE
+
+
 @pytest.mark.parametrize(
     "mutation",
     (
@@ -1073,13 +1094,15 @@ def test_prebrowser_attach_econnrefused_is_classified_from_exact_bounded_evidenc
         "ambiguous-duplicate-log",
     ),
 )
+@pytest.mark.parametrize("failure", ("econnrefused", "stale-ws-404"))
 def test_prebrowser_attach_econnrefused_stays_locked_on_any_contradiction(
     tmp_path: Path,
     mutation: str,
+    failure: str,
 ) -> None:
     module = load()
     state_root = tmp_path / "oracle-state"
-    run_dir = write_prebrowser_attach_refusal(state_root)
+    run_dir = write_prebrowser_attach_refusal(state_root, failure=failure)
     state_path = run_dir / "state.json"
     state = json.loads(state_path.read_text(encoding="utf-8"))
     stdout_path = run_dir / "stdout.log"
@@ -1098,8 +1121,18 @@ def test_prebrowser_attach_econnrefused_stays_locked_on_any_contradiction(
             encoding="utf-8",
         )
     elif mutation == "different-error":
+        source_error = (
+            "Unexpected server response: 404"
+            if failure == "stale-ws-404"
+            else "ECONNREFUSED"
+        )
+        replacement = (
+            "Unexpected server response: 500"
+            if failure == "stale-ws-404"
+            else "ECONNRESET"
+        )
         stdout_path.write_text(
-            stdout_path.read_text(encoding="utf-8").replace("ECONNREFUSED", "ECONNRESET"),
+            stdout_path.read_text(encoding="utf-8").replace(source_error, replacement),
             encoding="utf-8",
         )
     elif mutation == "different-version":
@@ -1111,14 +1144,24 @@ def test_prebrowser_attach_econnrefused_stays_locked_on_any_contradiction(
             encoding="utf-8",
         )
     elif mutation == "different-endpoint":
-        stdout_path.write_text(
-            stdout_path.read_text(encoding="utf-8").replace("127.0.0.1:19356", "127.0.0.1:19357"),
+        state["profile"]["browser_attach"]["port"] = 19357
+        state["browser_identity"]["expected_cdp_port"] = 19357
+        state_path.write_text(json.dumps(state), encoding="utf-8")
+        stderr_path.write_text(
+            stderr_path.read_text(encoding="utf-8").replace(
+                "127.0.0.1:19356", "127.0.0.1:19357"
+            ),
             encoding="utf-8",
         )
     else:
+        duplicate = (
+            "ERROR: Unexpected server response: 404\n"
+            if failure == "stale-ws-404"
+            else "ERROR: connect ECONNREFUSED 127.0.0.1:19356\n"
+        )
         stdout_path.write_text(
             stdout_path.read_text(encoding="utf-8")
-            + "ERROR: connect ECONNREFUSED 127.0.0.1:19356\n",
+            + duplicate,
             encoding="utf-8",
         )
     if mutation in {
@@ -1139,7 +1182,7 @@ def test_prebrowser_attach_econnrefused_stays_locked_on_any_contradiction(
     unresolved = module.diagnose(state_root)["unresolved_runs"]
     assert not any(
         verdict["bucket"] == "pre-submit-host-environment"
-        and verdict["signature"] == module.STATE.PREBROWSER_ATTACH_NONEXECUTION_SIGNATURE
+        and verdict["signature"] in module.STATE.PREBROWSER_ATTACH_NONEXECUTION_SIGNATURES
         for verdict in unresolved
     )
 

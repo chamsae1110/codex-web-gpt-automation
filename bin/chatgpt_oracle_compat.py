@@ -219,7 +219,11 @@ PATCHES = {
     "dist/src/browser/attachRunning.js": {
         "patch": "attachRunning.persistent-profile.patch",
         "pristine": "e97ba04ab0d9a584399e3dbd4bfee01b747b5ad4ed07faba9705faa67ef43ee0",
-        "patched": "f8c5c4d40d0a72843e2db683750a401909afe026a8d98cffeaabeed90fcb8a34",
+        "patched": "25448bb0a2f06e935b516c3783d09e3e302a38a406797df4a375ad1f13f3ddca",
+        "legacy_patched": [
+            "f8c5c4d40d0a72843e2db683750a401909afe026a8d98cffeaabeed90fcb8a34",
+        ],
+        "legacy_patch": "attachRunning.persistent-profile.v1.patch",
     },
     "dist/src/browser/actions/thinkingTime.js": {
         "patch": "thinkingTime.gpt56-pro-pill.patch",

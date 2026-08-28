@@ -221,6 +221,51 @@ def test_prebrowser_attach_econnrefused_settlement_is_hash_bound_and_append_only
     ) is not None
 
 
+def test_prebrowser_attach_stale_ws_404_uses_same_single_settlement_command(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = load_runner()
+    owner = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    monkeypatch.setenv("CODEX_THREAD_ID", owner)
+    run_dir = write_prebrowser_attach_refusal(
+        tmp_path, owner=owner, failure="stale-ws-404"
+    )
+    state_path = run_dir / "state.json"
+    evidence = runner.STATE.persistent_attach_prebrowser_nonexecution_evidence(state_path)
+    assert evidence is not None
+    assert evidence["signature"] == runner.STATE.PREBROWSER_ATTACH_STALE_WS_404_SIGNATURE
+    hashes = {
+        f"expected_{name}": evidence[name]
+        for name in (
+            "state_sha256",
+            "transcript_sha256",
+            "stdout_sha256",
+            "stderr_sha256",
+            "mission_sha256",
+        )
+    }
+    state_before = state_path.read_bytes()
+
+    settled = runner.settle_prebrowser_attach_nonexecution_fresh_run(
+        run_dir,
+        confirmation=runner.STATE.USER_AUTHORIZED_FRESH_AFTER_PREBROWSER_ATTACH_NONEXECUTION,
+        reason="user authorized one retry after the proven stale WebSocket 404",
+        process_alive=lambda _pid: False,
+        **hashes,
+    )
+
+    assert settled["safe_for_fresh_run"] is True
+    assert settled["retry_ordinal"] == 1
+    assert settled["settlement"]["signature"] == (
+        runner.STATE.PREBROWSER_ATTACH_STALE_WS_404_SIGNATURE
+    )
+    assert state_path.read_bytes() == state_before
+    assert runner.STATE.proven_prebrowser_attach_nonexecution_fresh_run_authority(
+        state_path
+    ) is not None
+
+
 def test_prebrowser_attach_econnrefused_settlement_rejects_hash_drift_and_foreign_task(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

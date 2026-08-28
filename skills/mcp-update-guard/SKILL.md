@@ -138,12 +138,17 @@ instead of the layer that failed.
   requires exact-slug recovery and never a replacement submission.
 - Treat `safe_for_fresh_run: false` as binding. Do not resubmit, stop, or close
   another session's work while repairing code.
-- Oracle 0.18 persistent attach `ECONNREFUSED` is pre-browser nonexecution only
+- Oracle 0.18 persistent attach `ECONNREFUSED`, or the exact stale
+  `DevToolsActivePort` browser-WebSocket `Unexpected server response: 404`, is
+  pre-browser nonexecution only
   when the exact loopback endpoint/profile, process-exited observer, 0.18
   launch transcript, immutable mission/ownership receipt, and complete absence
   of output, conversation URL, browser identity receipt, or prompt-submitted
-  evidence all agree. Generic socket failures and recovery disconnects remain
-  locked. The owning task must use the hash-bound, append-only
+  evidence all agree. The strict profile route must refresh and validate the
+  current browser WebSocket URL from the same loopback `/json/version` endpoint
+  before attaching; it must reject a different host/port, malformed URL, HTTP
+  error, or invalid JSON. Generic socket/HTTP failures and recovery disconnects
+  remain locked. The owning task must use the hash-bound, append-only
   `settle-prebrowser-attach-nonexecution` command before one fresh run; the
   classifier alone never grants retry authority. Once that receipt validates,
   project ownership checks must release the immutable old run directly. If an

@@ -1,12 +1,14 @@
 --- a/dist/src/browser/attachRunning.js
 +++ b/dist/src/browser/attachRunning.js
-@@ -1,4 +1,5 @@
+@@ -1,4 +1,6 @@
 +import path from "node:path";
  import { discoverDevToolsActivePortCandidates, } from "./detect.js";
++const STRICT_VERSION_ENDPOINT_TIMEOUT_MS = 2_000;
  export async function resolveAttachRunningConnection(config, logger) {
      const host = config.remoteChrome?.host ?? "127.0.0.1";
      const port = config.remoteChrome?.port ?? 9222;
-@@ -9,9 +10,17 @@
+@@ -8,18 +10,29 @@ export async function resolveAttachRunningConnection(config, logger) {
+     logger(config.remoteChrome
          ? `Using explicit attach-running target ${host}:${port}.`
          : `Using default attach-running target ${host}:${port}.`);
 +    const configuredProfile = process.env.ORACLE_STRICT_ATTACH_PROFILE === "1" ? (process.env.ORACLE_PERSISTENT_BROWSER_PROFILE ?? "").trim() : "";
@@ -25,10 +27,86 @@
          throw new Error(`No running browser with attach metadata matched ${host}:${port}. Enable remote debugging in chrome://inspect/#remote-debugging first.`);
      }
      const candidate = candidates[0];
-@@ -29,3 +38,7 @@
++    const browserWSEndpoint = expectedProfile
++        ? await resolveStrictBrowserWSEndpoint(host, candidate.port, candidate.browserWSEndpoint, logger)
++        : candidate.browserWSEndpoint;
+     logger(`Selected attach-running browser metadata from ${candidate.path}`);
+     return {
+         host,
+         port: candidate.port,
+-        browserWSEndpoint: candidate.browserWSEndpoint,
++        browserWSEndpoint,
+         profileRoot: candidate.profileRoot,
+     };
+ }
+@@ -29,3 +42,71 @@ function compareDevToolsCandidates(left, right) {
      }
      return left.path.localeCompare(right.path);
  }
++async function resolveStrictBrowserWSEndpoint(host, port, metadataEndpoint, logger) {
++    if (!isLoopbackNetworkHost(host)) {
++        throw new Error(`Strict attach requires a loopback Chrome endpoint, received ${host}:${port}.`);
++    }
++    let response;
++    try {
++        response = await fetch(`http://${formatNetworkHost(host)}:${port}/json/version`, {
++            method: "GET",
++            redirect: "error",
++            signal: AbortSignal.timeout(STRICT_VERSION_ENDPOINT_TIMEOUT_MS),
++        });
++    }
++    catch (error) {
++        const message = error instanceof Error ? error.message : String(error);
++        throw new Error(`Strict attach could not read the live Chrome version endpoint at ${host}:${port} (${message}).`);
++    }
++    if (!response.ok) {
++        throw new Error(`Strict attach Chrome version endpoint at ${host}:${port} returned HTTP ${response.status}.`);
++    }
++    let payload;
++    try {
++        payload = await response.json();
++    }
++    catch {
++        throw new Error(`Strict attach Chrome version endpoint at ${host}:${port} returned invalid JSON.`);
++    }
++    const liveEndpoint = typeof payload?.webSocketDebuggerUrl === "string"
++        ? payload.webSocketDebuggerUrl.trim()
++        : "";
++    if (!isExactBrowserWSEndpoint(liveEndpoint, host, port)) {
++        throw new Error(`Strict attach Chrome version endpoint at ${host}:${port} returned an invalid browser WebSocket endpoint.`);
++    }
++    if (liveEndpoint !== metadataEndpoint) {
++        logger(`Refreshed stale DevToolsActivePort browser endpoint from the live Chrome version endpoint at ${host}:${port}.`);
++    }
++    return liveEndpoint;
++}
++function isExactBrowserWSEndpoint(value, host, port) {
++    let parsed;
++    try {
++        parsed = new URL(value);
++    }
++    catch {
++        return false;
++    }
++    return (parsed.protocol === "ws:" &&
++        normalizeNetworkHost(parsed.hostname) === normalizeNetworkHost(host) &&
++        Number.parseInt(parsed.port, 10) === port &&
++        /^\/devtools\/browser\/[a-zA-Z0-9._-]+$/u.test(parsed.pathname) &&
++        !parsed.username &&
++        !parsed.password &&
++        !parsed.search &&
++        !parsed.hash);
++}
++function formatNetworkHost(value) {
++    const normalized = normalizeNetworkHost(value);
++    return normalized.includes(":") ? `[${normalized}]` : normalized;
++}
++function normalizeNetworkHost(value) {
++    return String(value).trim().replace(/^\[|\]$/gu, "").toLowerCase();
++}
++function isLoopbackNetworkHost(value) {
++    return ["127.0.0.1", "::1"].includes(normalizeNetworkHost(value));
++}
 +function normalizeProfilePath(value) {
 +    const resolved = path.resolve(value);
 +    return process.platform === "win32" ? resolved.toLowerCase() : resolved;

@@ -47,6 +47,7 @@ def test_lifecycle_scripts_share_manifest_and_support_whatif() -> None:
 def test_install_manifest_ships_exact_persistent_profile_attach_patch() -> None:
     manifest = json.loads((ROOT / 'install-manifest.json').read_text(encoding='utf-8'))
     assert 'bin/oracle-compat/0.18.0/attachRunning.persistent-profile.patch' in manifest['include']
+    assert 'bin/oracle-compat/0.18.0/attachRunning.persistent-profile.v1.patch' in manifest['include']
 
 
 def test_public_file_hash_helpers_are_dotnet_stream_based() -> None:

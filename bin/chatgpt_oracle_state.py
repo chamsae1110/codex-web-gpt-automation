@@ -210,6 +210,13 @@ PREBROWSER_ATTACH_NONEXECUTION_SETTLEMENT_SCHEMA = (
 PREBROWSER_ATTACH_NONEXECUTION_SIGNATURE = (
     "persistent-attach-cdp-refused-before-browser"
 )
+PREBROWSER_ATTACH_STALE_WS_404_SIGNATURE = (
+    "persistent-attach-stale-browser-websocket-404-before-browser"
+)
+PREBROWSER_ATTACH_NONEXECUTION_SIGNATURES = {
+    PREBROWSER_ATTACH_NONEXECUTION_SIGNATURE,
+    PREBROWSER_ATTACH_STALE_WS_404_SIGNATURE,
+}
 SETTLED_PREBROWSER_OWNER_GUARD_REJECTION_SIGNATURE = (
     "settled-prebrowser-owner-guard-rejected-before-launch"
 )
@@ -3602,11 +3609,12 @@ def persistent_attach_prebrowser_nonexecution_evidence(
 ) -> dict[str, Any] | None:
     """Prove Oracle 0.18 never reached a browser through persistent attach.
 
-    This deliberately recognizes one historical wire shape only.  A generic
-    ECONNREFUSED is not pre-submit proof: recovery can emit the same socket
-    error after submission.  Here the immutable run tuple, absent browser
-    receipt/output/conversation, exact Oracle transcript, configured loopback
-    endpoint, and process-exited observer must all agree.
+    This deliberately recognizes two historical wire shapes only: the exact
+    listener refusal and the exact stale browser-WebSocket 404 that happens
+    before Oracle can create its dedicated tab.  Generic socket/HTTP errors are
+    not pre-submit proof.  The immutable run tuple, absent browser receipt,
+    output, and conversation, exact Oracle transcript, configured loopback
+    endpoint/profile, and process-exited observer must all agree.
     """
     try:
         exact_state = state_path.expanduser().resolve(strict=True)
@@ -3760,15 +3768,27 @@ def persistent_attach_prebrowser_nonexecution_evidence(
         r"\[browser\] Released ChatGPT browser slot ([0-9a-f]{8})\.",
         stdout_lines[11],
     )
+    failure_signature: str | None = None
     if (
         acquired is None
         or released is None
         or acquired.group(1) != released.group(1)
-        or stdout_lines[12] != f"ERROR: connect ECONNREFUSED {endpoint}"
-        or stdout_lines[13] != (
-            f"User error (browser-automation): connect ECONNREFUSED {endpoint}"
-        )
     ):
+        return None
+    if (
+        stdout_lines[12] == f"ERROR: connect ECONNREFUSED {endpoint}"
+        and stdout_lines[13]
+        == f"User error (browser-automation): connect ECONNREFUSED {endpoint}"
+    ):
+        failure_signature = PREBROWSER_ATTACH_NONEXECUTION_SIGNATURE
+    elif (
+        port_number == 19356
+        and stdout_lines[12] == "ERROR: Unexpected server response: 404"
+        and stdout_lines[13]
+        == "User error (browser-automation): Unexpected server response: 404"
+    ):
+        failure_signature = PREBROWSER_ATTACH_STALE_WS_404_SIGNATURE
+    else:
         return None
 
     stderr_lines = stderr_text.splitlines()
@@ -3811,7 +3831,7 @@ def persistent_attach_prebrowser_nonexecution_evidence(
         return None
     return {
         "schema": "codex.chatgpt.oracle-prebrowser-attach-nonexecution-evidence/v1",
-        "signature": PREBROWSER_ATTACH_NONEXECUTION_SIGNATURE,
+        "signature": failure_signature,
         "run_id": state.get("run_id"),
         "slug": slug,
         "source_thread_id": source_thread_id_from_state(state),

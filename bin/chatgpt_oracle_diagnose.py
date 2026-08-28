@@ -233,7 +233,7 @@ def classify_run(
     if (
         isinstance(prebrowser_attach_nonexecution, dict)
         and prebrowser_attach_nonexecution.get("signature")
-        == STATE.PREBROWSER_ATTACH_NONEXECUTION_SIGNATURE
+        in STATE.PREBROWSER_ATTACH_NONEXECUTION_SIGNATURES
         and prebrowser_attach_nonexecution.get("output_absent") is True
         and prebrowser_attach_nonexecution.get("conversation_url_absent") is True
         and prebrowser_attach_nonexecution.get("browser_identity_receipt_absent") is True
@@ -241,7 +241,7 @@ def classify_run(
     ):
         return {
             "bucket": PRE_SUBMIT_HOST,
-            "signature": STATE.PREBROWSER_ATTACH_NONEXECUTION_SIGNATURE,
+            "signature": str(prebrowser_attach_nonexecution["signature"]),
         }
     if (
         isinstance(settled_owner_guard_rejection, dict)
