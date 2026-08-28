@@ -10,6 +10,11 @@ from pathlib import Path
 
 import pytest
 
+from oracle_prebrowser_fixture import (
+    write_prebrowser_attach_refusal,
+    write_prebrowser_settlement,
+)
+
 STATE_PATH = Path(__file__).resolve().parents[1] / "bin" / "chatgpt_oracle_state.py"
 REFERENCE_FOOTER_FIXTURE = (
     Path(__file__).resolve().parent / "fixtures" / "oracle-task-outcome-reference-footer.md"
@@ -1427,3 +1432,110 @@ def test_browser_session_absent_settlement_releases_project_ownership(
 
     assert [owner["run_id"] for owner in before_settlement] == ["run-1234"]
     assert after_settlement == []
+
+
+def test_settled_prebrowser_owner_is_released_without_rewriting_historical_state(
+    tmp_path: Path,
+) -> None:
+    state = load_state()
+    owner = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    source_mission = project_root / "mission.md"
+    source_mission.write_text("immutable review", encoding="utf-8")
+    run_root = tmp_path / "runs"
+    parent = write_prebrowser_attach_refusal(
+        tmp_path,
+        owner=owner,
+        project_root=project_root,
+        source_mission=source_mission,
+        run_root=run_root,
+    )
+    state_before = (parent / "state.json").read_bytes()
+    write_prebrowser_settlement(parent, owner=owner)
+
+    assert state.proven_prebrowser_attach_nonexecution_fresh_run_authority(
+        parent / "state.json"
+    ) is not None
+    assert state.unresolved_project_sessions(
+        run_root, project_root, source_thread_id=owner
+    ) == []
+    assert (parent / "state.json").read_bytes() == state_before
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ("tampered-receipt", "output", "conversation", "foreign-authority"),
+)
+def test_settled_prebrowser_owner_release_rejects_contradictory_evidence(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    state = load_state()
+    owner = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    source_mission = project_root / "mission.md"
+    source_mission.write_text("immutable review", encoding="utf-8")
+    run_root = tmp_path / "runs"
+    parent = write_prebrowser_attach_refusal(
+        tmp_path,
+        owner=owner,
+        project_root=project_root,
+        source_mission=source_mission,
+        run_root=run_root,
+    )
+    receipt = write_prebrowser_settlement(parent, owner=owner)
+    if mutation == "tampered-receipt":
+        payload = json.loads(receipt.read_text(encoding="utf-8"))
+        payload["endpoint"] = "127.0.0.1:19357"
+        receipt.write_text(json.dumps(payload), encoding="utf-8")
+    elif mutation == "output":
+        (parent / "output.md").write_text("provider output", encoding="utf-8")
+    elif mutation == "conversation":
+        state_path = parent / "state.json"
+        payload = json.loads(state_path.read_text(encoding="utf-8"))
+        payload["oracle"]["conversation_url"] = "https://chatgpt.com/c/contradiction"
+        state_path.write_text(json.dumps(payload), encoding="utf-8")
+    else:
+        payload = json.loads(receipt.read_text(encoding="utf-8"))
+        payload["authorized_source_thread_id"] = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        receipt.write_text(json.dumps(payload), encoding="utf-8")
+
+    owners = state.unresolved_project_sessions(
+        run_root, project_root, source_thread_id=owner
+    )
+    assert [item["run_id"] for item in owners] == [parent.name]
+
+
+def test_settled_prebrowser_owner_does_not_hide_another_live_owner(
+    tmp_path: Path,
+) -> None:
+    state = load_state()
+    owner = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    source_mission = project_root / "mission.md"
+    source_mission.write_text("immutable review", encoding="utf-8")
+    run_root = tmp_path / "runs"
+    settled = write_prebrowser_attach_refusal(
+        tmp_path,
+        owner=owner,
+        project_root=project_root,
+        source_mission=source_mission,
+        run_root=run_root,
+    )
+    write_prebrowser_settlement(settled, owner=owner)
+    live = write_prebrowser_attach_refusal(
+        tmp_path,
+        owner=owner,
+        run_id="20260828T145000Z-liveowner0001",
+        project_root=project_root,
+        source_mission=source_mission,
+        run_root=run_root,
+    )
+
+    owners = state.unresolved_project_sessions(
+        run_root, project_root, source_thread_id=owner
+    )
+    assert [item["run_id"] for item in owners] == [live.name]

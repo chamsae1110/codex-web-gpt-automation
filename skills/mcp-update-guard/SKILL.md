@@ -145,7 +145,12 @@ instead of the layer that failed.
   evidence all agree. Generic socket failures and recovery disconnects remain
   locked. The owning task must use the hash-bound, append-only
   `settle-prebrowser-attach-nonexecution` command before one fresh run; the
-  classifier alone never grants retry authority.
+  classifier alone never grants retry authority. Once that receipt validates,
+  project ownership checks must release the immutable old run directly. If an
+  older installed guard rejects the authorized retry before Oracle launch, the
+  rejection consumes no retry and needs no second settlement, repeated incident
+  report, or repeated unchanged preflight; install the repaired guard and retry
+  once. Contradictory evidence or another live owner still blocks.
 - A terminal DevSpace checkout 502 remains unsafe until the exact terminal
   answer explicitly proves no mission read, command, or file change and the
   user authorizes a new run. Only the same Codex task may write the append-only

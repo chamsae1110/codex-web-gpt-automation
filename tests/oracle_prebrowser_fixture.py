@@ -10,19 +10,27 @@ def write_prebrowser_attach_refusal(
     *,
     owner: str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
     run_id: str = "20260828T140214Z-48451a5d41d6",
+    project_root: Path | None = None,
+    source_mission: Path | None = None,
+    run_root: Path | None = None,
 ) -> Path:
     """Write the exact bounded Oracle 0.18 persistent-attach failure shape."""
-    project_root = root / "project"
+    root.mkdir(parents=True, exist_ok=True)
+    project_root = project_root or (root / "project")
     project_root.mkdir(parents=True, exist_ok=True)
-    run_dir = root / "projects" / "projectkey" / "runs" / run_id
+    run_dir = (run_root or (root / "projects" / "projectkey" / "runs")) / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     browser_temp = run_dir / "browser-temp"
     browser_temp.mkdir()
     profile_path = root / "persistent-profile"
-    profile_path.mkdir()
+    profile_path.mkdir(exist_ok=True)
     slug = "oracle-project-48451a5d41"
     mission_path = run_dir / "mission.md"
-    mission_path.write_text("read-only review mission\n", encoding="utf-8")
+    mission_path.write_bytes(
+        source_mission.read_bytes()
+        if source_mission is not None
+        else b"read-only review mission\n"
+    )
     mission_sha = hashlib.sha256(mission_path.read_bytes()).hexdigest()
     output_path = run_dir / "output.md"
     stdout_path = run_dir / "stdout.log"
@@ -93,7 +101,7 @@ def write_prebrowser_attach_refusal(
         "transport_status": "failed",
         "task_outcome": "pending",
         "mission": {
-            "path": str(mission_path),
+            "path": str(source_mission.resolve()) if source_mission is not None else str(mission_path),
             "transport_path": str(mission_path),
             "sha256": mission_sha,
         },
@@ -143,4 +151,139 @@ def write_prebrowser_attach_refusal(
         "expected_cdp_port": 19356,
         "browser_temp": str(browser_temp),
     }), encoding="utf-8")
+    return run_dir
+
+
+def write_prebrowser_settlement(run_dir: Path, *, owner: str) -> Path:
+    state_path = run_dir / "state.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    profile = state["profile"]["browser_attach"]
+    receipt = {
+        "schema": "codex.chatgpt.oracle-prebrowser-attach-nonexecution-settlement/v1",
+        "confirmation": "user-authorized-fresh-run-after-prebrowser-attach-nonexecution",
+        "reason": "user confirmed no browser or review conversation existed",
+        "authorized_source_thread_id": owner,
+        "run_id": state["run_id"],
+        "project_root": state["project_root"],
+        "slug": state["oracle"]["slug"],
+        "transport": state["transport"],
+        "app_name": state["app_name"],
+        "signature": "persistent-attach-cdp-refused-before-browser",
+        "endpoint": f"{profile['host']}:{profile['port']}",
+        "profile_path": profile["profile_path"],
+        "state_sha256": hashlib.sha256(state_path.read_bytes()).hexdigest(),
+        "transcript_sha256": hashlib.sha256((run_dir / "transcript.md").read_bytes()).hexdigest(),
+        "stdout_sha256": hashlib.sha256((run_dir / "stdout.log").read_bytes()).hexdigest(),
+        "stderr_sha256": hashlib.sha256((run_dir / "stderr.log").read_bytes()).hexdigest(),
+        "mission_sha256": hashlib.sha256((run_dir / "mission.md").read_bytes()).hexdigest(),
+        "ownership_receipt_sha256": hashlib.sha256(
+            (run_dir / "ownership-receipt.json").read_bytes()
+        ).hexdigest(),
+        "output_absent": True,
+        "retry_ordinal": 1,
+        "auto_retry": False,
+        "submission_action": "none",
+        "authorized_at": "2026-08-28T00:00:00Z",
+    }
+    path = run_dir / "settlements" / "prebrowser-attach-nonexecution-fresh-run.json"
+    path.parent.mkdir()
+    path.write_text(json.dumps(receipt), encoding="utf-8")
+    return path
+
+
+def write_settled_owner_guard_rejection(
+    root: Path,
+    *,
+    owner: str,
+    project_root: Path,
+    source_mission: Path,
+    run_root: Path,
+    run_id: str = "20260828T145107Z-2eb1dab4f338",
+) -> Path:
+    run_dir = run_root / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    slug = "oracle-project-2eb1dab4f3"
+    profile_path = root / "persistent-profile"
+    profile_path.mkdir(exist_ok=True)
+    mission_path = run_dir / "mission.md"
+    mission_path.write_bytes(source_mission.read_bytes())
+    mission_sha = hashlib.sha256(mission_path.read_bytes()).hexdigest()
+    stdout_path = run_dir / "stdout.log"
+    stderr_path = run_dir / "stderr.log"
+    transcript_path = run_dir / "transcript.md"
+    stdout_path.write_bytes(b"")
+    stderr_path.write_text(
+        "Oracle launch/run failed: PROJECT_SESSION_STILL_LIVE: an exact Oracle "
+        "session still owns this project; recover it before submitting\n",
+        encoding="utf-8",
+    )
+    transcript_path.write_bytes(stderr_path.read_bytes())
+    state = {
+        "schema": "codex.chatgpt.oracle-run-state/v1",
+        "run_id": run_id,
+        "project_root": str(project_root.resolve()),
+        "mode": "browser",
+        "transport": "pro-devspace",
+        "app_name": "Chat On Steroids Core",
+        "profile": {
+            "model": "gpt-5.6-sol",
+            "model_strategy": "select",
+            "thinking_time": "pro",
+            "copy_profile": None,
+            "browser_attach": {
+                "host": "127.0.0.1",
+                "port": 19356,
+                "profile_path": str(profile_path.resolve()),
+            },
+        },
+        "originating_task": {
+            "schema": "codex.chatgpt.oracle-task-owner/v1",
+            "source_thread_id": owner,
+            "binding": "bound",
+        },
+        "ownership": {
+            "schema": "codex.chatgpt.oracle-ownership/v1",
+            "source_thread_id": owner,
+            "binding": "bound",
+            "project_root_sha256": "a" * 64,
+            "run_id": run_id,
+            "mission_sha256": mission_sha,
+            "slug": slug,
+        },
+        "transport_status": "prepared",
+        "task_outcome": "pending",
+        "mission": {
+            "path": str(source_mission.resolve()),
+            "transport_path": str(mission_path),
+            "sha256": mission_sha,
+        },
+        "attachments": [],
+        "oracle": {
+            "resolved_version": "0.18.0",
+            "command": ["npx.cmd", "-y", "@steipete/oracle@0.18.0"],
+            "slug": slug,
+            "session_locator": slug,
+        },
+        "artifacts": {
+            "output": str(run_dir / "output.md"),
+            "transcript": str(transcript_path),
+            "stdout": str(stdout_path),
+            "stderr": str(stderr_path),
+            "browser_temp": str(run_dir / "browser-temp"),
+        },
+        "browser_identity": {
+            "schema": "codex.chatgpt.oracle-browser-identity/v1",
+            "expected_cdp_port": 19356,
+            "mode": "persistent-attach",
+            "expected_profile_path": str(profile_path.resolve()),
+            "receipt_path": None,
+            "receipt_sha256": None,
+        },
+        "status": "failed",
+        "exit_code": None,
+        "session_authority": "pre_submit",
+        "terminal_harvested": False,
+        "artifact_sha256": None,
+    }
+    (run_dir / "state.json").write_text(json.dumps(state), encoding="utf-8")
     return run_dir

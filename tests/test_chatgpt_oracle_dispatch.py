@@ -2,10 +2,16 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+
+from oracle_prebrowser_fixture import (
+    write_prebrowser_attach_refusal,
+    write_prebrowser_settlement,
+)
 
 
 PATH = Path(__file__).resolve().parents[1] / "bin" / "chatgpt_oracle_dispatch.py"
@@ -228,6 +234,74 @@ def test_pro_defaults_to_devspace_without_attachments(tmp_path: Path) -> None:
     assert value["research"] == "off"
     assert value["task_outcome_contract"] == "v1"
     assert "attachments" not in value
+
+
+def test_settled_prebrowser_owner_dispatch_manifest_reaches_runner_launch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = load()
+    owner = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    mission = project_root / "mission.md"
+    mission.write_text("immutable review", encoding="utf-8")
+    manifest_path = tmp_path / "dispatch.json"
+    profile = tmp_path / "persistent-profile"
+    profile.mkdir()
+    (profile / "DevToolsActivePort").write_text("19356\n/devtools/browser/test\n", encoding="utf-8")
+    monkeypatch.setenv("CODEX_THREAD_ID", owner)
+    monkeypatch.setenv("CODEX_ORACLE_STATE_ROOT", str(tmp_path / "host-state"))
+    monkeypatch.setenv("ORACLE_PERSISTENT_CDP_ENDPOINT", "127.0.0.1:19356")
+    monkeypatch.setenv("ORACLE_PERSISTENT_BROWSER_PROFILE", str(profile.resolve()))
+    module.compile_manifest(
+        mode="pro",
+        project_root=project_root,
+        mission_path=mission,
+        output_path=manifest_path,
+        app_name="Chat On Steroids Core",
+    )
+    manifest_payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest_payload["run_id"] = "20260828T145107Z-2eb1dab4f338"
+    manifest_path.write_text(json.dumps(manifest_payload), encoding="utf-8")
+    config = module.RUNNER.STATE.load_manifest(manifest_path)
+    parent = write_prebrowser_attach_refusal(
+        tmp_path,
+        owner=owner,
+        project_root=project_root,
+        source_mission=mission,
+        run_root=config.run_root,
+    )
+    write_prebrowser_settlement(parent, owner=owner)
+    launched: list[list[str]] = []
+
+    class Process:
+        pid = 2_000_000_001
+
+        def wait(self, timeout=None):
+            return 0
+
+    def popen(command, **kwargs):
+        launched.append(list(command))
+        Path(command[command.index("--write-output") + 1]).write_text(
+            "TASK_OUTCOME: EXECUTED\n", encoding="utf-8"
+        )
+        kwargs["stdout"].write(b"stdout\n")
+        kwargs["stdout"].flush()
+        return Process()
+
+    result = module.RUNNER.execute_run(
+        manifest_path,
+        run_factory=lambda command, **kwargs: subprocess.CompletedProcess(
+            command, 0, stdout="oracle 0.18.0\n", stderr=""
+        ),
+        popen_factory=popen,
+    )
+
+    assert result["ok"] is True
+    assert len(launched) == 1
+    assert "--browser-attach-running" in launched[0]
+    assert launched[0][launched[0].index("--remote-chrome") + 1] == "127.0.0.1:19356"
 
 
 def test_pro_cli_dry_run_validates_compiled_manifest_without_submission(

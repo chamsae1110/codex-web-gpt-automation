@@ -7,7 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from oracle_prebrowser_fixture import write_prebrowser_attach_refusal
+from oracle_prebrowser_fixture import (
+    write_prebrowser_attach_refusal,
+    write_prebrowser_settlement,
+    write_settled_owner_guard_rejection,
+)
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "bin" / "chatgpt_oracle_diagnose.py"
 
@@ -1138,3 +1142,131 @@ def test_prebrowser_attach_econnrefused_stays_locked_on_any_contradiction(
         and verdict["signature"] == module.STATE.PREBROWSER_ATTACH_NONEXECUTION_SIGNATURE
         for verdict in unresolved
     )
+
+
+def test_settled_prebrowser_owner_guard_rejection_is_pre_submit_and_unconsumed(
+    tmp_path: Path,
+) -> None:
+    module = load()
+    owner = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    state_root = tmp_path / "oracle-state"
+    project_root = state_root / "project"
+    project_root.mkdir(parents=True)
+    mission = project_root / "mission.md"
+    mission.write_text("immutable review", encoding="utf-8")
+    run_root = state_root / "projects" / "projectkey" / "runs"
+    parent = write_prebrowser_attach_refusal(
+        state_root,
+        owner=owner,
+        project_root=project_root,
+        source_mission=mission,
+        run_root=run_root,
+    )
+    write_prebrowser_settlement(parent, owner=owner)
+    child = write_settled_owner_guard_rejection(
+        state_root,
+        owner=owner,
+        project_root=project_root,
+        source_mission=mission,
+        run_root=run_root,
+    )
+
+    evidence = module.STATE.settled_prebrowser_owner_guard_rejection_evidence(
+        child / "state.json"
+    )
+    verdict = next(
+        item for item in module.diagnose(state_root)["unresolved_runs"]
+        if Path(item["run_dir"]).name == child.name
+    )
+
+    assert evidence is not None
+    assert evidence["retry_ordinal"] == 1
+    assert evidence["retry_consumed"] is False
+    assert evidence["settlement_required"] is False
+    assert evidence["oracle_launched"] is False
+    assert verdict["bucket"] == "pre-submit-host-environment"
+    assert verdict["signature"] == "settled-prebrowser-owner-guard-rejected-before-launch"
+
+
+def test_settled_prebrowser_owner_guard_rejection_stays_locked_with_another_owner(
+    tmp_path: Path,
+) -> None:
+    module = load()
+    owner = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    state_root = tmp_path / "oracle-state"
+    project_root = state_root / "project"
+    project_root.mkdir(parents=True)
+    mission = project_root / "mission.md"
+    mission.write_text("immutable review", encoding="utf-8")
+    run_root = state_root / "projects" / "projectkey" / "runs"
+    parent = write_prebrowser_attach_refusal(
+        state_root,
+        owner=owner,
+        project_root=project_root,
+        source_mission=mission,
+        run_root=run_root,
+    )
+    write_prebrowser_settlement(parent, owner=owner)
+    write_prebrowser_attach_refusal(
+        state_root,
+        owner=owner,
+        run_id="20260828T144500Z-liveowner0001",
+        project_root=project_root,
+        source_mission=mission,
+        run_root=run_root,
+    )
+    child = write_settled_owner_guard_rejection(
+        state_root,
+        owner=owner,
+        project_root=project_root,
+        source_mission=mission,
+        run_root=run_root,
+    )
+
+    assert module.STATE.settled_prebrowser_owner_guard_rejection_evidence(
+        child / "state.json"
+    ) is None
+    verdict = next(
+        item for item in module.diagnose(state_root)["unresolved_runs"]
+        if Path(item["run_dir"]).name == child.name
+    )
+    assert verdict["bucket"] == "submission-ownership-conflict"
+
+
+def test_settled_prebrowser_owner_guard_rejection_stays_locked_on_mission_mismatch(
+    tmp_path: Path,
+) -> None:
+    module = load()
+    owner = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    state_root = tmp_path / "oracle-state"
+    project_root = state_root / "project"
+    project_root.mkdir(parents=True)
+    parent_mission = project_root / "parent.md"
+    parent_mission.write_text("authorized immutable review", encoding="utf-8")
+    child_mission = project_root / "child.md"
+    child_mission.write_text("different mission", encoding="utf-8")
+    run_root = state_root / "projects" / "projectkey" / "runs"
+    parent = write_prebrowser_attach_refusal(
+        state_root,
+        owner=owner,
+        project_root=project_root,
+        source_mission=parent_mission,
+        run_root=run_root,
+    )
+    write_prebrowser_settlement(parent, owner=owner)
+    child = write_settled_owner_guard_rejection(
+        state_root,
+        owner=owner,
+        project_root=project_root,
+        source_mission=child_mission,
+        run_root=run_root,
+    )
+
+    assert module.STATE.settled_prebrowser_owner_guard_rejection_evidence(
+        child / "state.json"
+    ) is None
+    verdict = next(
+        item for item in module.diagnose(state_root)["unresolved_runs"]
+        if Path(item["run_dir"]).name == child.name
+    )
+    assert verdict["bucket"] == "submission-ownership-conflict"

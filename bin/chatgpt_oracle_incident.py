@@ -123,6 +123,8 @@ def _operational_instruction(
         reason = (
             "hash-bound-proof-confirms-persistent-attach-failed-before-browser"
             if signature == STATE.PREBROWSER_ATTACH_NONEXECUTION_SIGNATURE
+            else "settled-owner-guard-rejected-before-oracle-retry-unconsumed"
+            if signature == STATE.SETTLED_PREBROWSER_OWNER_GUARD_REJECTION_SIGNATURE
             else "workflow-proof-confirms-oracle-layout-was-never-created"
         )
         executable = True
@@ -172,6 +174,9 @@ def build_packet(run_dir: Path, *, reporter_role: str = REPORTER_ROLE) -> dict[s
     prebrowser_attach_evidence = (
         STATE.persistent_attach_prebrowser_nonexecution_evidence(state_path)
     )
+    settled_owner_guard_evidence = (
+        STATE.settled_prebrowser_owner_guard_rejection_evidence(state_path)
+    )
     verdict = DIAGNOSE.classify_run(
         state,
         stdout_text="\n".join((
@@ -187,6 +192,7 @@ def build_packet(run_dir: Path, *, reporter_role: str = REPORTER_ROLE) -> dict[s
         pre_submit_host_failure=STATE.proven_pre_submit_host_failure(state_path),
         pre_submit_session_absence=STATE.proven_pre_submit_session_absence(state_path),
         prebrowser_attach_nonexecution=prebrowser_attach_evidence,
+        settled_owner_guard_rejection=settled_owner_guard_evidence,
     )
     lifecycle = STATE.resolve_lifecycle(
         state, output_is_present=DIAGNOSE._output_is_nonempty(output_path)
@@ -277,7 +283,8 @@ def build_packet(run_dir: Path, *, reporter_role: str = REPORTER_ROLE) -> dict[s
         and not owners
     )
     fresh_run_authority = (
-        prebrowser_attach_authority
+        settled_owner_guard_evidence
+        or prebrowser_attach_authority
         or read_route_refresh_authority
         or terminal_nonexecution_authority
         or recursive_authority
@@ -290,6 +297,11 @@ def build_packet(run_dir: Path, *, reporter_role: str = REPORTER_ROLE) -> dict[s
         if prebrowser_attach_authority is not None
         else (
             {
+                "lifecycle": "pre_submit_settled",
+                "authority_source": "hash-bound-parent-settlement-and-pre-submit-rejection",
+            }
+            if settled_owner_guard_evidence is not None
+            else {
                 "lifecycle": "needs_attention",
                 "authority_source": "exact-prebrowser-attach-nonexecution-evidence",
             }
@@ -349,6 +361,10 @@ def build_packet(run_dir: Path, *, reporter_role: str = REPORTER_ROLE) -> dict[s
             "persistent Chrome listener is running, then make at most one fresh run."
             if str(verdict["signature"])
             == STATE.PREBROWSER_ATTACH_NONEXECUTION_SIGNATURE
+            else "No additional settlement is required; the owning task may use the "
+            "unconsumed retry authority once after the normal preflight passes."
+            if str(verdict["signature"])
+            == STATE.SETTLED_PREBROWSER_OWNER_GUARD_REJECTION_SIGNATURE
             else DIAGNOSE.REMEDIATION.get(bucket, "")
         ),
         "evidence_paths": sorted(
@@ -611,6 +627,9 @@ def validate_packet(packet: dict[str, Any]) -> dict[str, Any]:
                     "hash-bound-proof-confirms-persistent-attach-failed-before-browser"
                     if packet.get("signature")
                     == STATE.PREBROWSER_ATTACH_NONEXECUTION_SIGNATURE
+                    else "settled-owner-guard-rejected-before-oracle-retry-unconsumed"
+                    if packet.get("signature")
+                    == STATE.SETTLED_PREBROWSER_OWNER_GUARD_REJECTION_SIGNATURE
                     else "workflow-proof-confirms-oracle-layout-was-never-created"
                 ),
                 True,
@@ -653,6 +672,28 @@ def validate_packet(packet: dict[str, Any]) -> dict[str, Any]:
                 "the operational action must match the exact lifecycle and task ownership scope",
                 {"expected": expected_instruction, "actual": actual_instruction},
             )
+        if (
+            packet.get("safe_for_fresh_run") is True
+            and packet.get("signature")
+            == STATE.SETTLED_PREBROWSER_OWNER_GUARD_REJECTION_SIGNATURE
+        ):
+            proof = STATE.settled_prebrowser_owner_guard_rejection_evidence(
+                Path(str(packet["run_dir"])) / "state.json"
+            )
+            claimed = packet.get("fresh_run_authority")
+            if (
+                proof is None
+                or not isinstance(claimed, dict)
+                or claimed.get("state_sha256") != proof.get("state_sha256")
+                or claimed.get("parent_settlement_sha256")
+                != proof.get("parent_settlement_sha256")
+                or claimed.get("retry_consumed") is not False
+                or claimed.get("settlement_required") is not False
+            ):
+                raise IncidentError(
+                    "INCIDENT_FRESH_RUN_AUTHORITY_INVALID",
+                    "stale-owner retry authority requires exact parent settlement and pre-submit rejection proof",
+                )
         if packet.get("safe_for_fresh_run") is True and (
             packet.get("bucket") == DIAGNOSE.TASK_NOT_EXECUTED
             or packet.get("signature") == STATE.PREBROWSER_ATTACH_NONEXECUTION_SIGNATURE

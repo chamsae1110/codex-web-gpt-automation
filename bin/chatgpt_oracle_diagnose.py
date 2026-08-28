@@ -177,6 +177,7 @@ def classify_run(
     pre_submit_host_failure: dict[str, Any] | None = None,
     pre_submit_session_absence: dict[str, Any] | None = None,
     prebrowser_attach_nonexecution: dict[str, Any] | None = None,
+    settled_owner_guard_rejection: dict[str, Any] | None = None,
 ) -> dict[str, str]:
     """Return the bucket and signature for one persisted run.
 
@@ -241,6 +242,20 @@ def classify_run(
         return {
             "bucket": PRE_SUBMIT_HOST,
             "signature": STATE.PREBROWSER_ATTACH_NONEXECUTION_SIGNATURE,
+        }
+    if (
+        isinstance(settled_owner_guard_rejection, dict)
+        and settled_owner_guard_rejection.get("code")
+        == "ORACLE_SETTLED_PREBROWSER_OWNER_GUARD_REJECTED"
+        and settled_owner_guard_rejection.get("retry_consumed") is False
+        and settled_owner_guard_rejection.get("settlement_required") is False
+        and settled_owner_guard_rejection.get("oracle_launched") is False
+        and settled_owner_guard_rejection.get("output_absent") is True
+        and settled_owner_guard_rejection.get("conversation_url_absent") is True
+    ):
+        return {
+            "bucket": PRE_SUBMIT_HOST,
+            "signature": str(settled_owner_guard_rejection["signature"]),
         }
     if lifecycle == "abandoned":
         return {"bucket": ACTIVE, "signature": "explicitly-abandoned"}
@@ -345,6 +360,11 @@ def diagnose(state_root: Path | None = None) -> dict[str, Any]:
             ),
             prebrowser_attach_nonexecution=(
                 STATE.persistent_attach_prebrowser_nonexecution_evidence(
+                    run_dir / "state.json"
+                )
+            ),
+            settled_owner_guard_rejection=(
+                STATE.settled_prebrowser_owner_guard_rejection_evidence(
                     run_dir / "state.json"
                 )
             ),

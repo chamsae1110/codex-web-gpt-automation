@@ -210,6 +210,9 @@ PREBROWSER_ATTACH_NONEXECUTION_SETTLEMENT_SCHEMA = (
 PREBROWSER_ATTACH_NONEXECUTION_SIGNATURE = (
     "persistent-attach-cdp-refused-before-browser"
 )
+SETTLED_PREBROWSER_OWNER_GUARD_REJECTION_SIGNATURE = (
+    "settled-prebrowser-owner-guard-rejected-before-launch"
+)
 USER_AUTHORIZED_BLOCKED_PARENT_CONTINUATION = (
     "user-authorized-one-use-blocked-parent-continuation"
 )
@@ -3901,6 +3904,180 @@ def proven_prebrowser_attach_nonexecution_fresh_run_authority(
     }
 
 
+def settled_prebrowser_owner_guard_rejection_evidence(
+    state_path: Path,
+) -> dict[str, Any] | None:
+    """Prove a retry was rejected only because a now-settled owner was stale.
+
+    This is a read-only classification predicate, not another settlement.  It
+    requires the rejected child to have stopped before Oracle launch and one
+    earlier, fully revalidated prebrowser settlement with the same task,
+    project, mission, route, and persistent browser profile.  Any other live
+    same-task owner keeps the retry locked.
+    """
+    try:
+        exact_state = state_path.expanduser().resolve(strict=True)
+        directory = exact_state.parent.resolve(strict=True)
+        if state_path.is_symlink() or exact_state != directory / "state.json":
+            return None
+        state = load_state(exact_state)
+    except (OSError, OracleStateError):
+        return None
+    artifacts = state.get("artifacts") if isinstance(state.get("artifacts"), dict) else {}
+    oracle = state.get("oracle") if isinstance(state.get("oracle"), dict) else {}
+    profile = state.get("profile") if isinstance(state.get("profile"), dict) else {}
+    identity = (
+        state.get("browser_identity")
+        if isinstance(state.get("browser_identity"), dict)
+        else {}
+    )
+    mission = state.get("mission") if isinstance(state.get("mission"), dict) else {}
+    ownership = state.get("ownership") if isinstance(state.get("ownership"), dict) else {}
+    run_id = str(state.get("run_id") or "")
+    slug = str(oracle.get("slug") or "")
+    source_thread = source_thread_id_from_state(state)
+    output_path = Path(str(artifacts.get("output") or directory / "output.md"))
+    paths = {
+        "stdout": Path(str(artifacts.get("stdout") or directory / "stdout.log")),
+        "stderr": Path(str(artifacts.get("stderr") or directory / "stderr.log")),
+        "transcript": Path(str(artifacts.get("transcript") or directory / "transcript.md")),
+        "mission": Path(str(mission.get("transport_path") or directory / "mission.md")),
+    }
+    try:
+        for name, raw in paths.items():
+            filename = (
+                "mission.md"
+                if name == "mission"
+                else f"{name}.log"
+                if name in {"stdout", "stderr"}
+                else "transcript.md"
+            )
+            expected = directory / filename
+            if (
+                raw.is_symlink()
+                or raw.resolve(strict=True) != expected.resolve(strict=True)
+                or not raw.resolve(strict=True).is_file()
+            ):
+                return None
+        stdout_bytes = paths["stdout"].read_bytes()
+        stderr_bytes = paths["stderr"].read_bytes()
+        transcript_bytes = paths["transcript"].read_bytes()
+        mission_bytes = paths["mission"].read_bytes()
+        stderr_text = stderr_bytes.decode("utf-8", errors="strict").strip()
+        stdout_bytes.decode("utf-8", errors="strict")
+        transcript_bytes.decode("utf-8", errors="strict")
+    except (OSError, UnicodeDecodeError):
+        return None
+    attach = profile.get("browser_attach") if isinstance(profile.get("browser_attach"), dict) else {}
+    if (
+        state.get("schema") != STATE_SCHEMA
+        or directory.name != run_id
+        or str(state.get("status") or "") != "failed"
+        or str(state.get("transport_status") or "") != "prepared"
+        or str(state.get("session_authority") or "") != "pre_submit"
+        or str(state.get("task_outcome") or "") != "pending"
+        or state.get("terminal_harvested") is not False
+        or state.get("artifact_sha256") is not None
+        or state.get("exit_code") is not None
+        or str(state.get("mode") or "") != "browser"
+        or str(state.get("transport") or "") != "pro-devspace"
+        or str(state.get("app_name") or "") != "Chat On Steroids Core"
+        or str(profile.get("model") or "") != "gpt-5.6-sol"
+        or str(profile.get("model_strategy") or "") != "select"
+        or str(profile.get("thinking_time") or "") != "pro"
+        or profile.get("copy_profile") is not None
+        or str(attach.get("host") or "") != "127.0.0.1"
+        or not isinstance(attach.get("port"), int)
+        or not str(attach.get("profile_path") or "").strip()
+        or identity.get("mode") != "persistent-attach"
+        or identity.get("expected_cdp_port") != attach.get("port")
+        or identity.get("expected_profile_path") != attach.get("profile_path")
+        or identity.get("receipt_path") is not None
+        or identity.get("receipt_sha256") is not None
+        or browser_identity_receipt_path(directory).exists()
+        or browser_identity_receipt_path(directory).is_symlink()
+        or _state_has_conversation_url(state)
+        or output_path.is_symlink()
+        or output_path.resolve() != (directory / "output.md").resolve()
+        or output_path.exists()
+        or stdout_bytes
+        or transcript_bytes != stderr_bytes
+        or stderr_text != (
+            "Oracle launch/run failed: PROJECT_SESSION_STILL_LIVE: an exact Oracle "
+            "session still owns this project; recover it before submitting"
+        )
+        or "browser_observer" in state
+        or "host_watchdog" in state
+        or source_thread is None
+        or not run_id
+        or not slug
+        or str(oracle.get("session_locator") or "") != slug
+        or ownership.get("source_thread_id") != source_thread
+        or ownership.get("run_id") != run_id
+        or ownership.get("slug") != slug
+        or ownership.get("mission_sha256") != mission.get("sha256")
+        or hashlib.sha256(mission_bytes).hexdigest() != mission.get("sha256")
+    ):
+        return None
+
+    matching_settlements: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for sibling_state in sorted(directory.parent.glob("*/state.json"), key=lambda item: str(item)):
+        if sibling_state.parent.resolve() == directory:
+            continue
+        authority = proven_prebrowser_attach_nonexecution_fresh_run_authority(sibling_state)
+        if authority is None:
+            continue
+        try:
+            parent = load_state(sibling_state)
+        except OracleStateError:
+            continue
+        parent_profile = parent.get("profile") if isinstance(parent.get("profile"), dict) else {}
+        if (
+            authority.get("authorized_source_thread_id") == source_thread
+            and authority.get("project_root") == state.get("project_root")
+            and authority.get("mission_sha256") == mission.get("sha256")
+            and authority.get("transport") == state.get("transport")
+            and authority.get("app_name") == state.get("app_name")
+            and authority.get("retry_ordinal") == 1
+            and str(authority.get("run_id") or "") < run_id
+            and parent_profile == profile
+        ):
+            matching_settlements.append((authority, parent))
+    if len(matching_settlements) != 1:
+        return None
+    live_owners = unresolved_project_sessions(
+        directory.parent,
+        Path(str(state.get("project_root") or "")),
+        exclude_run_id=run_id,
+        source_thread_id=source_thread,
+    )
+    if live_owners:
+        return None
+    authority, _ = matching_settlements[0]
+    return {
+        "schema": "codex.chatgpt.oracle-settled-prebrowser-owner-guard-rejection/v1",
+        "code": "ORACLE_SETTLED_PREBROWSER_OWNER_GUARD_REJECTED",
+        "signature": SETTLED_PREBROWSER_OWNER_GUARD_REJECTION_SIGNATURE,
+        "run_id": run_id,
+        "slug": slug,
+        "source_thread_id": source_thread,
+        "project_root": state.get("project_root"),
+        "mission_sha256": mission.get("sha256"),
+        "parent_run_id": authority.get("run_id"),
+        "parent_settlement_sha256": authority.get("sha256"),
+        "state_sha256": sha256_file(exact_state),
+        "stdout_sha256": hashlib.sha256(stdout_bytes).hexdigest(),
+        "stderr_sha256": hashlib.sha256(stderr_bytes).hexdigest(),
+        "transcript_sha256": hashlib.sha256(transcript_bytes).hexdigest(),
+        "retry_ordinal": 1,
+        "retry_consumed": False,
+        "settlement_required": False,
+        "oracle_launched": False,
+        "output_absent": True,
+        "conversation_url_absent": True,
+    }
+
+
 def bounded_task_owned_prompt_timeout_harvest_evidence(
     state_path: Path,
 ) -> dict[str, Any] | None:
@@ -6551,6 +6728,9 @@ def unresolved_project_sessions(
             == "post_submit_provider_delivery_timeout_settled"
             or execution_settlement_artifact.exists()
         )
+        prebrowser_attach_authority = (
+            proven_prebrowser_attach_nonexecution_fresh_run_authority(candidate)
+        )
         invalid_settlement = False
         if (
             authority == "pre_submit"
@@ -6574,6 +6754,12 @@ def unresolved_project_sessions(
         # persist submitted_unknown/live explicitly before reaching attention.
         if not authority and str(payload.get("status") or "").casefold() == "running":
             authority = "submitted_unknown"
+        if authority in active_authorities and prebrowser_attach_authority is not None:
+            # The append-only receipt revalidates the immutable historical run
+            # and proves no browser, prompt, output, or conversation existed.
+            # Keep the old state immutable while releasing only this exact
+            # candidate from same-task project ownership.
+            continue
         if authority not in active_authorities:
             continue
         # A task-scoped caller can only block on its own exact task owner.

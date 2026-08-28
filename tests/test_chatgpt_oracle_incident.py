@@ -7,7 +7,11 @@ from pathlib import Path
 
 import pytest
 
-from oracle_prebrowser_fixture import write_prebrowser_attach_refusal
+from oracle_prebrowser_fixture import (
+    write_prebrowser_attach_refusal,
+    write_prebrowser_settlement,
+    write_settled_owner_guard_rejection,
+)
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "bin" / "chatgpt_oracle_incident.py"
 DEFAULT_EVALUATOR = "99999999-9999-4999-8999-999999999999"
@@ -953,3 +957,47 @@ def test_prebrowser_attach_econnrefused_settlement_never_grants_a_foreign_task(
     assert packet["ownership_scope"] == "foreign-task"
     assert packet["safe_for_fresh_run"] is False
     assert packet["operational_instruction"]["action"] == "route-to-owner-task"
+
+
+def test_settled_prebrowser_owner_rejection_needs_no_second_settlement(
+    tmp_path: Path,
+) -> None:
+    module = load()
+    owner = DEFAULT_EVALUATOR
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    mission = project_root / "mission.md"
+    mission.write_text("immutable review", encoding="utf-8")
+    run_root = tmp_path / "projects" / "projectkey" / "runs"
+    parent = write_prebrowser_attach_refusal(
+        tmp_path,
+        owner=owner,
+        project_root=project_root,
+        source_mission=mission,
+        run_root=run_root,
+    )
+    write_prebrowser_settlement(parent, owner=owner)
+    child = write_settled_owner_guard_rejection(
+        tmp_path,
+        owner=owner,
+        project_root=project_root,
+        source_mission=mission,
+        run_root=run_root,
+    )
+
+    packet = module.validate_packet(module.build_packet(child))
+
+    assert packet["bucket"] == "pre-submit-host-environment"
+    assert packet["signature"] == "settled-prebrowser-owner-guard-rejected-before-launch"
+    assert packet["lifecycle"] == "pre_submit_settled"
+    assert packet["authority_source"] == (
+        "hash-bound-parent-settlement-and-pre-submit-rejection"
+    )
+    assert packet["safe_for_fresh_run"] is True
+    assert packet["unresolved_owners"] == []
+    assert packet["fresh_run_authority"]["retry_consumed"] is False
+    assert packet["fresh_run_authority"]["settlement_required"] is False
+    assert packet["operational_instruction"]["action"] == "rerun-settled-workflow"
+    assert packet["operational_instruction"]["reason"] == (
+        "settled-owner-guard-rejected-before-oracle-retry-unconsumed"
+    )

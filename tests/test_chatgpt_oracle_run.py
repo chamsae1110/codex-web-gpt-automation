@@ -11,7 +11,10 @@ from pathlib import Path
 
 import pytest
 
-from oracle_prebrowser_fixture import write_prebrowser_attach_refusal
+from oracle_prebrowser_fixture import (
+    write_prebrowser_attach_refusal,
+    write_prebrowser_settlement,
+)
 
 RUNNER_PATH = Path(__file__).resolve().parents[1] / "bin" / "chatgpt_oracle_run.py"
 
@@ -262,6 +265,117 @@ def test_prebrowser_attach_econnrefused_settlement_rejects_hash_drift_and_foreig
             **hashes,
         )
     assert foreign.value.code == "FOREIGN_TASK_SESSION"
+
+
+def test_settled_prebrowser_owner_allows_dispatch_run_to_launch_oracle_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = load_runner()
+    owner = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    monkeypatch.setenv("CODEX_THREAD_ID", owner)
+    profile = tmp_path.parent / f"{tmp_path.name}-settled-owner-profile"
+    profile.mkdir()
+    (profile / "DevToolsActivePort").write_text("19356\n/devtools/browser/test\n", encoding="utf-8")
+    monkeypatch.setenv("ORACLE_PERSISTENT_CDP_ENDPOINT", "127.0.0.1:19356")
+    monkeypatch.setenv("ORACLE_PERSISTENT_BROWSER_PROFILE", str(profile.resolve()))
+    manifest_path = pro_full_access_manifest(
+        tmp_path,
+        app_name="Chat On Steroids Core",
+        source_thread_id=owner,
+        run_id="20260828T145107Z-2eb1dab4f338",
+    )
+    config = runner.STATE.load_manifest(manifest_path)
+    parent = write_prebrowser_attach_refusal(
+        tmp_path.parent / f"{tmp_path.name}-parent-fixture",
+        owner=owner,
+        project_root=tmp_path,
+        source_mission=config.mission_path,
+        run_root=config.run_root,
+    )
+    parent_state_path = parent / "state.json"
+    parent_state = json.loads(parent_state_path.read_text(encoding="utf-8"))
+    parent_state["profile"]["browser_attach"]["profile_path"] = str(profile.resolve())
+    parent_state["browser_identity"]["expected_profile_path"] = str(profile.resolve())
+    parent_state_path.write_text(json.dumps(parent_state), encoding="utf-8")
+    ownership_path = parent / "ownership-receipt.json"
+    ownership = json.loads(ownership_path.read_text(encoding="utf-8"))
+    ownership_path.write_text(json.dumps(ownership), encoding="utf-8")
+    # Recreate the settlement after the profile-bound state hash is final.
+    write_prebrowser_settlement(parent, owner=owner)
+    launched: list[str] = []
+
+    result = execute_run(
+        runner,
+        manifest_path,
+        run_factory=lambda command, **kwargs: subprocess.CompletedProcess(
+            command, 0, stdout="oracle 0.18.0\n", stderr=""
+        ),
+        popen_factory=popen_for(0, b"TASK_OUTCOME: EXECUTED\n", {}, launched),
+    )
+
+    assert result["ok"] is True
+    assert launched
+    assert runner.STATE.unresolved_project_sessions(
+        config.run_root,
+        tmp_path,
+        exclude_run_id=Path(result["run_dir"]).name,
+        source_thread_id=owner,
+    ) == []
+
+
+def test_settled_prebrowser_owner_tamper_still_blocks_dispatch_run_before_oracle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runner = load_runner()
+    owner = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    monkeypatch.setenv("CODEX_THREAD_ID", owner)
+    profile = tmp_path.parent / f"{tmp_path.name}-settled-owner-profile"
+    profile.mkdir()
+    (profile / "DevToolsActivePort").write_text("19356\n/devtools/browser/test\n", encoding="utf-8")
+    monkeypatch.setenv("ORACLE_PERSISTENT_CDP_ENDPOINT", "127.0.0.1:19356")
+    monkeypatch.setenv("ORACLE_PERSISTENT_BROWSER_PROFILE", str(profile.resolve()))
+    manifest_path = pro_full_access_manifest(
+        tmp_path,
+        app_name="Chat On Steroids Core",
+        source_thread_id=owner,
+        run_id="20260828T145107Z-2eb1dab4f338",
+    )
+    config = runner.STATE.load_manifest(manifest_path)
+    parent = write_prebrowser_attach_refusal(
+        tmp_path.parent / f"{tmp_path.name}-parent-fixture",
+        owner=owner,
+        project_root=tmp_path,
+        source_mission=config.mission_path,
+        run_root=config.run_root,
+    )
+    parent_state_path = parent / "state.json"
+    parent_state = json.loads(parent_state_path.read_text(encoding="utf-8"))
+    parent_state["profile"]["browser_attach"]["profile_path"] = str(profile.resolve())
+    parent_state["browser_identity"]["expected_profile_path"] = str(profile.resolve())
+    parent_state_path.write_text(json.dumps(parent_state), encoding="utf-8")
+    receipt = write_prebrowser_settlement(parent, owner=owner)
+    receipt_payload = json.loads(receipt.read_text(encoding="utf-8"))
+    receipt_payload["mission_sha256"] = "0" * 64
+    receipt.write_text(json.dumps(receipt_payload), encoding="utf-8")
+    launched: list[str] = []
+
+    result = execute_run(
+        runner,
+        manifest_path,
+        run_factory=lambda command, **kwargs: subprocess.CompletedProcess(
+            command, 0, stdout="oracle 0.18.0\n", stderr=""
+        ),
+        popen_factory=popen_for(0, b"TASK_OUTCOME: EXECUTED\n", {}, launched),
+    )
+
+    assert result["ok"] is False
+    assert result["result"]["status"] == "failed"
+    assert launched == []
+    assert "PROJECT_SESSION_STILL_LIVE" in Path(result["run_dir"], "stderr.log").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_default_oracle_command_is_pinned_to_the_hash_validated_version() -> None:

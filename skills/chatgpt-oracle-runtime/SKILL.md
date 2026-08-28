@@ -273,7 +273,12 @@ evidence are all absent. The owning task may then invoke
 stdout, stderr, and mission SHA-256 values plus confirmation token
 `user-authorized-fresh-run-after-prebrowser-attach-nonexecution`. Its
 append-only receipt authorizes at most one fresh run after the persistent
-listener is proven ready. Any contradictory or ambiguous evidence stays
+listener is proven ready. A valid receipt automatically releases that old run
+from same-task project ownership without rewriting its state. A subsequent
+`PROJECT_SESSION_STILL_LIVE` rejection that occurred before Oracle launch does
+not consume the authorized retry and requires no extra settlement or repeated
+unchanged preflight: use the repaired installed runner and retry once. Any
+contradictory or ambiguous evidence, changed route, or another live owner stays
 locked.
 
 A second, non-generic settlement exists only for a terminal DevSpace checkout
