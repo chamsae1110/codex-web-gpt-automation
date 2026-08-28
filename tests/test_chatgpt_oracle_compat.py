@@ -724,6 +724,7 @@ console.log(JSON.stringify(cases));
         [node, "--input-type=module", "-e", script],
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=False,
         timeout=30,
     )
