@@ -1086,6 +1086,12 @@ def test_steroids_core_pro_dispatch_uses_persistent_prime_browser_and_direct_pro
     assert "Directly read and execute the mission file with the Core read tool" in prompt
     assert "First open exactly this project root in checkout mode" not in prompt
     assert "workspace id it returned" not in prompt
+    config = runner.STATE.load_manifest(
+        pro_full_access_manifest(tmp_path, app_name="Chat On Steroids Core")
+    )
+    child_env: dict[str, str] = {}
+    runner.configure_persistent_browser_attach_contract(child_env, config)
+    assert child_env == {"ORACLE_STRICT_ATTACH_PROFILE": "1"}
 
 
 def test_non_core_pro_dispatch_does_not_hijack_steroids_prime_browser(
@@ -1111,6 +1117,10 @@ def test_non_core_pro_dispatch_does_not_hijack_steroids_prime_browser(
     assert "--remote-chrome" not in argv
     assert "--browser-port" in argv
     assert result["browser_identity"]["mode"] == "isolated-launch"
+    config = runner.STATE.load_manifest(pro_full_access_manifest(tmp_path, app_name="DevSpace"))
+    child_env = {"ORACLE_STRICT_ATTACH_PROFILE": "1"}
+    runner.configure_persistent_browser_attach_contract(child_env, config)
+    assert "ORACLE_STRICT_ATTACH_PROFILE" not in child_env
 
 
 def test_missing_posix_copy_dependency_still_launches_without_profile_copy(

@@ -398,6 +398,7 @@ def test_published_0180_default_contract_applies_every_current_patch(tmp_path: P
         syntax = subprocess.run([node, "--check", str(target)], capture_output=True, text=True, check=False)
         assert syntax.returncode == 0, f"{relative}: {syntax.stderr}"
     attach_source = (package / "dist/src/browser/attachRunning.js").read_text(encoding="utf-8")
+    assert 'process.env.ORACLE_STRICT_ATTACH_PROFILE === "1"' in attach_source
     assert 'process.env.ORACLE_PERSISTENT_BROWSER_PROFILE' in attach_source
     assert "normalizeProfilePath(candidate.profileRoot) === expectedProfile" in attach_source
     assert "No running browser with attach metadata matched" in attach_source
@@ -412,6 +413,7 @@ def test_published_0180_default_contract_applies_every_current_patch(tmp_path: P
     expected_profile = str((tmp_path / "expected-profile").resolve())
     wrong_profile = str((tmp_path / "newer-wrong-profile").resolve())
     filter_script = (
+        "process.env.ORACLE_STRICT_ATTACH_PROFILE='1';"
         f"process.env.ORACLE_PERSISTENT_BROWSER_PROFILE={json.dumps(expected_profile)};"
         f"globalThis.__attachCandidates=["
         f"{{port:19356,profileRoot:{json.dumps(wrong_profile)},browserWSEndpoint:'ws://wrong',path:'wrong',mtimeMs:99}},"

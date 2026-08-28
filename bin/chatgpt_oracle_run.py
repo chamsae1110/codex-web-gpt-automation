@@ -1645,6 +1645,14 @@ def configure_task_outcome_terminal_contract(env: dict[str, str], contract: str)
         env["ORACLE_TASK_OUTCOME_TERMINAL_CONTRACT"] = "v1"
 
 
+def configure_persistent_browser_attach_contract(env: dict[str, str], config: Any) -> None:
+    """Scope exact-profile filtering to this harness-owned persistent attach."""
+    if config.browser_attach_port is not None:
+        env["ORACLE_STRICT_ATTACH_PROFILE"] = "1"
+    else:
+        env.pop("ORACLE_STRICT_ATTACH_PROFILE", None)
+
+
 def execute_run(
     manifest_path: Path,
     *,
@@ -1744,6 +1752,7 @@ def execute_run(
     layout.stderr_path.touch()
     oracle_env = STATE.browser_temp_environment(layout.browser_temp_path, platform_name=platform_name)
     configure_task_outcome_terminal_contract(oracle_env, config.task_outcome_contract)
+    configure_persistent_browser_attach_contract(oracle_env, config)
     terminal_watchdog_enabled = oracle_env.get("ORACLE_TASK_OUTCOME_TERMINAL_CONTRACT") == "v1"
     STATE.update_state(
         layout.state_path,

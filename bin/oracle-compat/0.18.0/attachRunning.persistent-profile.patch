@@ -9,7 +9,7 @@
 @@ -9,9 +10,17 @@
          ? `Using explicit attach-running target ${host}:${port}.`
          : `Using default attach-running target ${host}:${port}.`);
-+    const configuredProfile = (process.env.ORACLE_PERSISTENT_BROWSER_PROFILE ?? "").trim();
++    const configuredProfile = process.env.ORACLE_STRICT_ATTACH_PROFILE === "1" ? (process.env.ORACLE_PERSISTENT_BROWSER_PROFILE ?? "").trim() : "";
 +    const expectedProfile = configuredProfile
 +        ? normalizeProfilePath(configuredProfile)
 +        : null;
