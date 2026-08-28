@@ -224,7 +224,7 @@ PATCHES = {
     "dist/src/browser/actions/thinkingTime.js": {
         "patch": "thinkingTime.gpt56-pro-pill.patch",
         "pristine": "3d9d06b08417bca3b2d646eb4d46887d26c5de7c068d1e995c73b6b6e2f61199",
-        "patched": "d6981bf7610a702bdf85c8933e98fe898bb08b2592294c8efba652483b46ffe7",
+        "patched": "f836b83105116f2c2e9e001eab36e33321bbb711f7bab8bcb57ec14c19d90d48",
         "legacy_patched": [
             "6c2eb5e39e3ca9cc426dae03f26dbdb782c70d67bb6db73322a5f86140b88600",
             "52d8e002530323e4bf91a69c450a68a497f9d472899f77138aa951c2940736ee",

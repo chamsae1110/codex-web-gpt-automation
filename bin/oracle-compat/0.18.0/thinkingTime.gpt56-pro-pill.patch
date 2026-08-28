@@ -1,6 +1,6 @@
 --- a/dist/src/browser/actions/thinkingTime.js
 +++ b/dist/src/browser/actions/thinkingTime.js
-@@ -452,6 +452,148 @@ function buildThinkingTimeExpression(level, desiredModel) {
+@@ -452,6 +452,150 @@ function buildThinkingTimeExpression(level, desiredModel) {
        ...extra,
        diagnostic: collectPickerDiagnostic(),
      });
@@ -128,15 +128,17 @@
 +        .filter((value) => value !== null);
 +      if (labels.length === 0 || !labels.every(Boolean)) return null;
 +      const slider = summary.querySelector?.('[role="slider"][aria-valuenow], [aria-valuenow]') || summary;
++      const keyboardTarget = summary.querySelector?.('[role="menuitem"][aria-keyshortcuts*="ArrowRight"]') || slider;
 +      const current = slider.getAttribute?.('aria-valuenow');
++      const minimum = slider.getAttribute?.('aria-valuemin');
 +      const maximum = slider.getAttribute?.('aria-valuemax');
-+      if (current !== '4' || (maximum !== null && maximum !== '5')) return null;
++      if (current !== '3' || minimum !== '0' || maximum !== '4') return null;
 +      try {
-+        slider.focus?.();
-+        slider.dispatchEvent(new KeyboardEvent('keydown', {
++        keyboardTarget.focus?.();
++        keyboardTarget.dispatchEvent(new KeyboardEvent('keydown', {
 +          key: 'ArrowRight', code: 'ArrowRight', keyCode: 39, which: 39, bubbles: true,
 +        }));
-+        slider.dispatchEvent(new KeyboardEvent('keyup', {
++        keyboardTarget.dispatchEvent(new KeyboardEvent('keyup', {
 +          key: 'ArrowRight', code: 'ArrowRight', keyCode: 39, which: 39, bubbles: true,
 +        }));
 +      } catch {
@@ -149,7 +151,7 @@
      const findOptionInMenu = (menu, modelKindOverride = null) => {
        // Container controls reveal other controls; they are not tiers you can pick.
        // Two shapes exist and both can collide with a tier label: a submenu opener
-@@ -730,10 +828,16 @@ function buildThinkingTimeExpression(level, desiredModel) {
+@@ -730,10 +874,16 @@ function buildThinkingTimeExpression(level, desiredModel) {
          modelKindFromNode(trigger) ||
          effectiveTargetModelKind();
        const option = findOption();
@@ -170,7 +172,7 @@
          const pill = freshComposerTrigger(trigger) || findModelButton();
          const pillLabel = normalize(
            (pill?.textContent ?? '') + ' ' + (pill?.getAttribute?.('aria-label') ?? ''),
-@@ -987,6 +1135,18 @@ function buildThinkingTimeExpression(level, desiredModel) {
+@@ -987,6 +1137,18 @@ function buildThinkingTimeExpression(level, desiredModel) {
      };
      let composerEffortPill = findComposerEffortPill();
      let modelBtn = findModelButton();
@@ -189,7 +191,7 @@
      const modelKindFromLegacyTrailing = (trailing) => {
        const row = trailing.closest?.(
          '[role="menuitem"], [role="menuitemradio"], [data-radix-collection-item]',
-@@ -1069,6 +1229,11 @@ function buildThinkingTimeExpression(level, desiredModel) {
+@@ -1069,6 +1231,11 @@ function buildThinkingTimeExpression(level, desiredModel) {
        while (performance.now() < deadline) {
          const menu = findVisibleEffortMenu(composerEffortPill);
          if (menu) {

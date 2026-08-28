@@ -532,17 +532,23 @@ function makeMenu(
       const slider = new FakeElement('', {{
         role: 'slider',
         'aria-valuenow': spec.slider.now,
+        'aria-valuemin': spec.slider.min,
         'aria-valuemax': spec.slider.max,
       }});
-      slider.__dispatch = (event) => {{
+      const keyboardTarget = new FakeElement('', {{
+        role: 'menuitem',
+        'aria-keyshortcuts': 'ArrowLeft ArrowRight',
+      }});
+      keyboardTarget.__dispatch = (event) => {{
         if (event?.type !== 'keydown' || event?.key !== 'ArrowRight') return;
-        slider.attrs['aria-valuenow'] = '5';
+        slider.attrs['aria-valuenow'] = '4';
         summary.textContent = spec.slider.afterText;
         if (spec.slider.afterAriaLabel !== undefined) {{
           summary.attrs['aria-label'] = spec.slider.afterAriaLabel;
         }}
       }};
-      summary.querySelector = (selector) => selector.includes('aria-valuenow') ? slider : null;
+      summary.querySelector = (selector) =>
+        selector.includes('aria-keyshortcuts') ? keyboardTarget : selector.includes('aria-valuenow') ? slider : null;
     }}
     return summary;
   }});
@@ -695,7 +701,7 @@ const cases = {{
     summaries: [{{
       text: 'Extra High, 4 of 5.Use Left and Right arrow keys to adjust power.',
       slider: {{
-        now: '4', max: '5',
+        now: '3', min: '0', max: '4',
         afterText: 'Pro, 5 of 5.Use Left and Right arrow keys to adjust power.',
       }},
     }}],
@@ -705,7 +711,7 @@ const cases = {{
     summaries: [{{
       text: '매우 높음, 5개 중 4번째.왼쪽/오른쪽 화살표 키로 성능을 조정합니다.',
       slider: {{
-        now: '4', max: '5',
+        now: '3', min: '0', max: '4',
         afterText: 'Pro, 5개 중 5번째.왼쪽/오른쪽 화살표 키로 성능을 조정합니다.',
       }},
     }}],
@@ -747,7 +753,7 @@ const cases = {{
   wrongSliderMaximum: await runCase({{
     summaries: [{{
       text: '매우 높음, 5개 중 4번째.왼쪽/오른쪽 화살표 키로 성능을 조정합니다.',
-      slider: {{ now: '4', max: '6', afterText: 'Pro, 5개 중 5번째' }},
+      slider: {{ now: '3', min: '0', max: '5', afterText: 'Pro, 5개 중 5번째' }},
     }}],
   }}),
   unrelatedMenu: await runCase({{
