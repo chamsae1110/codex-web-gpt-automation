@@ -200,6 +200,15 @@ TERMINAL_DEVSPACE_READ_ROUTE_REFRESH_SETTLEMENT_SCHEMA = (
 TERMINAL_DEVSPACE_READ_ROUTE_REFRESH_SIGNATURE = (
     "terminal-devspace-read-chunk-unavailable-after-read-only-probe"
 )
+USER_AUTHORIZED_BLOCKED_PARENT_CONTINUATION = (
+    "user-authorized-one-use-blocked-parent-continuation"
+)
+BLOCKED_PARENT_CONTINUATION_SCHEMA = (
+    "codex.chatgpt.oracle-blocked-parent-continuation/v1"
+)
+BLOCKED_PARENT_CONTINUATION_CLAIM_SCHEMA = (
+    "codex.chatgpt.oracle-blocked-parent-continuation-claim/v1"
+)
 ORACLE_RECOVERY_STATE_RE = re.compile(r"(?im)^\s*State:\s*[a-z][a-z0-9_-]*\s*$")
 ORACLE_PROFILE_COPY_EBUSY_RE = re.compile(
     r"(?im)^(?:ERROR:\s*|User error \(browser-automation\):\s*)?"
@@ -1024,6 +1033,125 @@ def persist_followup_binding(state_path: Path, binding: dict[str, Any]) -> dict[
     return {"path": str(path), "sha256": digest, "payload": binding}
 
 
+def blocked_parent_continuation_matches(
+    state_path: Path,
+    continuation: Any,
+    *,
+    round_key: str,
+    child_mission_path: str,
+    child_mission_sha256: str,
+    ownership_receipt_sha256: str,
+    browser_identity_receipt_sha256: str,
+    require_claim: bool = False,
+) -> bool:
+    """Revalidate one owner-authorized continuation without rewriting BLOCKED."""
+    if not isinstance(continuation, dict):
+        return False
+    parent = continuation.get("parent") if isinstance(continuation.get("parent"), dict) else {}
+    child = continuation.get("child") if isinstance(continuation.get("child"), dict) else {}
+    state = load_state(state_path)
+    profile = state.get("profile") if isinstance(state.get("profile"), dict) else {}
+    oracle = state.get("oracle") if isinstance(state.get("oracle"), dict) else {}
+    mission = state.get("mission") if isinstance(state.get("mission"), dict) else {}
+    artifacts = state.get("artifacts") if isinstance(state.get("artifacts"), dict) else {}
+    source_thread_id = source_thread_id_from_state(state)
+    if (
+        continuation.get("schema") != BLOCKED_PARENT_CONTINUATION_SCHEMA
+        or continuation.get("confirmation") != USER_AUTHORIZED_BLOCKED_PARENT_CONTINUATION
+        or continuation.get("authorized_source_thread_id") != source_thread_id
+        or not str(continuation.get("reason") or "").strip()
+        or continuation.get("round_key") != round_key
+        or state.get("status") not in {"complete", "attention_required"}
+        or state.get("session_authority") != "terminal"
+        or state.get("terminal_harvested") is not True
+        or state.get("transport_status") != "complete"
+        or state.get("task_outcome") != "blocked"
+        or state.get("task_outcome_reason") != "explicit-output-marker"
+        or state.get("exit_code") != 0
+        or not is_pro_devspace_transport(str(state.get("transport") or ""))
+        or profile.get("model") != "gpt-5.6-sol"
+        or profile.get("model_strategy") != "select"
+        or str(profile.get("thinking_time") or "") not in {"heavy", "pro"}
+        or parent.get("run_id") != state.get("run_id")
+        or parent.get("slug") != oracle.get("slug")
+        or parent.get("conversation_url") != oracle.get("conversation_url")
+        or parent.get("transport") != state.get("transport")
+        or parent.get("app_name") != state.get("app_name")
+        or parent.get("model") != profile.get("model")
+        or parent.get("model_strategy") != profile.get("model_strategy")
+        or parent.get("thinking_time") != profile.get("thinking_time")
+        or parent.get("ownership_receipt_sha256") != ownership_receipt_sha256
+        or parent.get("browser_identity_receipt_sha256") != browser_identity_receipt_sha256
+        or child.get("mission_path") != child_mission_path
+        or child.get("mission_sha256") != child_mission_sha256
+    ):
+        return False
+    digest_fields = {
+        "state_sha256": state_path,
+        "output_sha256": artifacts.get("output"),
+        "transcript_sha256": artifacts.get("transcript"),
+        "stdout_sha256": artifacts.get("stdout"),
+        "stderr_sha256": artifacts.get("stderr"),
+        "mission_sha256": mission.get("transport_path"),
+        "project_mission_sha256": mission.get("path"),
+    }
+    actual: dict[str, str] = {}
+    try:
+        for field, value in digest_fields.items():
+            candidate = exact_regular_file(value, label=f"blocked_followup_{field}")
+            actual[field] = sha256_file(candidate)
+        exact_child_mission = exact_regular_file(
+            child_mission_path, label="blocked_followup_child_mission"
+        )
+    except OracleStateError:
+        return False
+    if (
+        any(parent.get(field) != digest for field, digest in actual.items())
+        or actual["output_sha256"] != state.get("artifact_sha256")
+        or actual["mission_sha256"] != mission.get("sha256")
+        or actual["project_mission_sha256"] != mission.get("sha256")
+        or sha256_file(exact_child_mission) != child_mission_sha256
+        or classify_task_outcome(
+            exact_regular_file(artifacts.get("output"), label="blocked_followup_output"),
+            contract=str(state.get("task_outcome_contract") or "v1"),
+            transport=str(state.get("transport") or ""),
+        ) != "blocked"
+    ):
+        return False
+    try:
+        project_root = Path(str(state.get("project_root") or "")).resolve(strict=True)
+    except OSError:
+        return False
+    if not is_within(project_root, exact_child_mission):
+        return False
+    if not require_claim:
+        return True
+    claim_ref = continuation.get("one_use_claim")
+    expected_claim_path = state_path.parent.resolve() / "followup-authority" / "blocked-parent-continuation.json"
+    if not isinstance(claim_ref, dict) or expected_claim_path.is_symlink():
+        return False
+    try:
+        loaded_claim = _strict_json_object(expected_claim_path)
+    except OSError:
+        return False
+    if loaded_claim is None:
+        return False
+    claim, claim_raw = loaded_claim
+    continuation_without_claim = dict(continuation)
+    continuation_without_claim.pop("one_use_claim", None)
+    if (
+        claim_ref.get("schema") != "codex.chatgpt.oracle-blocked-parent-continuation-claim-reference/v1"
+        or Path(str(claim_ref.get("path") or "")).resolve() != expected_claim_path
+        or claim_ref.get("sha256") != hashlib.sha256(claim_raw).hexdigest()
+        or claim.get("schema") != BLOCKED_PARENT_CONTINUATION_CLAIM_SCHEMA
+        or claim.get("source_thread_id") != source_thread_id
+        or claim.get("round_key") != round_key
+        or claim.get("continuation") != continuation_without_claim
+    ):
+        return False
+    return True
+
+
 def _validate_followup_reservation_for_child(
     state_path: Path,
     reservation_path: Path,
@@ -1068,24 +1196,48 @@ def _validate_followup_reservation_for_child(
     parent_browser = proven_browser_identity_receipt(parent_state_path)
     parent_profile = parent_state.get("profile") if isinstance(parent_state.get("profile"), dict) else {}
     parent_artifacts = parent.get("artifacts") if isinstance(parent.get("artifacts"), dict) else {}
+    parent_executed = (
+        parent_state.get("status") == "complete"
+        and parent_state.get("session_authority") == "terminal"
+        and parent_state.get("terminal_harvested") is True
+        and parent_state.get("task_outcome") == "executed"
+    )
+    parent_blocked = (
+        parent_state.get("status") in {"complete", "attention_required"}
+        and parent_state.get("session_authority") == "terminal"
+        and parent_state.get("terminal_harvested") is True
+        and parent_state.get("transport_status") == "complete"
+        and parent_state.get("task_outcome") == "blocked"
+    )
     if (
         source_thread_id_from_state(parent_state) != source_thread_id
         or parent_state.get("run_id") != parent.get("run_id")
         or (parent_state.get("oracle") or {}).get("slug") != parent.get("slug")
         or str((parent_state.get("oracle") or {}).get("conversation_url") or "") != parent.get("conversation_url")
-        or parent_state.get("status") != "complete"
-        or parent_state.get("session_authority") != "terminal"
-        or parent_state.get("terminal_harvested") is not True
-        or parent_state.get("task_outcome") != "executed"
+        or not (parent_executed or parent_blocked)
         or not is_pro_devspace_transport(str(parent_state.get("transport") or ""))
         or parent_profile.get("model") != "gpt-5.6-sol"
         or parent_profile.get("model_strategy") != "select"
-        or parent_profile.get("thinking_time") != "heavy"
+        or str(parent_profile.get("thinking_time") or "") not in {"heavy", "pro"}
         or parent_owner is None
         or parent_browser is None
         or parent.get("ownership_receipt_sha256") != parent_owner.get("sha256")
         or parent.get("browser_identity_receipt_sha256") != parent_browser.get("sha256")
         or str((parent_browser.get("payload") or {}).get("conversation_url") or "") != parent.get("conversation_url")
+    ):
+        return None
+    if parent_executed:
+        if parent.get("blocked_parent_continuation") is not None:
+            return None
+    elif not blocked_parent_continuation_matches(
+        parent_state_path,
+        parent.get("blocked_parent_continuation"),
+        round_key=round_key,
+        child_mission_path=str(child.get("mission_path") or ""),
+        child_mission_sha256=str(child.get("mission_sha256") or ""),
+        ownership_receipt_sha256=str(parent_owner.get("sha256") or ""),
+        browser_identity_receipt_sha256=str(parent_browser.get("sha256") or ""),
+        require_claim=True,
     ):
         return None
     parent_mission = parent_state.get("mission") if isinstance(parent_state.get("mission"), dict) else {}

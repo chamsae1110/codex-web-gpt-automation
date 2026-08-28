@@ -59,6 +59,8 @@ def make_parent(
     (layout.browser_temp_path / "profile").mkdir()
     layout.output_path.write_text("answer\nTASK_OUTCOME: EXECUTED\n", encoding="utf-8")
     layout.transcript_path.write_text("terminal transcript", encoding="utf-8")
+    layout.stdout_path.write_text("oracle stdout", encoding="utf-8")
+    layout.stderr_path.write_text("", encoding="utf-8")
     Path(str(layout.run_dir / "mission.md")).write_bytes(mission.read_bytes())
     runner.STATE.write_json_atomic(
         layout.state_path,
@@ -86,6 +88,64 @@ def make_parent(
         transport_status="complete", task_outcome="executed", artifact_sha256=hashlib.sha256(layout.output_path.read_bytes()).hexdigest(),
     )
     return runner, layout, followup
+
+
+def make_blocked_parent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    runner, layout, followup = make_parent(tmp_path, monkeypatch)
+    layout.output_path.write_text(
+        "partial implementation preserved\nTASK_OUTCOME: BLOCKED\n",
+        encoding="utf-8",
+    )
+    state = runner.STATE.load_state(layout.state_path)
+    state.update({
+        "status": "attention_required",
+        "session_authority": "terminal",
+        "terminal_harvested": True,
+        "transport_status": "complete",
+        "task_outcome": "blocked",
+        "task_outcome_reason": "explicit-output-marker",
+        "exit_code": 0,
+        "artifact_sha256": hashlib.sha256(layout.output_path.read_bytes()).hexdigest(),
+    })
+    runner.STATE.write_json_atomic(layout.state_path, state)
+    return runner, layout, followup
+
+
+def blocked_continuation_kwargs(runner, layout, followup: Path) -> dict:
+    state = runner.STATE.load_state(layout.state_path)
+    artifacts = state["artifacts"]
+    return {
+        "confirmation": runner.STATE.USER_AUTHORIZED_BLOCKED_PARENT_CONTINUATION,
+        "reason": "the owning task explicitly requested the remaining work in the same conversation",
+        "expected_state_sha256": runner.STATE.sha256_file(layout.state_path),
+        "expected_output_sha256": runner.STATE.sha256_file(Path(artifacts["output"])),
+        "expected_transcript_sha256": runner.STATE.sha256_file(Path(artifacts["transcript"])),
+        "expected_stdout_sha256": runner.STATE.sha256_file(Path(artifacts["stdout"])),
+        "expected_stderr_sha256": runner.STATE.sha256_file(Path(artifacts["stderr"])),
+        "expected_parent_mission_sha256": state["mission"]["sha256"],
+        "expected_followup_mission_sha256": runner.STATE.sha256_file(followup),
+    }
+
+
+def set_exact_never_archive_metadata(runner, layout) -> Path:
+    meta_path = Path(os.environ["ORACLE_SESSION_ROOT"]) / layout.slug / "meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta.update({
+        "id": layout.slug,
+        "status": "error",
+        "mode": "browser",
+        "model": "gpt-5.6-sol",
+        "completedAt": "2026-08-28T07:26:57.121Z",
+    })
+    meta["browser"]["archive"] = None
+    meta["browser"]["config"] = {"archiveConversations": "never"}
+    meta["browser"]["runtime"].update({
+        "promptSubmitted": True,
+        "conversationId": "exact-parent-conversation",
+    })
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+    assert runner.STATE.load_state(layout.state_path)["profile"]["archive"] == "never"
+    return meta_path
 
 
 def test_browser_identity_port_mismatch_is_persisted_and_never_becomes_authority(
@@ -1048,6 +1108,280 @@ def test_followup_rejects_foreign_or_nonqualifying_parent(
         runner.followup_run(layout.run_dir, mission_path=mission, round_key="round-1", dry_run=True)
 
     assert exc.value.code == code
+
+
+def test_blocked_parent_without_authority_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, layout, mission = make_blocked_parent(tmp_path, monkeypatch)
+
+    with pytest.raises(runner.OracleRunError) as exc:
+        runner.followup_run(
+            layout.run_dir,
+            mission_path=mission,
+            round_key="blocked-without-authority",
+            dry_run=True,
+        )
+
+    assert exc.value.code == "FOLLOWUP_BLOCKED_PARENT_AUTHORITY_REQUIRED"
+    assert not (layout.run_dir / "followup-rounds").exists()
+
+
+def test_blocked_parent_continuation_admission_accepts_exact_owner_and_hashes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, layout, mission = make_blocked_parent(tmp_path, monkeypatch)
+    kwargs = blocked_continuation_kwargs(runner, layout, mission)
+
+    result = runner.continue_blocked_followup_run(
+        layout.run_dir,
+        mission_path=mission,
+        round_key="blocked-admission",
+        run_id="blocked-admission-child",
+        dry_run=True,
+        **kwargs,
+    )
+
+    assert result["status"] == "blocked_parent_followup_dry_run"
+    authority = result["round_receipt_plan"]["parent"]["blocked_parent_continuation"]
+    assert authority["confirmation"] == runner.STATE.USER_AUTHORIZED_BLOCKED_PARENT_CONTINUATION
+    assert authority["parent"]["state_sha256"] == kwargs["expected_state_sha256"]
+    assert authority["parent"]["output_sha256"] == kwargs["expected_output_sha256"]
+    assert authority["child"]["mission_sha256"] == kwargs["expected_followup_mission_sha256"]
+    assert result["blocked_parent_continuation"]["parent_task_outcome_preserved"] == "blocked"
+
+
+def test_blocked_parent_continuation_admission_accepts_exact_never_archive_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, layout, mission = make_blocked_parent(tmp_path, monkeypatch)
+    set_exact_never_archive_metadata(runner, layout)
+    kwargs = blocked_continuation_kwargs(runner, layout, mission)
+
+    result = runner.continue_blocked_followup_run(
+        layout.run_dir,
+        mission_path=mission,
+        round_key="blocked-never-archive",
+        run_id="blocked-never-archive-child",
+        dry_run=True,
+        **kwargs,
+    )
+
+    archive = result["round_receipt_plan"]["parent"]["archive_contract"]
+    assert archive["was_archived"] is False
+    assert archive["restore_policy"] == "no-transition"
+    assert archive["evidence_source"] == "explicit-never-runtime-url"
+
+
+@pytest.mark.parametrize(
+    "mutation, code",
+    [
+        ("config", "FOLLOWUP_PARENT_ARCHIVE_STATUS_UNVERIFIED"),
+        ("prompt", "FOLLOWUP_PARENT_ARCHIVE_STATUS_UNVERIFIED"),
+        ("url", "FOLLOWUP_PARENT_IDENTITY_INVALID"),
+        ("conversation-id", "FOLLOWUP_PARENT_ARCHIVE_STATUS_UNVERIFIED"),
+        ("session-id", "FOLLOWUP_PARENT_ARCHIVE_STATUS_UNVERIFIED"),
+        ("completed-at", "FOLLOWUP_PARENT_ARCHIVE_STATUS_UNVERIFIED"),
+    ],
+)
+def test_blocked_parent_continuation_admission_rejects_ambiguous_never_archive_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+    code: str,
+) -> None:
+    root = tmp_path / mutation
+    root.mkdir()
+    runner, layout, mission = make_blocked_parent(root, monkeypatch)
+    meta_path = set_exact_never_archive_metadata(runner, layout)
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    if mutation == "config":
+        meta["browser"]["config"]["archiveConversations"] = "auto"
+    elif mutation == "prompt":
+        meta["browser"]["runtime"]["promptSubmitted"] = False
+    elif mutation == "url":
+        meta["browser"]["runtime"]["tabUrl"] = "https://chatgpt.com/c/different-conversation"
+    elif mutation == "conversation-id":
+        meta["browser"]["runtime"]["conversationId"] = "different-conversation"
+    elif mutation == "session-id":
+        meta["id"] = "different-session"
+    elif mutation == "completed-at":
+        meta["completedAt"] = None
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+    kwargs = blocked_continuation_kwargs(runner, layout, mission)
+
+    with pytest.raises(runner.OracleRunError) as exc:
+        runner.continue_blocked_followup_run(
+            layout.run_dir,
+            mission_path=mission,
+            round_key="blocked-never-archive-drift",
+            run_id="blocked-never-archive-drift-child",
+            dry_run=True,
+            **kwargs,
+        )
+
+    assert exc.value.code == code
+
+
+
+@pytest.mark.parametrize(
+    "mutation, code",
+    [
+        ("state-hash", "FOLLOWUP_BLOCKED_PARENT_AUTHORITY_INVALID"),
+        ("output-hash", "FOLLOWUP_BLOCKED_PARENT_AUTHORITY_INVALID"),
+        ("followup-hash", "FOLLOWUP_BLOCKED_PARENT_MISSION_HASH_MISMATCH"),
+        ("foreign-owner", "FOREIGN_TASK_SESSION"),
+        ("nonterminal", "FOLLOWUP_PARENT_NOT_EXECUTED"),
+        ("profile-downgrade", "FOLLOWUP_PARENT_PROFILE_FORBIDDEN"),
+        ("conversation-drift", "FOLLOWUP_PARENT_CONVERSATION_INVALID"),
+    ],
+)
+def test_blocked_parent_continuation_admission_rejects_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+    code: str,
+) -> None:
+    root = tmp_path / mutation
+    root.mkdir()
+    runner, layout, mission = make_blocked_parent(root, monkeypatch)
+    kwargs = blocked_continuation_kwargs(runner, layout, mission)
+    if mutation == "state-hash":
+        kwargs["expected_state_sha256"] = "0" * 64
+    elif mutation == "output-hash":
+        kwargs["expected_output_sha256"] = "0" * 64
+    elif mutation == "followup-hash":
+        kwargs["expected_followup_mission_sha256"] = "0" * 64
+    elif mutation == "foreign-owner":
+        monkeypatch.setenv("CODEX_THREAD_ID", FOREIGN)
+    else:
+        state = runner.STATE.load_state(layout.state_path)
+        if mutation == "nonterminal":
+            state["session_authority"] = "live"
+            state["terminal_harvested"] = False
+        elif mutation == "profile-downgrade":
+            state["profile"]["model"] = "gpt-5.5"
+        elif mutation == "conversation-drift":
+            state["oracle"]["conversation_url"] = "https://chatgpt.com/c/different-conversation"
+        runner.STATE.write_json_atomic(layout.state_path, state)
+        kwargs["expected_state_sha256"] = runner.STATE.sha256_file(layout.state_path)
+
+    with pytest.raises(runner.OracleRunError) as exc:
+        runner.continue_blocked_followup_run(
+            layout.run_dir,
+            mission_path=mission,
+            round_key="blocked-drift",
+            run_id="blocked-drift-child",
+            dry_run=True,
+            **kwargs,
+        )
+
+    assert exc.value.code == code
+    assert not (layout.run_dir / "followup-rounds").exists()
+
+
+def test_blocked_parent_continuation_dry_run_writes_nothing_and_keeps_exact_conversation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, layout, mission = make_blocked_parent(tmp_path, monkeypatch)
+    kwargs = blocked_continuation_kwargs(runner, layout, mission)
+    before = layout.state_path.read_bytes()
+
+    result = runner.continue_blocked_followup_run(
+        layout.run_dir,
+        mission_path=mission,
+        round_key="blocked-dry-run",
+        run_id="blocked-dry-run-child",
+        dry_run=True,
+        **kwargs,
+    )
+
+    assert result["submitted_question"] is False
+    assert result["parent_conversation_url"] == "https://chatgpt.com/c/exact-parent-conversation"
+    assert result["argv_plan"][:2] == ["--followup", layout.slug]
+    claim_plan = result["blocked_parent_continuation_claim_plan"]
+    assert claim_plan["sha256"] == result["blocked_parent_continuation"]["one_use_claim"]["sha256"]
+    assert not Path(claim_plan["path"]).exists()
+    assert layout.state_path.read_bytes() == before
+    assert not (layout.run_dir / "followup-rounds").exists()
+    assert not (layout.run_dir / "followup-manifests").exists()
+    assert not (layout.run_dir.parent / "blocked-dry-run-child").exists()
+
+
+def test_blocked_parent_continuation_receipt_is_one_use_child_bound_and_parent_immutable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runner, layout, mission = make_blocked_parent(tmp_path, monkeypatch)
+    kwargs = blocked_continuation_kwargs(runner, layout, mission)
+    before = layout.state_path.read_bytes()
+    captured_child: dict[str, Path] = {}
+
+    def fake_execute(manifest_path, **execute_kwargs):
+        manifest_path = Path(manifest_path)
+        config = runner.STATE.load_manifest(manifest_path, bind_runtime_task=True)
+        child = runner.STATE.create_layout(config, run_id=config.requested_run_id)
+        child.run_dir.mkdir(parents=True)
+        runner.STATE.write_json_atomic(
+            child.state_path,
+            runner.STATE.state_payload(
+                config,
+                child,
+                status="prepared",
+                resolved_version="oracle 0.17.1",
+                cdp_port=execute_kwargs["_cdp_port"],
+            ),
+        )
+        runner.STATE.persist_followup_binding(
+            child.state_path, execute_kwargs["_followup_binding"]
+        )
+        captured_child["state"] = child.state_path
+        return {"ok": True, "run_dir": str(child.run_dir)}
+
+    monkeypatch.setattr(runner, "execute_run", fake_execute)
+    result = runner.continue_blocked_followup_run(
+        layout.run_dir,
+        mission_path=mission,
+        round_key="blocked-one-use",
+        run_id="blocked-one-use-child",
+        dry_run=False,
+        **kwargs,
+    )
+
+    receipt_path = Path(result["followup_round_receipt"]["path"])
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    claim_path = Path(result["blocked_parent_continuation_claim"]["path"])
+    assert claim_path.is_file()
+    assert runner.STATE.sha256_file(claim_path) == result["blocked_parent_continuation_claim"]["sha256"]
+    assert receipt["parent"]["blocked_parent_continuation"]["parent"]["output_sha256"] == kwargs["expected_output_sha256"]
+    assert runner.STATE.proven_followup_binding(captured_child["state"]) is not None
+    assert layout.state_path.read_bytes() == before
+    assert runner.STATE.load_state(layout.state_path)["task_outcome"] == "blocked"
+
+    with pytest.raises(runner.OracleRunError) as duplicate:
+        runner.continue_blocked_followup_run(
+            layout.run_dir,
+            mission_path=mission,
+            round_key="blocked-one-use",
+            run_id="blocked-one-use-child-2",
+            dry_run=False,
+            **kwargs,
+        )
+    assert duplicate.value.code == "FOLLOWUP_ROUND_DUPLICATE"
+
+    with pytest.raises(runner.OracleRunError) as reused:
+        runner.continue_blocked_followup_run(
+            layout.run_dir,
+            mission_path=mission,
+            round_key="blocked-second-use",
+            run_id="blocked-second-use-child",
+            dry_run=False,
+            **kwargs,
+        )
+    assert reused.value.code == "FOLLOWUP_BLOCKED_PARENT_CONTINUATION_ALREADY_USED"
+
+    receipt["parent"]["blocked_parent_continuation"]["parent"]["state_sha256"] = "0" * 64
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    assert runner.STATE.proven_followup_binding(captured_child["state"]) is None
 
 
 def test_followup_duplicate_round_and_new_conversation_are_fail_closed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -115,6 +115,16 @@ and a unique round key. Raw Oracle follow-up options remain blocked. Each round
 gets a new Oracle run/slug but must prove the unchanged ChatGPT conversation
 and append hash-bound reservation/result receipts. A
 separately explicit immutable-evidence request may use `pro-attachment`.
+An ordinary `followup` still requires an `EXECUTED` parent. A terminal harvested
+`BLOCKED` parent can continue only through the separate `continue-blocked`
+command after the owning task explicitly asks to finish the remaining work.
+That command binds the unchanged parent state, output, transcript, stdout,
+stderr, parent mission, follow-up mission, ownership receipt, browser identity,
+profile, app, transport, conversation URL, and unique round key into the
+append-only reservation. It preserves the parent's `BLOCKED` verdict and grants
+no fresh-run authority. The child run/slug is an audit record for the one round,
+not a replacement conversation; duplicate use, foreign ownership, hash drift,
+or identity drift fails before submission.
 Standalone Pro does not require a Web Multi decision and never launches Web
 Multi automatically; Web Multi remains a separate explicit user request.
 

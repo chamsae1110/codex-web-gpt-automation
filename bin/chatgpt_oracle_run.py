@@ -3464,6 +3464,32 @@ def _followup_archive_contract(state: dict[str, Any], conversation_url: str) -> 
             "follow-up requires exact terminal Oracle archive metadata",
         ) from exc
     archive = ((meta.get("browser") or {}).get("archive") if isinstance(meta, dict) else None)
+    if not isinstance(archive, dict):
+        browser = meta.get("browser") if isinstance(meta, dict) and isinstance(meta.get("browser"), dict) else {}
+        config = browser.get("config") if isinstance(browser.get("config"), dict) else {}
+        runtime = browser.get("runtime") if isinstance(browser.get("runtime"), dict) else {}
+        profile = state.get("profile") if isinstance(state.get("profile"), dict) else {}
+        conversation_id = conversation_url.rstrip("/").rsplit("/", 1)[-1]
+        if (
+            meta.get("id") == slug
+            and meta.get("mode") == "browser"
+            and meta.get("model") == "gpt-5.6-sol"
+            and str(meta.get("status") or "") in {"complete", "error"}
+            and bool(str(meta.get("completedAt") or "").strip())
+            and profile.get("archive") == "never"
+            and config.get("archiveConversations") == "never"
+            and runtime.get("promptSubmitted") is True
+            and runtime.get("tabUrl") == conversation_url
+            and runtime.get("conversationId") == conversation_id
+        ):
+            return {
+                "was_archived": False,
+                "conversation_url": conversation_url,
+                "oracle_meta_path": str(meta_path),
+                "oracle_meta_sha256": hashlib.sha256(raw).hexdigest(),
+                "restore_policy": "no-transition",
+                "evidence_source": "explicit-never-runtime-url",
+            }
     if not isinstance(archive, dict) or not isinstance(archive.get("archived"), bool):
         raise OracleRunError(
             "FOLLOWUP_PARENT_ARCHIVE_STATUS_UNVERIFIED",
@@ -3485,7 +3511,13 @@ def _followup_archive_contract(state: dict[str, Any], conversation_url: str) -> 
     }
 
 
-def _require_followup_parent(parent_run_dir: Path) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], str, dict[str, str], dict[str, Any]]:
+def _require_followup_parent(
+    parent_run_dir: Path,
+    *,
+    round_key: str,
+    child_mission: Path,
+    blocked_parent_continuation: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], str, dict[str, str], dict[str, Any]]:
     """Validate the one narrow parent contract for an in-conversation Pro round.
 
     This is deliberately stricter than ordinary recovery.  A follow-up is not
@@ -3496,16 +3528,35 @@ def _require_followup_parent(parent_run_dir: Path) -> tuple[dict[str, Any], dict
     state = STATE.load_state(state_path)
     require_current_task_owns_run(state, legacy_code="FOLLOWUP_PARENT_LEGACY_UNBOUND")
     owner = STATE.source_thread_id_from_state(state)
-    if not (
+    executed_parent = (
         state.get("status") == "complete"
         and state.get("session_authority") == "terminal"
         and state.get("terminal_harvested") is True
         and str(state.get("task_outcome") or "") == "executed"
-    ):
+    )
+    blocked_parent = (
+        state.get("status") in {"complete", "attention_required"}
+        and state.get("session_authority") == "terminal"
+        and state.get("terminal_harvested") is True
+        and state.get("transport_status") == "complete"
+        and str(state.get("task_outcome") or "") == "blocked"
+    )
+    if not executed_parent and not blocked_parent:
         raise OracleRunError(
             "FOLLOWUP_PARENT_NOT_EXECUTED",
             "follow-up requires one terminal EXECUTED parent run",
             {"status": state.get("status"), "task_outcome": state.get("task_outcome")},
+        )
+    if blocked_parent and blocked_parent_continuation is None:
+        raise OracleRunError(
+            "FOLLOWUP_BLOCKED_PARENT_AUTHORITY_REQUIRED",
+            "a terminal BLOCKED parent requires the explicit one-use continue-blocked command",
+            {"status": state.get("status"), "task_outcome": state.get("task_outcome")},
+        )
+    if executed_parent and blocked_parent_continuation is not None:
+        raise OracleRunError(
+            "FOLLOWUP_BLOCKED_PARENT_AUTHORITY_UNEXPECTED",
+            "blocked-parent continuation authority cannot be attached to an EXECUTED parent",
         )
     profile = state.get("profile") if isinstance(state.get("profile"), dict) else {}
     if (
@@ -3524,6 +3575,19 @@ def _require_followup_parent(parent_run_dir: Path) -> tuple[dict[str, Any], dict
         raise OracleRunError(
             "FOLLOWUP_PARENT_IDENTITY_INVALID",
             "follow-up requires valid immutable ownership and browser identity receipts",
+        )
+    if blocked_parent and not STATE.blocked_parent_continuation_matches(
+        state_path,
+        blocked_parent_continuation,
+        round_key=round_key,
+        child_mission_path=str(child_mission),
+        child_mission_sha256=STATE.sha256_file(child_mission),
+        ownership_receipt_sha256=str(ownership.get("sha256") or ""),
+        browser_identity_receipt_sha256=str(browser.get("sha256") or ""),
+    ):
+        raise OracleRunError(
+            "FOLLOWUP_BLOCKED_PARENT_AUTHORITY_INVALID",
+            "blocked-parent continuation authority does not match the exact parent, mission, or owner",
         )
     oracle = state.get("oracle") if isinstance(state.get("oracle"), dict) else {}
     conversation_url = str(oracle.get("conversation_url") or "").strip()
@@ -3677,6 +3741,135 @@ def _persist_followup_completion_receipt(
     return {"path": str(receipt_path), "sha256": digest, "payload": payload}
 
 
+def _blocked_followup_sha256(value: str, *, label: str) -> str:
+    normalized = str(value or "").strip().casefold()
+    if re.fullmatch(r"[a-f0-9]{64}", normalized) is None:
+        raise OracleRunError(
+            "FOLLOWUP_BLOCKED_PARENT_HASH_INVALID",
+            f"{label} must be one exact 64-character SHA-256",
+        )
+    return normalized
+
+
+def continue_blocked_followup_run(
+    parent_run_dir: Path,
+    *,
+    mission_path: Path,
+    round_key: str,
+    confirmation: str,
+    reason: str,
+    expected_state_sha256: str,
+    expected_output_sha256: str,
+    expected_transcript_sha256: str,
+    expected_stdout_sha256: str,
+    expected_stderr_sha256: str,
+    expected_parent_mission_sha256: str,
+    expected_followup_mission_sha256: str,
+    run_id: str | None = None,
+    dry_run: bool = False,
+    **execute_kwargs: Any,
+) -> dict[str, Any]:
+    """Continue one exact BLOCKED parent without changing its terminal verdict."""
+    if confirmation.strip().casefold() != STATE.USER_AUTHORIZED_BLOCKED_PARENT_CONTINUATION:
+        raise OracleRunError(
+            "FOLLOWUP_BLOCKED_PARENT_CONFIRMATION_REQUIRED",
+            "confirmation does not authorize a one-use BLOCKED-parent continuation",
+        )
+    normalized_reason = str(reason or "").strip()
+    if not normalized_reason:
+        raise OracleRunError(
+            "FOLLOWUP_BLOCKED_PARENT_REASON_REQUIRED",
+            "an explicit user continuation reason is required",
+        )
+    directory = parent_run_dir.expanduser().resolve(strict=True)
+    state_path = directory / "state.json"
+    state = STATE.load_state(state_path)
+    require_current_task_owns_run(state, legacy_code="FOLLOWUP_PARENT_LEGACY_UNBOUND")
+    child_mission = STATE.exact_regular_file(mission_path, label="followup_mission")
+    child_mission_sha256 = STATE.sha256_file(child_mission)
+    expected_hashes = {
+        "state_sha256": _blocked_followup_sha256(expected_state_sha256, label="expected_state_sha256"),
+        "output_sha256": _blocked_followup_sha256(expected_output_sha256, label="expected_output_sha256"),
+        "transcript_sha256": _blocked_followup_sha256(
+            expected_transcript_sha256, label="expected_transcript_sha256"
+        ),
+        "stdout_sha256": _blocked_followup_sha256(expected_stdout_sha256, label="expected_stdout_sha256"),
+        "stderr_sha256": _blocked_followup_sha256(expected_stderr_sha256, label="expected_stderr_sha256"),
+        "mission_sha256": _blocked_followup_sha256(
+            expected_parent_mission_sha256, label="expected_parent_mission_sha256"
+        ),
+        "project_mission_sha256": _blocked_followup_sha256(
+            expected_parent_mission_sha256, label="expected_parent_mission_sha256"
+        ),
+    }
+    expected_child_sha256 = _blocked_followup_sha256(
+        expected_followup_mission_sha256, label="expected_followup_mission_sha256"
+    )
+    if child_mission_sha256 != expected_child_sha256:
+        raise OracleRunError(
+            "FOLLOWUP_BLOCKED_PARENT_MISSION_HASH_MISMATCH",
+            "the follow-up mission changed after user continuation authority was captured",
+            {"expected_sha256": expected_child_sha256, "actual_sha256": child_mission_sha256},
+        )
+    ownership = STATE.proven_ownership_receipt(state_path)
+    browser = STATE.proven_browser_identity_receipt(state_path)
+    if ownership is None or browser is None:
+        raise OracleRunError(
+            "FOLLOWUP_PARENT_IDENTITY_INVALID",
+            "blocked-parent continuation requires valid immutable ownership and browser identity receipts",
+        )
+    profile = state.get("profile") if isinstance(state.get("profile"), dict) else {}
+    oracle = state.get("oracle") if isinstance(state.get("oracle"), dict) else {}
+    normalized_round_key = str(round_key or "").strip().casefold()
+    continuation = {
+        "schema": STATE.BLOCKED_PARENT_CONTINUATION_SCHEMA,
+        "confirmation": STATE.USER_AUTHORIZED_BLOCKED_PARENT_CONTINUATION,
+        "reason": normalized_reason,
+        "authorized_source_thread_id": STATE.current_source_thread_id(),
+        "round_key": normalized_round_key,
+        "parent": {
+            "run_id": state.get("run_id"),
+            "slug": oracle.get("slug"),
+            "conversation_url": oracle.get("conversation_url"),
+            "transport": state.get("transport"),
+            "app_name": state.get("app_name"),
+            "model": profile.get("model"),
+            "model_strategy": profile.get("model_strategy"),
+            "thinking_time": profile.get("thinking_time"),
+            "ownership_receipt_sha256": ownership.get("sha256"),
+            "browser_identity_receipt_sha256": browser.get("sha256"),
+            **expected_hashes,
+        },
+        "child": {
+            "mission_path": str(child_mission),
+            "mission_sha256": expected_child_sha256,
+        },
+        "authorized_at": datetime.now(timezone.utc).isoformat(),
+    }
+    result = followup_run(
+        directory,
+        mission_path=child_mission,
+        round_key=normalized_round_key,
+        run_id=run_id,
+        dry_run=dry_run,
+        _blocked_parent_continuation=continuation,
+        **execute_kwargs,
+    )
+    result["blocked_parent_continuation"] = {
+        "schema": continuation["schema"],
+        "round_key": normalized_round_key,
+        "parent_state_sha256": expected_hashes["state_sha256"],
+        "parent_output_sha256": expected_hashes["output_sha256"],
+        "followup_mission_sha256": expected_child_sha256,
+        "parent_task_outcome_preserved": "blocked",
+        "one_use_claim": (
+            result.get("blocked_parent_continuation_claim")
+            or result.get("blocked_parent_continuation_claim_plan")
+        ),
+    }
+    return result
+
+
 def followup_run(
     parent_run_dir: Path,
     *,
@@ -3684,6 +3877,7 @@ def followup_run(
     round_key: str,
     run_id: str | None = None,
     dry_run: bool = False,
+    _blocked_parent_continuation: dict[str, Any] | None = None,
     **execute_kwargs: Any,
 ) -> dict[str, Any]:
     """Continue one qualifying read-only Pro conversation without a new tab.
@@ -3695,16 +3889,23 @@ def followup_run(
     normalized_round_key = str(round_key or "").strip().casefold()
     if FOLLOWUP_ROUND_KEY_RE.fullmatch(normalized_round_key) is None:
         raise OracleRunError("FOLLOWUP_ROUND_KEY_INVALID", "round_key must be a safe 1-64 character identifier")
-    parent, ownership, browser, conversation_url, artifact_hashes, archive_contract = _require_followup_parent(directory)
-    parent_slug = str((parent.get("oracle") or {}).get("slug") or "")
-    child_run_id = str(run_id or f"followup-{uuid.uuid4().hex}").strip().casefold()
-    if STATE.RUN_ID_RE.fullmatch(child_run_id) is None:
-        raise OracleRunError("FOLLOWUP_RUN_ID_INVALID", "follow-up run_id must be a safe identifier")
-    project_root = Path(str(parent.get("project_root") or "")).resolve(strict=True)
+    initial_state = STATE.load_state(directory / "state.json")
+    require_current_task_owns_run(initial_state, legacy_code="FOLLOWUP_PARENT_LEGACY_UNBOUND")
+    project_root = Path(str(initial_state.get("project_root") or "")).resolve(strict=True)
     child_mission = STATE.exact_regular_file(mission_path, label="followup_mission")
     if not STATE.is_within(project_root, child_mission):
         raise OracleRunError("FOLLOWUP_MISSION_OUTSIDE_PROJECT", "follow-up mission must remain in the exact parent project root")
     STATE.read_utf8_strict(child_mission)
+    parent, ownership, browser, conversation_url, artifact_hashes, archive_contract = _require_followup_parent(
+        directory,
+        round_key=normalized_round_key,
+        child_mission=child_mission,
+        blocked_parent_continuation=_blocked_parent_continuation,
+    )
+    parent_slug = str((parent.get("oracle") or {}).get("slug") or "")
+    child_run_id = str(run_id or f"followup-{uuid.uuid4().hex}").strip().casefold()
+    if STATE.RUN_ID_RE.fullmatch(child_run_id) is None:
+        raise OracleRunError("FOLLOWUP_RUN_ID_INVALID", "follow-up run_id must be a safe identifier")
     run_root = directory.parent.resolve()
     child_slug = STATE.oracle_slug(project_root, child_run_id)
     expected_port = STATE.reserve_loopback_cdp_port()
@@ -3715,31 +3916,63 @@ def followup_run(
             "this parent conversation already has the requested follow-up round key",
             {"round_receipt": str(receipt_path)},
         )
+    continuation_for_receipt = _blocked_parent_continuation
+    claim_path: Path | None = None
+    claim_payload: dict[str, Any] | None = None
+    claim_bytes: bytes | None = None
+    claim_sha256: str | None = None
+    if _blocked_parent_continuation is not None:
+        claim_path = directory / "followup-authority" / "blocked-parent-continuation.json"
+        if claim_path.exists():
+            raise OracleRunError(
+                "FOLLOWUP_BLOCKED_PARENT_CONTINUATION_ALREADY_USED",
+                "this BLOCKED parent already consumed its one-use continuation authority",
+                {"claim_path": str(claim_path)},
+            )
+        claim_payload = {
+            "schema": STATE.BLOCKED_PARENT_CONTINUATION_CLAIM_SCHEMA,
+            "source_thread_id": STATE.source_thread_id_from_state(parent),
+            "round_key": normalized_round_key,
+            "continuation": _blocked_parent_continuation,
+        }
+        claim_bytes = (json.dumps(claim_payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+        claim_sha256 = hashlib.sha256(claim_bytes).hexdigest()
+        continuation_for_receipt = {
+            **_blocked_parent_continuation,
+            "one_use_claim": {
+                "schema": "codex.chatgpt.oracle-blocked-parent-continuation-claim-reference/v1",
+                "path": str(claim_path),
+                "sha256": claim_sha256,
+            },
+        }
     manifest_payload = _followup_manifest_payload(
         parent, mission_path=child_mission, run_id=child_run_id, archive_contract=archive_contract
     )
     manifest_payload["run_root"] = str(run_root)
     manifest_path = directory / "followup-manifests" / f"{child_run_id}.json"
+    parent_receipt = {
+        "run_id": parent.get("run_id"), "slug": parent_slug,
+        "conversation_url": conversation_url,
+        "ownership_receipt_sha256": ownership.get("sha256"),
+        "browser_identity_receipt_sha256": browser.get("sha256"),
+        "artifacts": artifact_hashes,
+        # Existing terminal state stores the output hash, but not a
+        # transcript-hash field.  Preserve the current regular-file hash
+        # in this reservation without falsely claiming it was sealed by
+        # the legacy terminal-state schema.
+        "transcript_baseline": {
+            "sha256": artifact_hashes["transcript"],
+            "state_terminal_hash_field": "absent-in-parent-schema",
+        },
+        "archive_contract": archive_contract,
+    }
+    if continuation_for_receipt is not None:
+        parent_receipt["blocked_parent_continuation"] = continuation_for_receipt
     receipt = {
         "schema": "codex.chatgpt.oracle-followup-round/v1",
         "round_key": normalized_round_key,
         "source_thread_id": STATE.source_thread_id_from_state(parent),
-        "parent": {
-            "run_id": parent.get("run_id"), "slug": parent_slug,
-            "conversation_url": conversation_url,
-            "ownership_receipt_sha256": ownership.get("sha256"),
-            "browser_identity_receipt_sha256": browser.get("sha256"),
-            "artifacts": artifact_hashes,
-            # Existing terminal state stores the output hash, but not a
-            # transcript-hash field.  Preserve the current regular-file hash
-            # in this reservation without falsely claiming it was sealed by
-            # the legacy terminal-state schema.
-            "transcript_baseline": {
-                "sha256": artifact_hashes["transcript"],
-                "state_terminal_hash_field": "absent-in-parent-schema",
-            },
-            "archive_contract": archive_contract,
-        },
+        "parent": parent_receipt,
         "child": {
             "run_id": child_run_id, "slug": child_slug,
             "mission_path": str(child_mission), "mission_sha256": STATE.sha256_file(child_mission),
@@ -3751,16 +3984,37 @@ def followup_run(
     if dry_run:
         return {
             "ok": True,
-            "status": "followup_dry_run",
+            "status": (
+                "blocked_parent_followup_dry_run"
+                if _blocked_parent_continuation is not None
+                else "followup_dry_run"
+            ),
             "parent_conversation_url": conversation_url,
             "manifest_path": str(manifest_path),
             "round_receipt_path": str(receipt_path),
             "round_receipt_plan": receipt,
             "argv_plan": ["--followup", parent_slug, "--slug", child_slug],
             "submitted_question": False,
+            "blocked_parent_continuation_claim_plan": (
+                {"path": str(claim_path), "sha256": claim_sha256, "payload": claim_payload}
+                if claim_path is not None else None
+            ),
         }
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     receipt_path.parent.mkdir(parents=True, exist_ok=True)
+    if claim_path is not None and claim_bytes is not None:
+        claim_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with claim_path.open("xb") as handle:
+                handle.write(claim_bytes)
+                handle.flush()
+                os.fsync(handle.fileno())
+        except FileExistsError as exc:
+            raise OracleRunError(
+                "FOLLOWUP_BLOCKED_PARENT_CONTINUATION_ALREADY_USED",
+                "this BLOCKED parent already consumed its one-use continuation authority",
+                {"claim_path": str(claim_path)},
+            ) from exc
     encoded_manifest = (json.dumps(manifest_payload, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
     try:
         with manifest_path.open("xb") as handle:
@@ -3805,6 +4059,11 @@ def followup_run(
             )
         raise
     result["followup_round_receipt"] = {"path": str(receipt_path), "sha256": receipt_sha256}
+    if claim_path is not None and claim_sha256 is not None:
+        result["blocked_parent_continuation_claim"] = {
+            "path": str(claim_path),
+            "sha256": claim_sha256,
+        }
     child_state_path = run_root / child_run_id / "state.json"
     if child_state_path.exists():
         child_state = STATE.load_state(child_state_path)
@@ -3876,6 +4135,25 @@ def build_parser() -> argparse.ArgumentParser:
     followup_parser.add_argument("--round-key", required=True)
     followup_parser.add_argument("--run-id")
     followup_parser.add_argument("--dry-run", action="store_true")
+    blocked_followup_parser = commands.add_parser("continue-blocked")
+    blocked_followup_parser.add_argument("--parent-run-dir", type=Path, required=True)
+    blocked_followup_parser.add_argument("--mission-path", type=Path, required=True)
+    blocked_followup_parser.add_argument("--round-key", required=True)
+    blocked_followup_parser.add_argument("--run-id")
+    blocked_followup_parser.add_argument(
+        "--confirmation",
+        choices=(STATE.USER_AUTHORIZED_BLOCKED_PARENT_CONTINUATION,),
+        required=True,
+    )
+    blocked_followup_parser.add_argument("--reason", required=True)
+    blocked_followup_parser.add_argument("--expected-state-sha256", required=True)
+    blocked_followup_parser.add_argument("--expected-output-sha256", required=True)
+    blocked_followup_parser.add_argument("--expected-transcript-sha256", required=True)
+    blocked_followup_parser.add_argument("--expected-stdout-sha256", required=True)
+    blocked_followup_parser.add_argument("--expected-stderr-sha256", required=True)
+    blocked_followup_parser.add_argument("--expected-parent-mission-sha256", required=True)
+    blocked_followup_parser.add_argument("--expected-followup-mission-sha256", required=True)
+    blocked_followup_parser.add_argument("--dry-run", action="store_true")
     recover_parser = commands.add_parser("recover")
     recover_parser.add_argument("--run-dir", type=Path, required=True)
     recover_parser.add_argument("--action", choices=("harvest", "live"), required=True)
@@ -4004,6 +4282,23 @@ def main(argv: Sequence[str] | None = None) -> int:
                 mission_path=args.mission_path,
                 round_key=args.round_key,
                 run_id=args.run_id,
+                dry_run=args.dry_run,
+            )
+        elif args.command == "continue-blocked":
+            payload = continue_blocked_followup_run(
+                args.parent_run_dir,
+                mission_path=args.mission_path,
+                round_key=args.round_key,
+                run_id=args.run_id,
+                confirmation=args.confirmation,
+                reason=args.reason,
+                expected_state_sha256=args.expected_state_sha256,
+                expected_output_sha256=args.expected_output_sha256,
+                expected_transcript_sha256=args.expected_transcript_sha256,
+                expected_stdout_sha256=args.expected_stdout_sha256,
+                expected_stderr_sha256=args.expected_stderr_sha256,
+                expected_parent_mission_sha256=args.expected_parent_mission_sha256,
+                expected_followup_mission_sha256=args.expected_followup_mission_sha256,
                 dry_run=args.dry_run,
             )
         elif args.command == "recover":
